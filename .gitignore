@@ -1,0 +1,28 @@
+# Dependencies & build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets — never commit real env files
+.env
+.env.*
+!.env.example
+
+# Local mail exports (contain personal data)
+backups/
+*.eml
+*.mbox
+
+# Logs & OS/editor noise
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/
+review-output
+
+supabase_pass
+
+# Local planning files (from /next)
+.claude/plans/
