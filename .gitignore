@@ -22,8 +22,6 @@ npm-debug.log*
 .idea/
 .vscode/
 review-output
-.prettierignore
-.prettierrc.json
 supabase_pass
 
 # Local planning files (from /next)

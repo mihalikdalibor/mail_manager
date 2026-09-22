@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1a (Supabase foundation) implemented, awaiting `/review-changes`; M1b next.** M0 done. `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b (IMAP foundation, providers & test ground) — not started.** M0 and M1a done (reviewed, v0.0.1). `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
