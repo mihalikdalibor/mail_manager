@@ -52,23 +52,23 @@ Decisions (2026-09-21): migrations via Supabase CLI (npm devDependency, `npm run
 
 ## M1b — IMAP foundation, providers & test ground
 
-Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodemailer MailComposer (devDependency, no SMTP); ~150 messages / ~25 MB seeded deterministically into folder `mm-test` of **test@mihalikdalibor.eu** (Websupport).
+Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodemailer MailComposer (devDependency, no SMTP); ~150 messages / ~25 MB seeded deterministically into folder `mm-test` of **test@example-test-domain.eu** (Websupport).
 
-- [ ] **User:** add `MM_TEST_IMAP_USER=test@mihalikdalibor.eu` + `MM_TEST_IMAP_PASS` to `.env.local` (host comes from discovery; `MM_TEST_IMAP_HOST=imap.m1.websupport.sk` only as fallback)
+- [ ] **User:** add `MM_TEST_IMAP_USER=test@example-test-domain.eu` + `MM_TEST_IMAP_PASS` to `.env.local` (host comes from discovery; `MM_TEST_IMAP_HOST=imap.m1.websupport.sk` only as fallback)
 - [ ] `presets.json` — SK/CZ: Websupport (`imap.m1.websupport.sk`, alt `imap.websupport.sk`), WebHouse (`mail.webhouse.sk`), Webglobe (`mail.webglobe.cz`, `imap.webglobe.sk`), Active24 (`email.active24.com`), HostCreators (`imap.hostcreators.sk`), Forpsi (`imap.forpsi.com`), Wedos (per-mailbox `imap-*.wedos.net` → manual host), Seznam/Email.cz/Post.cz (`imap.seznam.cz`), Zoznam, Azet, Centrum; global: Gmail, **Outlook (XOAUTH2 only — LOGINDISABLED, blocked until M6 OAuth)**, Yahoo, iCloud, GMX, Hostinger. Each with domains, **MX suffixes**, auth, hint, helpUrl, verified flag
-- [ ] `providers/discover.ts` — order: email-domain preset → **MX-suffix preset** (primary for custom domains; e.g. mihalikdalibor.eu → mx10.websupport.sk) → ISPDB → autoconfig → SRV → manual; injectable DNS/fetch + unit tests
+- [ ] `providers/discover.ts` — order: email-domain preset → **MX-suffix preset** (primary for custom domains; e.g. example-test-domain.eu → mx10.websupport.sk) → ISPDB → autoconfig → SRV → manual; injectable DNS/fetch + unit tests
 - [ ] `mm discover <email>` — shows detected provider/settings (no login)
 - [ ] `imap/session.ts` — imapflow connect (993, cert verify, timeouts), post-auth capabilities, logout, error mapping (auth failed, host not found, TLS, timeout, OAuth-only/LOGINDISABLED)
 - [ ] Provider restrictions analysis in `docs/PROVIDERS.md` (connection limits, auth, capabilities per provider, brute-force/IP-ban risk, Gmail limits, Outlook OAuth)
 - [ ] Test ground: integration helpers (env, **folder guard: only `mm-test`**), deterministic synthetic mail generator (seeded; Slovak diacritics, varied senders/domains, dates 2019–2026, sizes 1 KB–5 MB, attachments, seen/flagged, `X-MM-Test-Seed` header) + manifest of expected facts, `npm run test:seed` (APPEND with internal dates), `npm run test:unseed`
-- [ ] Integration tests on test@mihalikdalibor.eu: discovery → Websupport, login + capabilities recorded, seeded count/manifest match, guard refuses other folders
-- **Acceptance:** discovery finds Websupport for test@mihalikdalibor.eu without manual host; login works; seeding is idempotent and matches the manifest; unit + integration tests pass; no password in output.
+- [ ] Integration tests on test@example-test-domain.eu: discovery → Websupport, login + capabilities recorded, seeded count/manifest match, guard refuses other folders
+- **Acceptance:** discovery finds Websupport for test@example-test-domain.eu without manual host; login works; seeding is idempotent and matches the manifest; unit + integration tests pass; no password in output.
 
 ## M1c — Account commands (needs M1a + M1b)
 
 - [ ] `mm account add [email]` — discover (+ provider picker for SK/CZ hostings) → hints → hidden password → test login → encrypt → save
 - [ ] `mm account list` / `test` / `remove` (confirm) / `update-password`
-- [ ] Integration test: add + test account on test@mihalikdalibor.eu; wrong password saves nothing
+- [ ] Integration test: add + test account on test@example-test-domain.eu; wrong password saves nothing
 - [ ] Follow-ups from the M1a review (2026-09-22):
   - [ ] lowercase `host` in the accounts repo + a DB check in the next migration (the `(user_id, email, host)` uniqueness can be bypassed by case)
   - [ ] next migration: force `created_at`/`updated_at` to `now()` on insert (the client can currently set them)
@@ -94,6 +94,8 @@ Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodem
 - [ ] `filters/compile.ts` → SearchObject + post-filters + tests
 - [ ] CLI flag parsing → filter (sizes, durations, dates)
 - [ ] `mm search` (count, size, top senders, samples, `--json`)
+- [ ] Gmail `X-GM-RAW` compile + cross-check vs standard search, `--gmail-only` (IMAP.md §5.6)
+- [ ] Gmail search equivalence integration test (one case per mapping row, expected-differences list)
 - [ ] Integration seed script (`tests/integration/seed.ts`) + folder guard
 - [ ] `0002_saved_filters.sql` + `FiltersRepo`
 - [ ] `mm filter save/list/show/delete`, `--filter <name>`
@@ -103,12 +105,14 @@ Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodem
 
 - [ ] Decide: expunge only after M5 (proposed)
 - [ ] `planner.ts` + plan serialisation (compressed UID ranges) + tests
-- [ ] `delete.ts` trash mode (MOVE / COPY fallback), UIDVALIDITY guard, batching + tests with fake session
+- [ ] `delete.ts` capability matrix (IMAP.md §6.2) with notice + confirm per fallback, UIDVALIDITY guard, batching + tests with fake session (never `messageDelete`/`messageMove`/`CLOSE` without UIDPLUS/MOVE)
 - [ ] Expunge mode (UIDPLUS only) — gated
 - [ ] Plan files + `--resume`
 - [ ] `0003_audit_log.sql` (append-only) + `AuditRepo`
-- [ ] `mm delete` confirmation UX (`--max`, `--yes`), `mm audit`
-- [ ] Gmail handling (label vs delete, `\Trash`)
+- [ ] `mm delete` confirmation UX: notices → full paged list (`--list-file`) → `y/N` → type count; interactive only, `--max` (IMAP.md §6.4); `mm audit`
+- [ ] Trash selection: candidate scan, root ranking, always shown, saved on account + migration (IMAP.md §6.5)
+- [ ] Decide: guarded plain EXPUNGE for servers without MOVE/UIDPLUS (IMAP.md §6.3 B; proposal: no)
+- [ ] Gmail handling (label vs delete, `\Trash`, plan = standard ∩ `X-GM-RAW`)
 - **Acceptance:** exact UIDs only; abort on UIDVALIDITY change; no folder-wide expunge; resume works; audit correct.
 
 ## M5 — Backup / export → [doc](docs/milestones/M5-backup.md)

@@ -23,10 +23,10 @@ Decisions (2026-09-21): migrations via the Supabase CLI (`npm run db:push`); **i
 
 ## M1b — IMAP foundation, providers & test ground (next)
 
-- Provider presets with **MX-suffix matching** (primary for SK/CZ custom domains, e.g. `mihalikdalibor.eu` → `mx10.websupport.sk` → Websupport), discovery order preset → MX → ISPDB → autoconfig → SRV → manual; `mm discover <email>`.
+- Provider presets with **MX-suffix matching** (primary for SK/CZ custom domains, e.g. `example-test-domain.eu` → `mx10.websupport.sk` → Websupport), discovery order preset → MX → ISPDB → autoconfig → SRV → manual; `mm discover <email>`.
 - `imap/session.ts`: imapflow connect (993, cert verify, timeouts), post-auth capabilities, error mapping incl. Outlook's `LOGINDISABLED` / XOAUTH2-only.
 - Provider restrictions analysis in `docs/PROVIDERS.md`.
-- Test ground on **test@mihalikdalibor.eu** (Websupport): folder guard (`mm-test` only), deterministic synthetic mail (~150 messages / ~25 MB, nodemailer MailComposer), `npm run test:seed` / `test:unseed`.
+- Test ground on **test@example-test-domain.eu** (Websupport): folder guard (`mm-test` only), deterministic synthetic mail (~150 messages / ~25 MB, nodemailer MailComposer), `npm run test:seed` / `test:unseed`.
 
 ## M1c — Account commands
 

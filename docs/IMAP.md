@@ -200,9 +200,47 @@ One capability token covers all of these:
 
 Gmail behaviour that isn't a capability: see PROVIDERS.md (labels = folders, `\All` for totals, delete = move to `\Trash`, 2500 MB/day, ~15 connections). Also, Gmail's IMAP settings ("Auto-Expunge", "when a message is marked deleted") change what `\Deleted` + EXPUNGE do in label folders. The only unambiguous delete path is **move to `\Trash`**.
 
+### 5.6 Gmail search (`X-GM-RAW`) checked against our own search
+
+**Decision (2026-09-22):** on Gmail, filters also compile to `X-GM-RAW`. Gmail's result is never trusted on its own; it is cross-checked against the standard IMAP search (below).
+
+`X-GM-RAW` runs Gmail's web search syntax inside the **selected folder** (Google: arguments are "interpreted in the same manner as in the Gmail web interface"). Folder scope therefore comes from which folder we open. We never use the `in:` or `label:` operators.
+
+#### Mapping: our filter → Gmail operator, and known differences
+
+| Our filter                                                     | Standard IMAP (our definition)                                  | `X-GM-RAW`                                        | Where the two can disagree                                                                                                                                                                  |
+| -------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from` address / `@domain`                                     | `FROM "<value>"` (substring) + exact-address/domain post-filter | `from:<value>`                                    | IMAP matches substrings; Gmail matches tokens and display names, may include subdomains. **Both paths go through the same exact post-filter**, so the remaining difference should be zero.  |
+| `to` / `cc` / `bcc`                                            | `TO` / `CC` / `BCC` substring + post-filter                     | `to:` / `cc:` / `bcc:`                            | Same as `from`. Gmail does no alias expansion in API search (Google docs).                                                                                                                  |
+| `subject` contains                                             | `SUBJECT "<text>"` (substring)                                  | `subject:"<text>"`                                | Gmail matches words: `invoice` may miss `invoices` or `prefix-invoice`. Expected difference.                                                                                                |
+| `body` / `text`                                                | `BODY` / `TEXT` (server-dependent)                              | `"<text>"`                                        | Word vs substring; IMAP `TEXT` also searches headers. Expected difference.                                                                                                                  |
+| `since` / `before` (date)                                      | `SINCE` / `BEFORE` (internal date, whole days, server timezone) | `after:<epoch>` / `before:<epoch>`                | Gmail reads plain dates as **midnight PST** (Gmail API docs), so we always send **epoch seconds**. IMAP is day-granular, so messages near midnight can differ. Expected, at the edges only. |
+| `olderThan` / `newerThan`                                      | converted to a date once, at plan time                          | converted to the same epoch (not `older_than:`)   | Both paths use the same "now". Same day-edge caveat.                                                                                                                                        |
+| `larger` / `smaller`                                           | `LARGER` / `SMALLER` (RFC822.SIZE)                              | `larger:<bytes>` / `smaller:<bytes>`              | Gmail's size may be computed differently. Expect differences only near the threshold.                                                                                                       |
+| `seen` / `flagged`                                             | `SEEN`/`UNSEEN`, `FLAGGED`/`UNFLAGGED`                          | `is:read`/`is:unread`, `is:starred`/`-is:starred` | Should be identical.                                                                                                                                                                        |
+| `answered`                                                     | `ANSWERED`                                                      | none                                              | No Gmail operator: this part always runs as standard IMAP.                                                                                                                                  |
+| `hasAttachments`                                               | client-side `BODYSTRUCTURE` check                               | `has:attachment`                                  | Gmail's definition (inline images, calendar invites, forwarded `.eml`) differs from ours. **The criterion most likely to differ.**                                                          |
+| `all` / `any` / `not`                                          | AND / `OR` / `NOT`                                              | space / `OR` or `{a b}` / `-`, parentheses        | Should be identical.                                                                                                                                                                        |
+| Gmail-only (`category:`, `filename:`, `list:`, `is:important`) | none                                                            | as written                                        | **Cannot be cross-checked.** Allowed in search; before a delete the user is told these criteria have no independent check (they still review every message, §6.4).                          |
+
+**Building the query:** the Gmail query is built only from validated filter fields, never from raw user text. Values are wrapped in double quotes; values containing `"` are rejected, because that would let a value inject extra Gmail operators. imapflow sends the string as an IMAP literal with `CHARSET UTF-8` when needed, so IMAP-level quoting is handled.
+
+#### Cross-check procedure
+
+1. For each folder, in the same session and under the same UIDVALIDITY, run both:
+   - **S** = standard `UID SEARCH` + post-filters
+   - **G** = `X-GM-RAW` + the same post-filters
+2. Compare:
+   - **S = G** → "verified by both searches".
+   - Otherwise report `only in Gmail search: n`, `only in standard search: m`, with sample rows. Explain the likely cause using the table above (e.g. "subject word vs substring").
+3. What the result is used for:
+   - **`mm search` (read-only):** shows S, plus the comparison line. `--gmail-only` skips S for speed when the user accepts Gmail's semantics.
+   - **Delete plans:** the plan contains **only S ∩ G**, the messages both searches agree on. Messages found by only one search appear in a separate "excluded: searches disagree" list. The user can add them explicitly after seeing them. Gmail-only criteria (no S) → G is used, with the notice above.
+4. **Tests.** The seeded `mm-test` folder on the Gmail test account covers each mapping row with a case built to sit on the known edge. The integration test asserts `S = G` except for a documented list of expected differences. An **unexpected difference fails the test**. That list lives next to the test and doubles as the user-facing explanation.
+
 ---
 
-## 6. imapflow safety traps (verified in source)
+## 6. Deleting safely
 
 ### 6.1 `messageDelete()` and `messageMove()` can issue a folder-wide EXPUNGE
 
@@ -222,17 +260,75 @@ Gmail behaviour that isn't a capability: see PROVIDERS.md (labels = folders, `\A
 
 ### 6.2 Delete strategy matrix
 
-| Server has     | Move to Trash (default)                                                                                                                                                                              | Permanent delete (`--expunge`)                    |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| MOVE + UIDPLUS | `UID MOVE`                                                                                                                                                                                           | `UID STORE +FLAGS \Deleted` → `UID EXPUNGE`       |
-| MOVE only      | `UID MOVE`                                                                                                                                                                                           | **Refuse**                                        |
-| UIDPLUS only   | `UID COPY` → `UID STORE +FLAGS \Deleted` → `UID EXPUNGE <set>`                                                                                                                                       | `\Deleted` → `UID EXPUNGE`                        |
-| neither        | **Open question:** (a) refuse, or (b) `UID COPY` + `\Deleted` **without expunge**, reported as "copied to Trash, N flagged deleted in source; your mail client will remove them on its next expunge" | **Refuse**                                        |
-| Gmail (any)    | `UID MOVE` to `\Trash` (never `\Deleted` in a label folder)                                                                                                                                          | Move to `\Trash`, then `UID EXPUNGE` **in Trash** |
+Decided with the user on 2026-09-22: when the requested operation isn't supported, the app **says so, explains what it will do instead, and asks**. Nothing falls back silently.
+
+| Server has     | Move to Trash (default)                                                                                                                                                                                                                                                    | Permanent delete (`--expunge`)                                                                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MOVE + UIDPLUS | `UID MOVE`                                                                                                                                                                                                                                                                 | `UID STORE +FLAGS \Deleted` → `UID EXPUNGE <set>`                                                                                                                                              |
+| MOVE only      | `UID MOVE`                                                                                                                                                                                                                                                                 | **Notice:** "This server can't permanently delete only selected messages (UIDPLUS missing). The messages will be **moved to Trash instead**." Confirm → Trash path. Decline → nothing happens. |
+| UIDPLUS only   | `UID COPY` → `UID STORE +FLAGS \Deleted` → `UID EXPUNGE <set>`, with a notice that the move is done as copy + delete                                                                                                                                                       | `\Deleted` → `UID EXPUNGE <set>`                                                                                                                                                               |
+| neither        | **Notice + confirm:** "This server can't move messages. They will be **copied to Trash** and **marked deleted** in the original folder; most mail apps hide them, and they disappear the next time any mail app empties deleted messages." See §6.3 for the other options. | **Notice:** permanent delete isn't possible → offer the Trash copy + mark path above.                                                                                                          |
+| Gmail (any)    | `UID MOVE` to `\Trash` (never `\Deleted` in a label folder)                                                                                                                                                                                                                | Move to `\Trash`, then `UID EXPUNGE <set>` **in Trash**                                                                                                                                        |
+
+Every notice is shown **before** the message list and the two confirmations (§6.4). Declining means nothing is changed.
 
 Before every batch: UIDVALIDITY check (existing rule). Optional hardening with CONDSTORE: `STORE … (UNCHANGEDSINCE <modseq-at-plan>)` so messages that changed after planning are skipped and reported. imapflow returns the modified set.
 
-Check `[UIDNOTSTICKY]` / `mailbox.readOnly` / `permanentFlags` lacking `\Deleted` on SELECT. If any is present, refuse to execute in that folder.
+Check `[UIDNOTSTICKY]` / `mailbox.readOnly` / `permanentFlags` lacking `\Deleted` on SELECT. If any is present, refuse to execute in that folder and say why.
+
+### 6.3 Deleting when the server has neither MOVE nor UIDPLUS
+
+IMAP4rev1 has only one command that removes messages from a folder: `EXPUNGE`, which is folder-wide. (`CLOSE` does the same implicitly.) There is no targeted delete without UIDPLUS. The possible approaches:
+
+| Option                                             | How                                                                                                                                                                    | Risk                                                                                                                                                                                                       | Status                                                                                                    |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **A. Copy to Trash + mark `\Deleted`, no expunge** | `UID COPY` → `UID STORE +FLAGS \Deleted`. The source copies stay, flagged. Most clients hide or strike them through, and they go at the next expunge by any client.    | None to other mail. The source folder still holds the data until something expunges it.                                                                                                                    | **Default** for this case (§6.2)                                                                          |
+| **B. Guarded plain `EXPUNGE`**                     | 1. Mark planned UIDs `\Deleted`. 2. `UID SEARCH DELETED`. 3. **Only if the result equals exactly the planned set**, send `EXPUNGE`. Otherwise un-flag ours and stop.   | A message another client flags `\Deleted` in the milliseconds between step 2 and 3 would also be expunged. That message was already marked for deletion by that client, but its "undelete" chance is lost. | **Not allowed today.** CLAUDE.md says "never issue a folder-wide EXPUNGE". Needs an explicit rule change. |
+| C. Foreign `\Deleted` messages present             | Variant of B when step 2 finds messages flagged by someone else: show them to the user. Choices: cancel, or include them (they're listed and confirmed like the rest). | The user decides with full information.                                                                                                                                                                    | Only together with B                                                                                      |
+| D. Un-flag others, expunge, re-flag                | Temporarily remove `\Deleted` from foreign messages, expunge, restore the flags.                                                                                       | Changes other clients' state and has its own race. **Rejected.**                                                                                                                                           | Rejected                                                                                                  |
+| E. Delete a whole folder                           | `DELETE <folder>` removes the folder and everything in it.                                                                                                             | Only valid when the user wants that entire folder gone. A separate, explicit "delete folder" feature, never a trick for message deletes.                                                                   | Possible later feature                                                                                    |
+| F. Provider-side                                   | Webmail "empty Trash", the server's auto-purge of Trash (often 30 days), or the Gmail API / Microsoft Graph.                                                           | Outside our control.                                                                                                                                                                                       | Documented as a hint in the notice                                                                        |
+
+Practically, this case is rare. UIDPLUS is present on every major provider we know of (§7). It matters mainly for old Courier / hMailServer installations.
+
+### 6.4 Confirmation flow for every delete
+
+Decided with the user on 2026-09-22. It applies to both Trash moves and permanent deletes.
+
+1. **Plan** (read-only, `EXAMINE`): exact UIDs per folder, UIDVALIDITY, totals. On Gmail, only messages both searches agree on (§5.6).
+2. **Notices**, each needing `y` (default No):
+   - **Capability fallback** (§6.2), e.g. "permanent delete not supported → moving to Trash instead".
+   - **Trash folder**: always printed, with how it was found (§6.5).
+   - Gmail: label-folder semantics; search disagreements; Gmail-only criteria that can't be cross-checked.
+3. **Full list of every message** in the plan, not just samples. Columns: folder, date, from, subject, size, plus labels on Gmail. Totals appear at the top and bottom. The list is paged in the terminal (`$PAGER`, otherwise built-in pages of 50). `--list-file <path>` also writes it to a local file (mode 600) for large plans.
+   - The list is **only displayed and written locally, never sent to Supabase** (data-minimisation rule).
+   - Building it costs an ENVELOPE fetch over all planned UIDs, batched and with progress. For 100k messages this takes minutes. The user is told the estimate first.
+4. **Confirmation 1:** "Move 1,234 messages (512 MB) from 3 folders to Trash `Deleted Items`? [y/N]".
+5. **Confirmation 2:** type the exact count (`1234`). For permanent delete, type `DELETE 1234`.
+6. **Execute** exactly the planned UIDs: UIDVALIDITY re-check before each batch; UIDs already gone are skipped and reported.
+7. **Result** summary and audit row.
+
+`mm delete` is **interactive only**. It refuses to run without a TTY, and `--yes` is removed. `--max N` stays as a safety ceiling (abort if the plan is larger). Unattended deletes (M6 scheduled jobs) will need their own approval design.
+
+### 6.5 Choosing the Trash folder
+
+Decided with the user on 2026-09-22: **always tell the user which Trash is used and why.** If it wasn't identified by the server, confirm it. If there are several candidates, find the root one and let the user choose.
+
+1. **Server-marked:** exactly one folder flagged `\Trash` by SPECIAL-USE/XLIST (`specialUseSource: 'extension'`) → use it, and still print "Trash: `Deleted Items` (marked by the server)". If the server flags several → treat them as multiple candidates (step 3).
+2. **Name scan:** we run our **own** scan of the full LIST output. imapflow picks a single winner by priority and doesn't report the losers. A candidate is any selectable folder (not `\Noselect`/`\NonExistent`) whose **leaf name** matches a known Trash name, case-insensitively:
+   - `Trash`, `Deleted`, `Deleted Items`, `Deleted Messages`, `Bin`
+   - `Kôš`, `Koš`, `Odstránené`, `Odstraněné položky`, `Papierkorb`, `Gelöschte Elemente`, `Corbeille`, `Papelera`, `Cestino`, `Kosz`
+   - imapflow's list (`special-use.js`) has ~130 localised names and can be used as a reference.
+3. **Find the root Trash** among the candidates. Ranking, first rule wins:
+   1. **Top level of the personal namespace** (from `NAMESPACE`): `Trash` on most servers, `INBOX.Trash` on Courier-style servers where everything lives under `INBOX.`. Nested ones like `Archive/Trash` or `Projects/Old/Trash` are "probably a user folder".
+   2. An exact common name beats a fuzzy match.
+   3. Subscribed beats unsubscribed.
+   4. **Most recent activity** (newest message's internal date, via `fetch('*', { internalDate })`). Webmail keeps moving deleted mail into the real Trash.
+   5. More messages.
+4. **Always show every candidate** with path, level, message count, newest message date and the reason it ranked where it did. Mark the proposal and let the user pick (Enter = proposal). This applies even to a single name-found candidate.
+   - Typical case: Exchange without SPECIAL-USE, where `Deleted Items` (real) and `Trash` (created by Thunderbird) both exist at the top level. Rule 4 usually separates them, and the user makes the final call.
+5. **Remember the choice** on the account: `trash_path`, `trash_source` (`extension` | `name` | `user`), `trash_confirmed_at`. That's account configuration, not message data, so it's allowed in Supabase. Later runs pass it to imapflow as `specialUseHints: { trash }`, still print it, and re-check that it exists. If the server later starts flagging a _different_ folder as `\Trash`, the user is told and asked again.
+6. **No candidate found:** say so, list all folders for the user to pick from, or cancel. **Never create a Trash folder automatically**: the provider's webmail wouldn't treat it as Trash.
 
 ---
 
@@ -297,30 +393,41 @@ M2:
 M3:
 
 - [ ] Compile filters to imapflow `SearchObject` (keys: `from to cc bcc subject body text header before since on sentBefore sentSince sentOn larger smaller seen flagged answered deleted draft keyword uid or not emailId threadId gmraw`).
-- [ ] `gmraw` only when `features.gmail`. Otherwise use standard criteria + client-side post-filters.
+- [ ] Gmail (`features.gmail`): also compile to `X-GM-RAW` (§5.6: quoted values, epoch dates) and cross-check S vs G. `mm search` prints the comparison; `--gmail-only` skips the standard search.
+- [ ] Integration test on the Gmail test account: one seeded case per mapping row; `S = G` except the documented expected differences.
 - [ ] Document WITHIN day-edge differences. Use `returnOptions: ['COUNT']` for count-only when ESEARCH is available.
 
 M4:
 
-- [ ] Implement §6.2. Never call `messageDelete`/`messageMove`/`mailboxClose` outside their safe preconditions.
+- [ ] Implement §6.2 with a notice + confirm for every fallback. Never call `messageDelete`/`messageMove`/`mailboxClose` outside their safe preconditions.
+- [ ] Confirmation flow §6.4: notices → full paged message list (`--list-file`) → confirm → type the count (`DELETE <n>` for permanent). Interactive only; no `--yes`.
+- [ ] Trash selection §6.5: own candidate scan, root ranking, always show, save the choice on the account (new migration: `trash_path`, `trash_source`, `trash_confirmed_at`).
+- [ ] Gmail delete plans = S ∩ G; disagreements listed separately.
 - [ ] Use `EXAMINE` (readOnly) for planning and `SELECT` only for execute. Check `readOnly`, `permanentFlags`, `UIDNOTSTICKY`.
 - [ ] Optional: `UNCHANGEDSINCE` guard when CONDSTORE is enabled and the folder isn't `noModseq`.
-- [ ] Trash folder: require `specialUseSource === 'extension'` or explicit user confirmation.
 
 M5:
 
 - [ ] Dedupe key: `emailId` (OBJECTID / X-GM-MSGID), otherwise `Message-ID` + size + internal date.
 - [ ] `download()` streams, BINARY/COMPRESS automatic. Respect Gmail's daily limit.
 
-## 10. Open questions for the user
+## 10. Decisions and open questions
 
-1. **Move to Trash on a server with neither MOVE nor UIDPLUS:** refuse, or COPY + `\Deleted` without expunge (§6.2)? Proposal: (b), clearly reported. It never destroys unrelated mail.
-2. **Accept `specialUseSource: 'name'` Trash without asking?** Proposal: ask once per account, then save the confirmed path on the account.
-3. **Use `X-GM-RAW` for Gmail** as an optional accelerator in M3 (e.g. `has:attachment` server-side)? Proposal: yes, behind the same filter model, with results equivalent to the standard path.
+Decided with the user on 2026-09-22:
+
+- Unsupported operation → notice explaining the substitute (e.g. Trash instead of permanent delete), then confirm (§6.2).
+- Every delete: full message list + two confirmations (§6.4).
+- Trash found only by name: scan all candidates, find the root one, always tell the user (§6.5).
+- Gmail: use `X-GM-RAW`, always cross-checked against the standard search (§5.6).
+
+Open:
+
+1. **Guarded plain `EXPUNGE` (§6.3 option B)** for servers with neither MOVE nor UIDPLUS: allow it (it needs a CLAUDE.md rule change), or keep option A (copy + mark deleted) only? Proposal: keep A only. UIDPLUS is near-universal, so B's residual race isn't worth a rule exception.
 
 ## References
 
 - RFC 3501 (IMAP4rev1), RFC 9051 (IMAP4rev2), RFC 4315 (UIDPLUS), RFC 6851 (MOVE), RFC 7162 (CONDSTORE/QRESYNC), RFC 6154 (SPECIAL-USE), RFC 5819 (LIST-STATUS), RFC 8438 (STATUS=SIZE), RFC 9208 (QUOTA), RFC 4731 (ESEARCH), RFC 5032 (WITHIN), RFC 5256 (SORT/THREAD), RFC 8474 (OBJECTID), RFC 3516 (BINARY), RFC 4978 (COMPRESS), RFC 2177 (IDLE), RFC 5161 (ENABLE), RFC 3691 (UNSELECT), RFC 2971 (ID), RFC 7889 (APPENDLIMIT), RFC 8457 ($HasAttachment), RFC 7628 (OAUTHBEARER).
 - IANA IMAP capabilities registry: https://www.iana.org/assignments/imap-capabilities/
 - Gmail IMAP extensions: https://developers.google.com/gmail/imap/imap-extensions
+- Gmail search operators and date/timezone rules (Gmail API): https://developers.google.com/gmail/api/guides/filtering · https://support.google.com/mail/answer/7190
 - imapflow: https://imapflow.com/ · source verified from npm `imapflow@2.0.5`.

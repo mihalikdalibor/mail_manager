@@ -27,6 +27,8 @@ All tables live in `public`, all have **RLS enabled** with ownership `user_id = 
 | created_at / updated_at | timestamptz                                                               |                                                                                |
 | last_checked_at         | timestamptz                                                               | last successful login test                                                     |
 
+Planned for M4 (new migration, since the init migration is already applied): `trash_path` text, `trash_source` text check in (`extension`,`name`,`user`), `trash_confirmed_at` timestamptz. This is the Trash folder the user confirmed ([IMAP.md §6.5](IMAP.md#65-choosing-the-trash-folder)). It's account configuration, not message data.
+
 Unique `(user_id, email, host)`. `updated_at` is set by a `before update` trigger.
 
 Secrets are base64 **text**, not `bytea`: PostgREST returns bytea as `\x…` hex strings, and text is portable to a future non-Supabase Postgres.

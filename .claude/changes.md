@@ -103,7 +103,7 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
     - `logout` idempotent
     - logout with a broken config still deletes `session.json`
     - missing config → clear error
-  - CLI, **user ran interactively:** wrong password → error; correct → logged in as test@mihalikdalibor.eu. Then from the agent shell:
+  - CLI, **user ran interactively:** wrong password → error; correct → logged in as test@example-test-domain.eu. Then from the agent shell:
     - session dir 700, file 600
     - `whoami` printed email + id
     - doctor 6× OK

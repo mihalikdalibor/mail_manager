@@ -26,6 +26,7 @@ Any modification of mail; GUI filter builder (M6).
 
 ## Design notes
 
+- Gmail: filters also compile to `X-GM-RAW` and are cross-checked against the standard search (mapping, known differences and procedure: [IMAP.md §5.6](../IMAP.md#56-gmail-search-x-gm-raw-checked-against-our-own-search)). `mm search` prints the comparison; `--gmail-only` skips the standard search. Gmail-only criteria (`category:` …) are allowed but marked as unverifiable.
 - Server-side where possible (`UID SEARCH`); post-filters only for: exact domain match on parsed address, `hasAttachments` (BODYSTRUCTURE), anything unsupported by the server.
 - Domain filter: IMAP `FROM "@shop.com"` is a substring → post-filter parsed address `endsWith("@shop.com")` (optionally subdomains).
 - Date semantics documented: `before 2022-01-01` = internal date strictly before that day; `olderThan` computed from "now" at plan time.
@@ -47,6 +48,7 @@ See `TODO.md` → M3.
 - Unit tests: every criterion compiles correctly; nested AND/OR/NOT; invalid inputs rejected with helpful messages.
 - Against seeded `mm-test`: each criterion returns the expected seeded set.
 - Webmail comparison: at least 3 real-ish searches match counts.
+- Gmail test account: one seeded case per mapping row; standard vs `X-GM-RAW` results are equal except for the documented expected differences (an unexpected difference fails the test).
 
 ## Verification steps
 

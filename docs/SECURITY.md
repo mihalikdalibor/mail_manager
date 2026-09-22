@@ -41,11 +41,16 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 ## Destructive-operation protocol
 
 1. **Plan:** resolve filter → exact UID set per folder, record `UIDVALIDITY`, totals, samples. No changes.
-2. **Confirm:** user sees count, size, top senders, samples; must type the count (or `yes`). Non-interactive `--yes` requires `--max N` as a ceiling.
-3. **Execute:**
-   - Default: `UID MOVE` to the special-use `\Trash` folder (fallback: `UID COPY` + `\Deleted` + `UID EXPUNGE`).
+2. **Confirm** (details: [IMAP.md §6.4](IMAP.md#64-confirmation-flow-for-every-delete)):
+   - **Notices** the user must accept: any capability fallback, which Trash folder is used and how it was found, and Gmail search disagreements.
+   - The **full list of every planned message** (folder, date, from, subject, size), paged, optionally written to a local file (600). Shown locally only, never sent to Supabase.
+   - **Two confirmations:** `y/N`, then type the exact count (`DELETE <n>` for permanent).
+   - Interactive only. No `--yes`. `--max N` is a ceiling.
+3. **Execute** (strategy per capability: [IMAP.md §6.2](IMAP.md#62-delete-strategy-matrix)):
+   - Default: `UID MOVE` to the Trash folder: server-marked `\Trash`, or one the user confirmed ([IMAP.md §6.5](IMAP.md#65-choosing-the-trash-folder)). Fallback: `UID COPY` + `\Deleted` + `UID EXPUNGE`. Neither MOVE nor UIDPLUS: `UID COPY` + `\Deleted` without expunge, after a notice.
    - Permanent (`--expunge`): set `\Deleted` on planned UIDs, then `UID EXPUNGE <uids>` (requires **UIDPLUS**).
-   - **No UIDPLUS → refuse permanent delete.** A plain `EXPUNGE` would also remove unrelated messages that were already flagged `\Deleted` by another client.
+   - **No UIDPLUS → no permanent delete.** The user is told and offered a move to Trash instead. A plain `EXPUNGE` would also remove unrelated messages that were already flagged `\Deleted` by another client.
+   - **Never** call imapflow's `messageDelete`/`messageMove` without UIDPLUS/MOVE, or `mailboxClose()` on a writable folder: they fall back to a folder-wide `EXPUNGE`/`CLOSE` ([IMAP.md §6.1](IMAP.md#61-messagedelete-and-messagemove-can-issue-a-folder-wide-expunge)).
    - Re-check `UIDVALIDITY` before each batch; if changed → abort, nothing further touched.
    - Batches of ~500 UIDs, progress, resumable from the plan.
 4. **Backup-first:** on by default for `--expunge`.

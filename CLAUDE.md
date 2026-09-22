@@ -23,7 +23,10 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Safety rules (destructive operations)
 
-- Every delete/move is: **plan (dry run) → explicit confirm → execute exactly the planned UIDs → audit row**.
+- Every delete/move is: **plan (dry run) → notices (fallbacks, Trash folder) → full list of every message → two confirmations → execute exactly the planned UIDs → audit row**. Interactive only. Details: `docs/IMAP.md` §6.
+- Unsupported operation → tell the user and offer the substitute (e.g. Trash instead of permanent delete). Never fall back silently.
+- Trash: server-marked `\Trash`, otherwise confirmed by the user (candidate scan, root first). Always tell the user which one is used.
+- Gmail searches via `X-GM-RAW` are cross-checked against the standard search; delete plans use only messages both agree on.
 - Default action is **move to Trash**. Permanent delete needs an explicit flag and uses `UID EXPUNGE` (UIDPLUS) only.
 - **Never** issue a folder-wide `EXPUNGE`. If the server lacks UIDPLUS, refuse permanent delete.
 - Abort if `UIDVALIDITY` changed between plan and execute.
@@ -36,6 +39,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 - `MM_MASTER_KEY` lives only in env (`.env.local` or `.env`, both gitignored) — never in Supabase, never in code.
 - CLI uses the Supabase publishable key (formerly "anon") + user JWT. Service-role key is server-side only (M6+).
 - IMAP: implicit TLS (993) only, certificate verification on. No plaintext fallback.
+- This repo is **public**. Never write the real test mailbox address/domain or its IMAP host into tracked files (docs, `TODO.md`, `.claude/changes.md`, code, comments, commit messages). Use a placeholder like `test@example-test-domain.eu` instead — real values belong only in the gitignored `.env.local`.
 
 ## Conventions
 
