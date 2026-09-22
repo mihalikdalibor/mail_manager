@@ -1,4 +1,5 @@
 import type { EncryptedSecret } from '../crypto.js';
+import type { CapabilityRecord } from '../imap/features.js';
 
 // Domain types and repository interfaces only — no Supabase imports here, so the
 // storage backend can be swapped without touching callers.
@@ -16,7 +17,7 @@ export interface MailAccount {
   username: string;
   authType: AuthType;
   secret: EncryptedSecret;
-  capabilities: Record<string, unknown> | null;
+  capabilities: CapabilityRecord | null;
   createdAt: Date;
   updatedAt: Date;
   lastCheckedAt: Date | null;
@@ -38,13 +39,17 @@ export interface NewMailAccount {
 export interface AccountsRepo {
   create(account: NewMailAccount): Promise<MailAccount>;
   list(): Promise<MailAccount[]>;
+  /** null when not found, hidden by RLS, or `id` is not a UUID. */
   get(id: string): Promise<MailAccount | null>;
   findByEmail(email: string): Promise<MailAccount[]>;
-  /** true when exactly one row changed; false when not found or hidden by RLS. */
+  /** true when exactly one row changed; false when not found, hidden by RLS, or not a UUID. */
   updateSecret(id: string, secret: EncryptedSecret): Promise<boolean>;
-  /** true when exactly one row changed; false when not found or hidden by RLS. */
-  recordCheck(id: string, capabilities: Record<string, unknown>, checkedAt: Date): Promise<boolean>;
-  /** true when exactly one row was deleted; false when not found or hidden by RLS. */
+  /**
+   * true when exactly one row changed; false when not found, hidden by RLS, or `id` is not a
+   * UUID (no request). Throws RepoError for a capability record outside the sanitised shape.
+   */
+  recordCheck(id: string, capabilities: CapabilityRecord, checkedAt: Date): Promise<boolean>;
+  /** true when exactly one row was deleted; false when not found, hidden by RLS, or not a UUID. */
   remove(id: string): Promise<boolean>;
 }
 

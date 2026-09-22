@@ -182,7 +182,7 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - New: `src/core/providers/{email,presets,settings,geoip,autoconfig,discover}.ts`, `src/core/providers/presets.json`, `src/cli/commands/discover.ts`, `src/cli/prompts/imap-settings.ts`, `tests/unit/{email,presets,settings,geoip,autoconfig,discover,imap-settings-prompt,cli-discover}.test.ts`, `tests/integration/discover.test.ts`.
   - Modified: `src/cli/index.ts`, `package.json`, `package-lock.json` (fast-xml-parser ^5.11.1), `docs/PROVIDERS.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`, `docs/milestones/M6-beta.md`, `.env.example`.
 - **Requirements** (plan acceptance criteria, verbatim):
-  - [ ] `npm run dev -- discover <MM_TEST_IMAP_USER>` → provider Websupport, found via MX, host `imap.m1.websupport.sk:993`, username = full address, no manual host; exit 0.
+  - [ ] `npm run dev -- discover <MM_TEST_IMAP_USER>` → provider Websupport, found via MX, host from the Websupport preset on 993, username = full address, no manual host; exit 0.
   - [ ] `npm run dev -- discover someone@gmail.com` → Gmail (preset by domain), hint about app password + helpUrl; exit 0.
   - [ ] `npm run dev -- discover someone@outlook.com` → Outlook recognised, **blocked** notice ("needs OAuth2, supported from M6"); exit 1.
   - [ ] A domain with no match anywhere (e.g. a random `*.invalid`) → status `manual` ("No IMAP settings found"), lists every tried source with its outcome; then **in a TTY** a picker offers every preset (SK/CZ first, then global; blocked ones shown disabled with the reason) plus "Enter IMAP host manually" and "Cancel".
@@ -216,7 +216,7 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
     - `npm run test:integration` with `MM_TEST_IMAP_USER` set inline: 6 passed (discovery + RLS). Without it the discovery suite is skipped.
     - `npm audit --omit=dev`: 0 vulnerabilities.
   - Manual runs:
-    - Test address → Websupport via MX (`mx10.websupport.sk`), exit 0.
+    - Test address → Websupport via MX, exit 0.
     - gmail.com → Gmail, exit 0. outlook.com → blocked, exit 1.
     - `a@nothing-here.invalid` → all five sources tried, no-TTY message, exit 1.
     - seznam.cz and web.de → live ISPDB parse (web.de with a local-part username).
@@ -347,3 +347,78 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
 - **Deviations:**
   - Username restriction: the allowlist is applied to the server's template, not the final value, so users with Unicode local parts still work.
   - Typed punycode is displayed as ASCII (the reviewer's look-alike concern about item 7).
+
+## C-009 — M1b-2a IMAP session: secure connect, ServerFeatures, error opacity, leak hardening
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** all 15 criteria met (lint/typecheck/format/build/898 unit tests/audit, DNS integration; fake-client script: CR/NUL/empty rejected before the client is created, canaries absent everywhere, hostile error objects give `unexpected`; live IMAP suite not re-run because the wrong-password budget was used up, 3 clean runs recorded). Non-blocking follow-ups: no test for the `bin.ts`/`auth.ts` → `errorText` wiring; strict row parsing makes one bad capabilities row fail `list()`; repo schema allows lower-case names; the ConfigError text includes the absolute project path (pre-existing).
+- **Date:** 2026-09-22
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-22-m1b2a-imap-session.md`, TODO.md → "M1b-2a — IMAP session (needs M1b-1)"
+- **Base:** a89ede8f9e06aa5ab6e6169fb781490c5064f5b8. Files already dirty before the run: `TODO.md`, from `/next` (M1b-2 split into M1b-2a/M1b-2b, M6a items added).
+- **Files:**
+  - New: `src/core/imap/session.ts`, `src/core/imap/features.ts`, `src/core/imap/errors.ts`, `src/cli/imap-errors.ts`, `src/cli/error-text.ts`, `tests/unit/imap-features.test.ts`, `tests/unit/imap-errors.test.ts`, `tests/unit/imap-session.test.ts`, `tests/unit/cli-imap-errors.test.ts`, `tests/unit/cli-error-text.test.ts`, `tests/integration/imap-session.test.ts`.
+  - Modified: `package.json`, `package-lock.json` (imapflow 2.0.5, exact pin), `src/cli/bin.ts`, `src/cli/commands/auth.ts`, `src/core/config.ts`, `src/core/db/repos.ts`, `src/core/db/supabase/accounts-repo.ts`, `tests/unit/accounts-repo.test.ts`, `tests/unit/config.test.ts`, `CLAUDE.md`, `docs/IMAP.md`, `docs/PROVIDERS.md`, `docs/SECURITY.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`.
+- **Requirements** (the plan's acceptance criteria):
+  - [x] `imapflow` is added as an exact version (`2.0.5`, no caret), the lockfile is updated, and `npm audit` shows no high or critical issue from it. It is justified here: the only maintained full-featured IMAP client for Node, MIT licensed.
+  - [x] `openSession()` connects with implicit TLS on 993 only, `rejectUnauthorized: true`, `minVersion: 'TLSv1.2'`, `disableAutoIdle: true`, `logger: false` and explicit timeouts. It sends only `name` and `version` as client ID; a unit test checks the options passed to the client factory.
+  - [x] A failed login is attempted **exactly once**: no retry, no second auth mechanism. A fake-client test counts the `connect()` calls.
+  - [x] After a successful connect, the password is gone from the client's options (fake-client test). An `ImapSession` object, whether inspected, JSON-serialised or printed as a string, never contains the password.
+  - [x] A password or username containing CR, LF or NUL (or an empty password) is rejected with reason `invalid-credentials-input` **before** the client is constructed. A test checks that the factory is never called.
+  - [x] `buildServerFeatures(capabilities, enabled)` returns the correct flags for these fixtures: the measured Websupport set, a Gmail-like set, a minimal rev1 set, rev2 advertised + enabled (folded flags on), and rev2 advertised but not enabled (not folded).
+  - [x] `sanitizeCapabilities` drops names that don't match the pattern, values that aren't boolean or a finite non-negative number, and anything past the 256-entry / 64-character caps. A test feeds it a hostile map (5,000 entries, `__proto__`, control characters, objects, huge strings).
+  - [x] Every `ImapFailureReason` is produced by `mapImapError` from a representative imapflow/Node error, with one table-driven test per reason plus `unexpected` for unknown input. Deviation: BYE `[CODE]` isn't available from imapflow, so closed connections map to `reset`.
+  - [x] For every reason, a canary password `CANARY-…` (and a canary server text) is absent from `err.message`, `String(err)`, `util.inspect(err, { depth: 10 })`, `JSON.stringify(err)` and the CLI text.
+  - [x] `imapErrorText(reason, from)` returns **the same** generic text for `auth-failed`, `app-password-required`, `password-expired`, `contact-admin`, `host-not-found`, `unreachable`, `refused`, `reset`, `timeout` and `server-rejected`. The generic text contains the GeoIP hint and the app-password hint, and has no bracketed code. Distinct texts: `no-internet`, `tls-certificate`, `oauth-only`, `server-unavailable`, `throttled`, `invalid-credentials-input`, `unsupported-server`, `unexpected`.
+  - [x] `src/cli/bin.ts`: a plain `Error('raw library text CANARY')` prints "Unexpected error". The known user-facing error classes print their message, and `ImapSessionError` prints via `imapErrorText`.
+  - [x] `AccountsRepo.get` / `updateSecret` / `recordCheck` / `remove` with a non-UUID id: `get` returns `null`, the others return `false`, and the Supabase client is not called. `recordCheck` accepts only `CapabilityRecord` and re-validates it with zod.
+  - [x] Integration (runs only when `MM_TEST_IMAP_USER` and `MM_TEST_IMAP_PASS` are set): discovery finds the host → login OK → `features.uidplus`, `features.move` and `features.quota` are true → logout. Then exactly one wrong-password attempt → reason `auth-failed`, generic text. The password appears in no captured stdout/stderr/console output, in no error inspection, and not in the test report.
+  - [x] Docs are updated: PROVIDERS.md (provider restrictions section), IMAP.md §7 (measured Websupport) + §9 M1 ticks, SECURITY.md (session, DB-injection audit, threat rows, error opacity), TESTING.md (IMAP integration test, one-wrong-attempt rule, leak check), the M1 milestone doc, and the CLAUDE.md "User-facing errors" rule.
+  - [x] `npm run lint`, `npm run format:check`, `npm run typecheck`, `npm test`, `npm run test:integration` and `npm run build` are all green.
+- **Summary:**
+  - New core IMAP session (`openSession`): verified TLS 1.2+, logging off, one attempt with no retry, and the password dropped from the client after connect. It also produces sanitised/capped capabilities, `ServerFeatures` with correct rev2 folding, and typed failure reasons that never carry server text.
+  - The CLI shows one generic login-failure message (GeoIP + app password) for everything probe-able, and distinct messages only for safe cases.
+  - `bin.ts` and the auth commands print only whitelisted core errors.
+  - The repo got UUID guards and a capability schema.
+  - Docs and the CLAUDE.md error rule are updated.
+- **Grade / mode:** M — solo + test writer. The test writer wrote the 5 new unit files from the spec only, and found a real bug: throwing getters crashed `mapImapError`.
+- **Verification:**
+  - Baseline: lint, typecheck, format, build and tests green; 585 unit tests.
+  - Now: lint, typecheck, format:check and build clean; `npm test` 898 passed; `npm run test:integration` 33 passed (4 files, including the live IMAP suite); `npm audit --omit=dev` 0 vulnerabilities.
+  - Leak check with dotenv (raw, JSON-escaped, inspect-escaped, base64 PLAIN and base64 forms; requires that the IMAP suite ran): `clean`.
+  - Live: login on the discovered Websupport host with features UIDPLUS/MOVE/QUOTA; a wrong password gave `auth-failed` plus the generic text.
+  - Built CLI smoke: `--help`, and an unknown command exits 1.
+  - Independent review: 10 findings.
+    - Fixed: the BYE code parsing was dead against real imapflow (removed; `reset`); oauth-only was too loose; console output wasn't captured; `createClient` errors escaped; the password-too-long text; missing TLS codes; SECURITY.md wording.
+    - Accepted and documented: strict row parsing; TODO/CLAUDE progress (TODO boxes are left for /review-changes); the public preset host name in TODO/IMAP.md.
+  - Not verified: real TLS-certificate, OAuth-only (Outlook) and no-internet paths against live servers (unit-tested with fakes only); the throttled/unavailable paths from real servers.
+  - Live wrong-password attempts against the test mailbox today: 3 (one per integration run).
+- **Deviations:**
+  - BYE `[CODE]` → `reset`, because imapflow drops the code.
+  - oauth-only requires LOGINDISABLED.
+  - Strict (not lenient) row capabilities parsing.
+  - `auth.ts` `handleError` also uses `errorText`.
+  - The `config.ts` env-file read error became a `ConfigError`.
+
+## C-010 — Installed `mm` lost its executable bit after every build; exact test-provider IMAP hosts removed from docs
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** root cause fixed (`postbuild` chmod 755; re-tested with a 644 file → 755; `mm -h`/`--help`/`-V`/`help discover`/`discover -h` exit 0, and `npm start`/`dev` still work). No exact IMAP/MX host remains outside `presets.json` and tests; the preset-format example passes `parsePresets`. Follow-ups: the hosts remain in git history (a89ede8, already pushed); the PROVIDERS.md table now points to presets.json only for Websupport.
+- **Date:** 2026-09-22
+- **Type:** bugfix
+- **Source:** user request, 2026-09-22: "exact imap server remove from docs/todo. lets keep only records of them for imap match … make sure mm -h or mm --help is set up correctly."
+- **Base:** a89ede8f9e06aa5ab6e6169fb781490c5064f5b8. Files already dirty before the run: the uncommitted C-009 work.
+- **Files:** `package.json` (`postbuild`), `TODO.md`, `docs/IMAP.md`, `docs/PROVIDERS.md`, `docs/milestones/M1-auth-accounts.md`, `.claude/changes.md` (two host mentions in the C-004 entry sanitised; its status is unchanged).
+- **Requirements:**
+  - [x] After `npm run build`, `dist/cli/bin.js` is executable, so the `npm link`ed `mm -h`, `mm --help`, `mm -V` and `mm help <cmd>` work.
+  - [x] The exact Websupport IMAP/MX host names appear in no doc, TODO.md or changes.md. They remain only in `src/core/providers/presets.json`, the records used for matching, and in the unit/integration tests that verify that matching.
+- **Summary:**
+  - Root cause: `tsc` rewrites `dist/cli/bin.js` with mode 664 on every build. The `npm link` symlink (`~/.local/bin/mm`) then fails with "Permission denied". A `postbuild` script now sets the file to 755 (via node, so it's cross-platform).
+  - Docs now point to `presets.json` instead of naming the hosts. The PROVIDERS.md preset-format example uses a fictional `example-hosting` preset.
+- **Grade / mode:** S — solo.
+- **Verification:**
+  - Reproduced: `mm -h` gave "Permission denied" and `dist/cli/bin.js` had mode 664.
+  - After the fix: `npm run build` gives mode 755. `mm -h`, `mm --help`, `mm -V` (0.1.0) and `mm help discover` print the expected help. Every subcommand's `-h` was checked on the built CLI.
+  - `git grep -i websupport.sk` outside presets.json and tests leaves only the official help-page link in the PROVIDERS.md table.
+  - Not verified: Windows (the chmod there is a no-op, which is harmless).
+- **Deviations:** none. Noted: `mm` with no arguments prints the help to stderr and exits 1 (commander's default). It is unchanged.

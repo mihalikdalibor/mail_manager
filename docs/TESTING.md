@@ -36,6 +36,8 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 - `tests/integration/seed.ts` creates `mm-test` and `APPEND`s synthetic messages: varied senders/domains, dates across years, sizes (1 KB → 5 MB), with/without attachments, seen/flagged states.
 - Cleanup after run: delete `mm-test` contents.
 - Keep runs small — provider rate limits (Gmail bandwidth/connection limits).
+- **IMAP session test** (`tests/integration/imap-session.test.ts`, needs `MM_TEST_IMAP_USER` + `MM_TEST_IMAP_PASS`; `MM_TEST_IMAP_HOST` only as a fallback when discovery finds nothing): the host comes from discovery (real DNS, no HTTP) → login → features (UIDPLUS, MOVE, QUOTA on Websupport) → logout, then **exactly one** wrong-password attempt → `auth-failed` with the generic message. All stdout/stderr and every inspected session/error is checked for the password.
+- **One wrong attempt per run, no retries.** Providers ban IPs after repeated failures (fail2ban). Never add more wrong-password cases and never enable vitest `retry` in `vitest.integration.config.ts` or that file. Don't run the suite in a loop.
 
 ## IMAP server differences to test against
 
@@ -57,5 +59,19 @@ Target at least: Gmail, one SK/CZ provider (Seznam), one standard Dovecot (later
 
 ## Security tests
 
-- Grep all test output/logs for the test password → must be absent.
+- Grep all test output/logs for the test password → must be absent. Leak check without printing the value (run from the repo root; `$SCRATCH` = any temp dir):
+
+  ```bash
+  npx vitest run --config vitest.integration.config.ts --reporter=verbose > "$SCRATCH/it.log" 2>&1; echo "exit $?"
+  node --input-type=module -e "
+  import { config } from 'dotenv'; import { readFileSync } from 'node:fs';
+  const e = {}; config({ path: '.env.local', processEnv: e, quiet: true });
+  const u = e.MM_TEST_IMAP_USER ?? '', p = e.MM_TEST_IMAP_PASS ?? '';
+  const log = readFileSync(process.argv[1], 'utf8');
+  if (!log.includes('imap session (live)')) { console.log('IMAP suite did not run'); process.exit(3); }
+  const forms = [p, JSON.stringify(p).slice(1, -1), Buffer.from('\\0' + u + '\\0' + p).toString('base64'), Buffer.from(p).toString('base64')];
+  console.log(p.length < 4 ? 'PASS not set' : forms.some((f) => f.length >= 4 && log.includes(f)) ? 'LEAK' : 'clean');" "$SCRATCH/it.log"
+  ```
+
+- Unit tests use canary passwords/server texts and assert they never appear in any error message, `String`, `util.inspect`, JSON or CLI text (`tests/unit/imap-*.test.ts`).
 - RLS: two Supabase users; B reads A's rows → 0 rows; B inserts with A's user_id → rejected.

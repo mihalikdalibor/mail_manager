@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat-square" alt="Version 0.1.0">
+  <img src="https://img.shields.io/badge/version-0.2.0-blue?style=flat-square" alt="Version 0.2.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.1.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`) and IMAP settings discovery (`mm discover`) exist; connecting to mailboxes (IMAP login) is not implemented yet. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.2.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors) exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -90,7 +90,7 @@ npm run build && npm link
 mm --help
 ```
 
-Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`. Mailbox connection arrives with M1b-2 — see the roadmap.
+Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`. The IMAP login is in the core library (M1b-2a); the commands that use it (`mm account add/test`) arrive with M1c — see the roadmap.
 
 ### Environment
 
@@ -134,10 +134,12 @@ Config is read from `.env.local`, then `.env` (real environment variables win). 
 
 ```
 src/
-  cli/          thin shell: bin.ts → buildProgram(), commands/ (auth, doctor, keygen)
+  cli/          thin shell: bin.ts → buildProgram(), commands/ (auth, doctor, keygen, discover), error texts
   core/         all logic: config, crypto, master key, credentials, auth, doctor
     db/         repository interfaces (repos.ts); Supabase code only in db/supabase/
-    imap/ providers/ filters/   placeholders for M1b+
+    providers/  IMAP settings discovery + provider presets (presets.json)
+    imap/       secure IMAP session, server features, typed connection errors
+    filters/    placeholder for M3
   server/       placeholder for the M6 web UI
 supabase/migrations/   SQL migrations (applied with npm run db:push)
 tests/unit/            Vitest unit tests

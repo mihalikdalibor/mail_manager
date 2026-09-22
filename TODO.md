@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-2 IMAP session (not started)** — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed)
+**Current milestone: M1b-2b Login guard (not started)** — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed)
 
 ---
 
@@ -57,13 +57,13 @@ Split on 2026-09-22 into M1b-1 → M1b-2 → M1b-3 (each its own assignment).
 
 ### M1b-1 — Provider discovery (no login)
 
-Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix** (primary for custom domains; e.g. example-test-domain.eu → mx10.websupport.sk) → ISPDB → autoconfig (**HTTPS only**: `autoconfig.<domain>` + `<domain>/.well-known/autoconfig`) → SRV `_imaps._tcp` → manual. XML parsed with **fast-xml-parser**. Only implicit-TLS / 993 results accepted.
+Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix** (primary for custom domains: the domain's MX host is matched against the preset records) → ISPDB → autoconfig (**HTTPS only**: `autoconfig.<domain>` + `<domain>/.well-known/autoconfig`) → SRV `_imaps._tcp` → manual. XML parsed with **fast-xml-parser**. Only implicit-TLS / 993 results accepted.
 
 - [x] **User:** add `MM_TEST_IMAP_USER=test@example-test-domain.eu` to `.env.local` (password not needed until M1b-2)
-- [x] `src/core/providers/presets.json` + zod schema — id, name, domains, `mxSuffixes`, imap host/port, `altHosts`, auth, hint, helpUrl, `verified`, optional `blocked` reason. SK/CZ: Websupport (`imap.m1.websupport.sk`, alt `imap.websupport.sk`), WebHouse (`mail.webhouse.sk`), Webglobe (`mail.webglobe.cz`, `imap.webglobe.sk`), Active24 (`email.active24.com`), HostCreators (`imap.hostcreators.sk`), Forpsi (`imap.forpsi.com`), Wedos (per-mailbox `imap-*.wedos.net` → manual host), Seznam/Email.cz/Post.cz (`imap.seznam.cz`), Zoznam, Azet, Centrum; global: Gmail (+ Google Workspace MX), **Outlook (+ M365 MX; blocked: XOAUTH2 only — LOGINDISABLED, until M6 OAuth)**, Yahoo, iCloud, GMX, Hostinger. Each preset verified against an official help page (`helpUrl` + `verified: true`) or marked `verified: false`
+- [x] `src/core/providers/presets.json` + zod schema — id, name, domains, `mxSuffixes`, imap host/port, `altHosts`, auth, hint, helpUrl, `verified`, optional `blocked` reason. SK/CZ: Websupport (host in `presets.json`), WebHouse (`mail.webhouse.sk`), Webglobe (`mail.webglobe.cz`, `imap.webglobe.sk`), Active24 (`email.active24.com`), HostCreators (`imap.hostcreators.sk`), Forpsi (`imap.forpsi.com`), Wedos (per-mailbox `imap-*.wedos.net` → manual host), Seznam/Email.cz/Post.cz (`imap.seznam.cz`), Zoznam, Azet, Centrum; global: Gmail (+ Google Workspace MX), **Outlook (+ M365 MX; blocked: XOAUTH2 only — LOGINDISABLED, until M6 OAuth)**, Yahoo, iCloud, GMX, Hostinger. Each preset verified against an official help page (`helpUrl` + `verified: true`) or marked `verified: false`
 - [x] `src/core/providers/discover.ts` — injectable DNS/fetch, per-lookup timeouts; failing sources fall through (never throw); MX sorted by preference, suffix matched on label boundary; `%EMAILADDRESS%`/`%EMAILLOCALPART%`/`%EMAILDOMAIN%` substituted; STARTTLS/143-only results skipped with a notice; redirects only to https; domain lowercased + IDN → ASCII. Result: source + provider + host/port/username + altHosts + verified + blocked + notices, or `manual` with the list of tried sources
 - [x] Unit tests: each source, order/fallthrough, suffix boundary, STARTTLS skip, placeholders, malformed XML, timeouts, Outlook blocked, IDN
-- [x] Three tiers (user, 2026-09-22): (1) autodetect as above (MX → IMAP mapping, e.g. `mx10/mx20.websupport.sk` → `imap.m1.websupport.sk`); (2) autodetect fails → user **picks the provider** from the preset list (SK/CZ first, blocked shown disabled); (3) proxied DNS / provider not listed → **manual IMAP host** (+ username, default = address). Core stays prompt-free (`pickableProviders`, `settingsFromPreset`, `manualSettings`); prompts in `src/cli/prompts/imap-settings.ts` (reused by M1c)
+- [x] Three tiers (user, 2026-09-22): (1) autodetect as above (MX → IMAP mapping through the preset records in `presets.json`); (2) autodetect fails → user **picks the provider** from the preset list (SK/CZ first, blocked shown disabled); (3) proxied DNS / provider not listed → **manual IMAP host** (+ username, default = address). Core stays prompt-free (`pickableProviders`, `settingsFromPreset`, `manualSettings`); prompts in `src/cli/prompts/imap-settings.ts` (reused by M1c)
 - [x] **GeoIP hint** (`geoIpNotice`) — changed by the user 2026-09-22: **not** shown with discovery results; printed only when a connection fails (from M1b-2): "connection not successful — first check the address, password and IMAP server; if they're right, check whether the mailbox has GeoIP security on; if so, allow [country] or turn it off while Mail Manager connects". CLI names this computer's country; server variant takes an optional region (hosting not decided: local now, later Vercel or VPS)
 - [x] `mm discover <email>` — prints the result, unverified/blocked warnings, hint + helpUrl; nothing found → picker/manual in a TTY, exit 1 without TTY or on Cancel; no login, no password prompt
 - [x] Integration test (skips without `MM_TEST_IMAP_USER`): real DNS → Websupport via MX
@@ -72,17 +72,30 @@ Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix
 - [x] `docs/PROVIDERS.md` — new discovery order, preset format, SK/CZ table with verification status, privacy note (domain sent to Mozilla ISPDB)
 - **Acceptance:** `mm discover` on the test address → Websupport via MX without manual host; gmail.com → Gmail; outlook.com → blocked notice; unknown domain → tried sources + provider picker + manual entry (TTY); no GeoIP text in discovery output; unit + integration tests, lint, typecheck, build green.
 
-### M1b-2 — IMAP session (needs M1b-1)
+### M1b-2a — IMAP session (needs M1b-1) ✅
 
-- [ ] **User:** add `MM_TEST_IMAP_PASS` to `.env.local` (`MM_TEST_IMAP_HOST=imap.m1.websupport.sk` only as fallback; host normally from discovery)
-- [ ] imapflow dependency; `src/core/imap/session.ts` — connect (`secure: true`, 993, `tls.rejectUnauthorized`, `disableAutoIdle`, timeouts, redacting logger, `clientInfo`), post-auth capabilities, logout
-- [ ] `ServerFeatures` from `capabilities` + `enabled` with IMAP4rev2 folding (docs/IMAP.md §3.2, §9 M1); raw capability list kept for `mail_accounts.capabilities`
-- [ ] Error mapping: auth failed, host not found, TLS, timeout, OAuth-only/LOGINDISABLED, `MissingServerExtension` — no password in any message; timeout / connection refused → include the GeoIP hint (`geoIpNotice`)
-- [ ] Provider restrictions analysis in `docs/PROVIDERS.md` (connection limits, auth, capabilities per provider, brute-force/IP-ban risk, Gmail limits, Outlook OAuth); update docs/IMAP.md §7 with the measured Websupport capabilities
-- [ ] Integration tests on test@example-test-domain.eu: login + capabilities recorded; wrong password → auth error; no password in output
-- **Acceptance:** login works on the test mailbox with the discovered host; features built correctly (unit-tested with fixture capability sets); errors mapped; no password in output.
+Decisions (2026-09-22): split into M1b-2a (session) → M1b-2b (login guard). Failed logins use **one generic message** (wrong password / wrong address / host not found / timeout / refused / reset / GeoIP / auth-blocked — so the app can't be used to probe hosts or accounts); only no internet on our side, invalid TLS certificate, OAuth-only provider, too many attempts and server-reported "temporarily unavailable" get their own message. Core always keeps the precise typed reason. SSRF/DNS-rebinding guard deferred to M6a. Live probe 2026-09-22: Websupport = Dovecot, TLS 1.3, UIDPLUS/MOVE/QUOTA/STATUS=SIZE/CONDSTORE/QRESYNC/ESEARCH/LIST-STATUS/COMPRESS, **no SPECIAL-USE**, no OBJECTID/IMAP4rev2.
 
-### M1b-3 — Test ground (needs M1b-2)
+- [x] **User:** add `MM_TEST_IMAP_PASS` to `.env.local` (`MM_TEST_IMAP_HOST` only as fallback; host normally from discovery)
+- [x] imapflow dependency (exact pin — 2.0.x is a fresh TS rewrite); `src/core/imap/session.ts` — connect (`secure: true`, 993, `tls.rejectUnauthorized` + `minVersion: 'TLSv1.2'`, `disableAutoIdle`, connection/greeting/socket timeouts, logger off or redacting, own `clientInfo` overriding imapflow's vendor/support-url), post-auth capabilities, logout; **never retries a failed login**; password dropped from the client's options after auth; password/username with CR/LF/NUL rejected before connecting
+- [x] `ServerFeatures` from `capabilities` + `enabled` with IMAP4rev2 folding (docs/IMAP.md §3.2, §9 M1); raw capability record sanitised (name pattern, value boolean|number, count/length caps) before it can reach `mail_accounts.capabilities`; server ID info and server response text treated as untrusted (never printed raw)
+- [x] Error mapping to typed reasons (auth failed, `[ALERT]` app-password required, host not found, no internet, refused/reset/timeout, TLS certificate, OAuth-only/LOGINDISABLED, RFC 5530 codes `UNAVAILABLE`/`EXPIRED`/`CONTACTADMIN`/`LIMIT`/`PRIVACYREQUIRED`, `ETHROTTLE`, `MissingServerExtension`, unexpected); CLI text per the generic/distinct split above, generic text includes the GeoIP hint (`geoIpNotice`) and the app-password hint; no password or raw server text in any message, `String(err)`, `util.inspect(err)` or JSON of the error
+- [x] Side fixes: `src/cli/bin.ts` prints `err.message` only for known user-facing error classes (else "Unexpected error"); `AccountsRepo.get(id)` validates the UUID; `recordCheck` takes the sanitised capability type; CLAUDE.md "User-facing errors" rule updated for the generic/distinct split
+- [x] Provider restrictions analysis in `docs/PROVIDERS.md` (connection limits, auth, capabilities per provider, brute-force/IP-ban risk incl. fail2ban-style bans, Gmail limits, Outlook OAuth); update docs/IMAP.md §7 with the measured Websupport capabilities; DB-injection audit result in docs/SECURITY.md (supabase-js parameterised builders only; no `.or()`/raw filters/RPC)
+- [x] Integration tests on test@example-test-domain.eu: discovered host → login + capabilities + features; exactly **one** wrong-password attempt per run → generic auth error; canary check: the test password appears in no output, error or log line
+- **Acceptance:** login works on the test mailbox with the discovered host; features built correctly (unit-tested with fixture capability sets incl. the measured Websupport set); every error reason mapped and unit-tested with a canary password; no password in output; lint, typecheck, unit + integration tests, build green.
+
+### M1b-2b — Login guard (needs M1b-2a; before M1c)
+
+Decisions (2026-09-22): app-level guard is the primary brute-force layer (works on any hosting); fail2ban / Cloudflare WAF are outer layers added when hosted (M6a). Attempts counted per **client IP** and per **target mailbox** (host+username).
+
+- [ ] `src/core/security/login-guard.ts` — policy: failures 1–2 free; from the 3rd → `challenge-required` (server: Cloudflare Turnstile in M6a; CLI: short delay instead); 5 failures within 15 min → `too-many-attempts` for 15 min; 3 lockouts from one IP within 24 h → IP blocked 24 h; 3 IP blocks within 30 days → **permanent** block ("couldn't connect — contact our support"). Success resets the mailbox counter. Injectable clock; store behind an interface (in-memory now)
+- [ ] User is told about every block in plain words with the time it ends (or "contact support" when permanent)
+- [ ] Block-event record (time, IP, reason, attempt count, target as HMAC of host+username — no plain address) + `SecurityEventSink` interface; one structured log line per block, fail2ban/Cloudflare-parsable; retention note (IPs are personal data, e.g. 90 days)
+- [ ] Unit tests: every threshold, window expiry, per-IP vs per-mailbox counting, reset on success, permanent tier, event records
+- **Acceptance:** policy fully unit-tested with a fake clock; messages name the unblock time; no plain address or password in event records.
+
+### M1b-3 — Test ground (needs M1b-2a)
 
 - [ ] Test ground: integration helpers (env, **folder guard: only `mm-test`**), deterministic synthetic mail generator (seeded; Slovak diacritics, varied senders/domains, dates 2019–2026, sizes 1 KB–5 MB, attachments, seen/flagged, `X-MM-Test-Seed` header) + manifest of expected facts, `npm run test:seed` (APPEND with internal dates), `npm run test:unseed`
 - [ ] Integration tests on test@example-test-domain.eu: seeded count/manifest match, guard refuses other folders
@@ -90,7 +103,7 @@ Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix
 
 ## M1c — Account commands (needs M1a + M1b)
 
-- [ ] `mm account add [email]` — discover → (`chooseImapSettings`: provider picker / manual host from M1b-1) → hints → hidden password → test login (timeout/refused → GeoIP hint) → encrypt → save
+- [ ] `mm account add [email]` — discover → (`chooseImapSettings`: provider picker / manual host from M1b-1) → hints → hidden password → test login through the login guard (M1b-2b; generic failure message incl. GeoIP hint) → encrypt → save
 - [ ] `mm account list` / `test` / `remove` (confirm) / `update-password`
 - [ ] Integration test: add + test account on test@example-test-domain.eu; wrong password saves nothing
 - [ ] Follow-ups from the M1a review (2026-09-22):
@@ -154,6 +167,8 @@ Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix
 ## M6 — Beta → [doc](docs/milestones/M6-beta.md)
 
 - [ ] M6a Local HTML page (Fastify, localhost, CSP, CSRF)
+  - [ ] Login-guard hosting layer (from M1b-2b): persistent store + `security_events` table (RLS, service role, retention job), Cloudflare Turnstile on `challenge-required`, real client IP from `CF-Connecting-IP` only behind Cloudflare, Cloudflare WAF rate-limit rules / fail2ban (Cloudflare action) on the block log lines, support unblock procedure
+  - [ ] SSRF / DNS-rebinding guard (deferred from M1b-2a): resolve the IMAP host once, refuse loopback/private/link-local/CGNAT/metadata IPs, connect to the resolved IP with `servername` = host; server hides host-not-found vs refused vs timeout (generic message)
 - [ ] M6c IMAP→IMAP migration (old → new address)
 - [ ] M6b `mm worker` + jobs (scheduled backup/cleanup)
 - [ ] M6d OAuth2 Gmail + Microsoft

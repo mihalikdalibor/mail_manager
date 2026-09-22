@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { errorText } from './error-text.js';
 import { buildProgram } from './index.js';
 
 function flush(stream: NodeJS.WriteStream): Promise<void> {
@@ -9,7 +10,8 @@ async function main(): Promise<void> {
   try {
     await buildProgram().parseAsync(process.argv);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : 'Unexpected error');
+    // Only messages written for users; raw library/server text never reaches the terminal.
+    console.error(errorText(err));
     process.exitCode = 1;
   }
   // A finished command must not linger: library timers (e.g. auth-js token-refresh

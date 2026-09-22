@@ -29,7 +29,7 @@ Split on 2026-09-22 into **M1b-1** discovery → **M1b-2** IMAP session → **M1
 
 Three tiers (user decision 2026-09-22):
 
-1. **Autodetect** (`src/core/providers/discover.ts`): preset by email domain → preset by **MX suffix** (e.g. `mx10.websupport.sk` → Websupport → `imap.m1.websupport.sk`) → Mozilla ISPDB → HTTPS autoconfig (`autoconfig.<domain>`, then `<domain>/.well-known/autoconfig`) → DNS SRV `_imaps._tcp`. Sequential, stops at the first hit. Only implicit TLS on 993 is accepted.
+1. **Autodetect** (`src/core/providers/discover.ts`): preset by email domain → preset by **MX suffix** (the domain's MX host → matching preset in `presets.json` → its IMAP host) → Mozilla ISPDB → HTTPS autoconfig (`autoconfig.<domain>`, then `<domain>/.well-known/autoconfig`) → DNS SRV `_imaps._tcp`. Sequential, stops at the first hit. Only implicit TLS on 993 is accepted.
 2. **Provider picker** (`src/cli/prompts/imap-settings.ts`): when autodetect finds nothing, the user picks from the presets (SK/CZ first, blocked ones shown disabled).
 3. **Manual entry**: IMAP host (validated host name, no IP/localhost/port) + username (default = full address) — for proxied DNS or unlisted providers.
 
@@ -49,10 +49,19 @@ Three tiers (user decision 2026-09-22):
 | domain doesn't exist                      | hint + picker / manual → 0; Cancel → 1        | 1             |
 | invalid email                             | 1                                             | 1             |
 
-### M1b-2 — IMAP session (next)
+### M1b-2a — IMAP session (implemented)
 
-- `imap/session.ts`: imapflow connect (993, cert verify, timeouts), post-auth capabilities → `ServerFeatures`, error mapping incl. Outlook's `LOGINDISABLED` / XOAUTH2-only, GeoIP hint on timeout/refused.
-- Provider restrictions analysis in `docs/PROVIDERS.md`.
+- `src/core/imap/session.ts` `openSession()`: imapflow 2.0.5 (exact pin), implicit TLS 993 + cert verify + TLS 1.2+, logger off, client ID name+version only, timeouts (connect 15 s, greeting 10 s, socket 5 min), **one attempt, no retry**, password dropped from the client after connect, CR/LF/NUL rejected before connecting. `ImapSession` exposes `features`, sanitised `capabilities`, `serverName`, `closed`/`lastErrorReason`, `logout()` (never throws).
+- `src/core/imap/features.ts`: `ServerFeatures` (rev2 folding only when advertised **and** enabled), `sanitizeCapabilities` (bounded `CapabilityRecord` for `mail_accounts.capabilities`).
+- `src/core/imap/errors.ts`: `ImapSessionError` (reason + whitelisted code, no server text) and `mapImapError`. `EAI_AGAIN`/`ENETUNREACH` are reported as "no internet" only after a connectivity check fails.
+- Error messages (user decision 2026-09-22): one **generic** message for everything that could help probe accounts or hosts (wrong password/address, host not found, refused/reset/timeout, GeoIP, app password, password expired) — it includes the GeoIP and app-password hints and no code. Distinct messages: no internet, TLS certificate, OAuth-only, server unavailable/throttled, invalid input (`src/cli/imap-errors.ts`).
+- `src/cli/bin.ts` (and `mm login`/`logout`/`whoami`) print only whitelisted core errors (`src/cli/error-text.ts`).
+- Repo: UUID guard on ids, capabilities schema-checked.
+- Measured Websupport capabilities in IMAP.md §7 (no SPECIAL-USE); provider restrictions in PROVIDERS.md.
+
+### M1b-2b — Login guard (next)
+
+- Attempt policy per client IP and per target mailbox: 3 failures → challenge (Turnstile when hosted, delay in the CLI), 5 in 15 min → 15 min lock, 3 locks from one IP in 24 h → 24 h IP block, 3 IP blocks in 30 days → permanent ("contact support"). Block-event records (time, IP, reason, attempts, HMAC of the target) behind a sink interface; in-memory store now, persistent store + Cloudflare/fail2ban in M6a.
 
 ### M1b-3 — Test ground
 

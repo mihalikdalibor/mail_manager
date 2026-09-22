@@ -59,7 +59,9 @@ export function loadEnvFiles(root: string = projectRoot(), target: EnvSource = p
     const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
     // A missing file is normal (.env usually doesn't exist); anything else is surfaced by code only.
     if (result.error && code !== 'ENOENT') {
-      throw new Error(`Cannot read ${name} in ${root} (${code ?? 'unknown error'})`);
+      throw new ConfigError([
+        { variable: name, problem: `cannot be read in ${root} (${code ?? 'unknown error'})` },
+      ]);
     }
   }
 }

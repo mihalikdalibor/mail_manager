@@ -2,6 +2,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import type { EncryptedSecret } from '../../crypto.js';
 import {
+  MAX_CAPABILITIES,
+  MAX_CAPABILITY_NAME,
+  type CapabilityRecord,
+} from '../../imap/features.js';
+import {
   RepoError,
   type AccountsRepo,
   type MailAccount,
@@ -10,6 +15,20 @@ import {
 } from '../repos.js';
 
 const TABLE = 'mail_accounts';
+
+// Same bounds as sanitizeCapabilities (src/core/imap/features.ts): the jsonb column only ever
+// holds a small map of capability name → true | non-negative integer.
+const capabilitiesSchema = z
+  .record(
+    z
+      .string()
+      .max(MAX_CAPABILITY_NAME)
+      .regex(/^[A-Z0-9][A-Z0-9=+\-._/]*$/i),
+    z.union([z.literal(true), z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)]),
+  )
+  .refine((caps) => Object.keys(caps).length <= MAX_CAPABILITIES);
+
+const accountId = z.uuid();
 
 const rowSchema = z.object({
   id: z.string(),
@@ -25,7 +44,7 @@ const rowSchema = z.object({
   secret_iv: z.string(),
   secret_tag: z.string(),
   key_version: z.number().int().positive(),
-  capabilities: z.record(z.string(), z.unknown()).nullable(),
+  capabilities: capabilitiesSchema.nullable(),
   created_at: z.string(),
   updated_at: z.string(),
   last_checked_at: z.string().nullable(),
@@ -37,7 +56,8 @@ export type MailAccountRow = z.infer<typeof rowSchema>;
 export function rowToAccount(raw: unknown): MailAccount {
   const parsed = rowSchema.safeParse(raw);
   if (!parsed.success) {
-    const fields = [...new Set(parsed.error.issues.map((i) => i.path.join('.')))].join(', ');
+    // Top-level column names only: deeper paths could contain stored keys (e.g. capability names).
+    const fields = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? '')))].join(', ');
     throw new RepoError('unknown', `Unexpected mail_accounts row shape (${fields})`);
   }
   const r = parsed.data;
@@ -129,6 +149,8 @@ export class SupabaseAccountsRepo implements AccountsRepo {
   }
 
   async get(id: string): Promise<MailAccount | null> {
+    // Not a UUID → can't exist; skip the request (and any odd input reaching PostgREST).
+    if (!accountId.safeParse(id).success) return null;
     const { data, error } = await this.client
       .from(TABLE)
       .select()
@@ -149,18 +171,22 @@ export class SupabaseAccountsRepo implements AccountsRepo {
   }
 
   async updateSecret(id: string, secret: EncryptedSecret): Promise<boolean> {
+    if (!accountId.safeParse(id).success) return false;
     return this.updateOne(id, secretColumns(secret));
   }
 
-  async recordCheck(
-    id: string,
-    capabilities: Record<string, unknown>,
-    checkedAt: Date,
-  ): Promise<boolean> {
-    return this.updateOne(id, { capabilities, last_checked_at: checkedAt.toISOString() });
+  async recordCheck(id: string, capabilities: CapabilityRecord, checkedAt: Date): Promise<boolean> {
+    if (!accountId.safeParse(id).success) return false;
+    const parsed = capabilitiesSchema.safeParse(capabilities);
+    if (!parsed.success) throw new RepoError('unknown', 'Invalid capabilities record');
+    return this.updateOne(id, {
+      capabilities: parsed.data,
+      last_checked_at: checkedAt.toISOString(),
+    });
   }
 
   async remove(id: string): Promise<boolean> {
+    if (!accountId.safeParse(id).success) return false;
     const { data, error } = await this.client.from(TABLE).delete().eq('id', id).select('id');
     if (error) throw toRepoError(error);
     return data.length === 1;

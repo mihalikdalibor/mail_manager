@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-2 (IMAP session) — not started.** M0, M1a (v0.0.1) and M1b-1 provider discovery (v0.1.0, C-004…C-008) done and reviewed; then M1b-3 (test ground). `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b-2b (login guard) — not started.** M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008) and M1b-2a IMAP session (v0.2.0, C-009, C-010) done and reviewed; then M1b-3 (test ground). `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
@@ -24,10 +24,12 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 ## User-facing errors (target users are non-technical)
 
 - Users are mostly amateurs who want to tidy mailboxes and download backups: **simple, working, well-managed errors**.
-- Every error the user can hit says **what happened and what to do next**, in plain words. Raw codes (`ENOTFOUND`, `AUTHENTICATIONFAILED`, HTTP status) may follow in brackets, never alone.
-- Tell apart the causes a user can fix: typo in the address / domain doesn't exist, DNS error at the domain, no internet, wrong password, provider needs an app password or OAuth, blocked by GeoIP, server down. Core returns a typed reason; the CLI/server shell maps it to text.
+- Every error the user can hit says **what happened and what to do next**, in plain words. Raw codes (`ENOTFOUND`, HTTP status) may follow in brackets in _distinct_ messages, never alone — and never in the generic login message below.
+- Core returns a typed reason; the CLI/server shell maps it to text (`src/cli/imap-errors.ts`, `src/cli/error-text.ts`).
+- **IMAP login/connection failures** (decided 2026-09-22): wrong password, wrong address, host not found, unreachable/refused/reset/timeout (GeoIP, fail2ban bans), app password needed, password expired, "contact admin" all get **one generic message** (address + password/app password + IMAP server + GeoIP hint, no code), so the app can't be used to probe accounts or hosts ("password expired" would confirm the password). Distinct messages only for: no internet on our side (confirmed by a connectivity check), invalid TLS certificate, OAuth-only provider, server-reported unavailable/throttled, our own input validation, too many attempts (login guard).
+- **Discovery** (before any login, public DNS data) keeps its distinct messages: domain doesn't exist, DNS error at the domain, DNS unreachable.
 - Hints are informational, never a dead end: a check that could be wrong (e.g. "domain doesn't exist" for an expired domain whose mailbox still works) must still let the user continue (pick the provider / enter the host). Don't warn about missing MX records — IMAP doesn't depend on MX.
-- Never show stack traces or raw library/server messages (they can leak data and confuse users); unexpected errors get a generic message.
+- Never show stack traces or raw library/server messages (they can leak data and confuse users); unexpected errors get a generic message. `src/cli/bin.ts` prints only whitelisted core error classes (`errorText`); anything else is "Unexpected error".
 - **GeoIP hint on failed IMAP connections** (`geoIpNotice` in `src/core/providers/geoip.ts`): the CLI names "this computer's" country; the server passes `{ kind: 'server', region }`. **Wherever the server is deployed (local now, later Vercel or a VPS), configure that hosting country so the message names the right country** — without it the text falls back to "the country where the Mail Manager server is hosted".
 
 ## Safety rules (destructive operations)
@@ -47,7 +49,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 - Never log passwords, OAuth tokens, `MM_MASTER_KEY`, or message bodies. Redact in errors.
 - `MM_MASTER_KEY` lives only in env (`.env.local` or `.env`, both gitignored) — never in Supabase, never in code.
 - CLI uses the Supabase publishable key (formerly "anon") + user JWT. Service-role key is server-side only (M6+).
-- IMAP: implicit TLS (993) only, certificate verification on. No plaintext fallback.
+- IMAP: implicit TLS (993) only, certificate verification on. No plaintext fallback. All logins go through `openSession` (`src/core/imap/session.ts`): TLS 1.2+, logger off, password dropped from the client after connect, **never an automatic retry** of a failed login (provider IP bans / brute force).
 - This repo is **public**. Never write the real test mailbox address/domain or its IMAP host into tracked files (docs, `TODO.md`, `.claude/changes.md`, code, comments, commit messages). Use a placeholder like `test@example-test-domain.eu` instead — real values belong only in the gitignored `.env.local`.
 
 ## Conventions

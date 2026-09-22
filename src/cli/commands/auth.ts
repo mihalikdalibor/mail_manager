@@ -2,6 +2,7 @@ import { input, password } from '@inquirer/prompts';
 import type { Command } from 'commander';
 import type { AuthService } from '../../core/auth.js';
 import { ConfigError, loadEnvFiles } from '../../core/config.js';
+import { errorText } from '../error-text.js';
 import {
   createSupabaseServices,
   FileSessionStorage,
@@ -24,8 +25,8 @@ function handleError(err: unknown): void {
     process.exitCode = 130;
     return;
   }
-  // Core errors (AuthError, ConfigError) carry safe, value-free messages.
-  console.error(err instanceof Error ? err.message : 'Unexpected error');
+  // Only core errors written for users (AuthError, ConfigError, …) show their message.
+  console.error(errorText(err));
   process.exitCode = 1;
 }
 

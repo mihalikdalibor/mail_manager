@@ -334,7 +334,9 @@ Decided with the user on 2026-09-22: **always tell the user which Trash is used 
 
 ## 7. Expected capabilities by provider (verify in M1)
 
-Best-known values; **not measured by this project yet**. Replace with real `mm account test` output.
+Best-known values, except **Websupport, measured 2026-09-22** (post-login, `openSession`; see below the table). Replace the others with real `mm account test` output as test accounts become available.
+
+**Websupport (Dovecot; host from the preset in `presets.json`) — measured 2026-09-22.** TLS 1.3. Post-login capabilities: `IMAP4rev1 SASL-IR LOGIN-REFERRALS ID ENABLE IDLE SORT SORT=DISPLAY THREAD=REFERENCES THREAD=REFS THREAD=ORDEREDSUBJECT MULTIAPPEND URL-PARTIAL CATENATE UNSELECT CHILDREN NAMESPACE UIDPLUS LIST-EXTENDED I18NLEVEL=1 CONDSTORE QRESYNC ESEARCH ESORT SEARCHRES WITHIN CONTEXT=SEARCH LIST-STATUS BINARY MOVE SNIPPET=FUZZY PREVIEW=FUZZY PREVIEW STATUS=SIZE SAVEDATE LITERAL+ NOTIFY COMPRESS=DEFLATE QUOTA`; `ENABLE` result: `CONDSTORE` only (no UTF8=ACCEPT). **No SPECIAL-USE**, no OBJECTID, no IMAP4rev2. This set is the unit-test fixture in `tests/unit/imap-features.test.ts`.
 
 | Capability  | Gmail                       | Outlook / M365                        | Yahoo          | iCloud | Dovecot (typical) |
 | ----------- | --------------------------- | ------------------------------------- | -------------- | ------ | ----------------- |
@@ -358,6 +360,7 @@ Takeaways:
 
 - **UIDPLUS and IDLE are effectively universal** on the providers we target. The "refuse permanent delete" branch will be rare but must exist.
 - **STATUS=SIZE is rare**, so the M2 size path will mostly be the `FETCH RFC822.SIZE` fallback. Performance there matters (M2 open question).
+- **SPECIAL-USE isn't universal either**: Websupport (Dovecot) doesn't advertise it, so Trash/Sent/Junk detection must fall back to names + user confirmation there (§6.5).
 - **Outlook is the most minimal**: no QUOTA, no LIST-STATUS, no ESEARCH, no CONDSTORE. Test fallbacks against it once OAuth exists (M6).
 
 ---
@@ -379,9 +382,9 @@ Takeaways:
 
 M1 (`imap/session.ts`):
 
-- [ ] Connect with `secure: true`, port 993, `tls.rejectUnauthorized: true`, `disableAutoIdle: true`, `logger` redacting (imapflow already hides credentials in logs; still wrap it).
-- [ ] Build `ServerFeatures` from `capabilities` + `enabled` with rev2 folding. Store the raw list in `mail_accounts.capabilities`. Print it in `mm account test`.
-- [ ] Map errors: `AUTHENTICATIONFAILED`, `LOGINDISABLED`, TLS errors, `CONNECT_TIMEOUT`, `MissingServerExtension`.
+- [x] Connect with `secure: true`, port 993, `tls.rejectUnauthorized: true` + `minVersion: 'TLSv1.2'`, `disableAutoIdle: true`, `logger: false` (M1b-2a: `openSession` in `src/core/imap/session.ts`; no retry, password dropped from the client after connect).
+- [x] Build `ServerFeatures` from `capabilities` + `enabled` with rev2 folding (`src/core/imap/features.ts`; folding only when IMAP4rev2 is advertised **and** enabled). The sanitised list (`CapabilityRecord`) is what `recordCheck` stores in `mail_accounts.capabilities`. Printing it in `mm account test`: M1c.
+- [x] Map errors (`src/core/imap/errors.ts`): `AUTHENTICATIONFAILED` and the other RFC 5530 codes, OAuth-only (LOGINDISABLED and no PLAIN/LOGIN), TLS errors, timeouts, closed-after-connect (BYE → generic "reset": imapflow 2.0.5 drops the BYE response code), `MissingServerExtension`, Node socket/DNS codes.
 - [ ] Carry UIDVALIDITY as `bigint` → string at the zod/DB boundary.
 
 M2:

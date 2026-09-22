@@ -1,9 +1,12 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, it, expect } from 'vitest';
 import {
   accountToInsertRow,
   rowToAccount,
+  SupabaseAccountsRepo,
   toRepoError,
 } from '../../src/core/db/supabase/accounts-repo.js';
+import type { CapabilityRecord } from '../../src/core/imap/features.js';
 import { RepoError } from '../../src/core/db/repos.js';
 
 type NewAccountInput = Parameters<typeof accountToInsertRow>[0];
@@ -194,5 +197,74 @@ describe('toRepoError', () => {
     const err = toRepoError({ message: 'LEAKCANARY something odd' });
     expect(err.code).toBe('unknown');
     expect(err.message).not.toContain('LEAKCANARY');
+  });
+});
+
+describe('rowToAccount capabilities', () => {
+  it('accepts a sanitised capability map (true / non-negative integers)', () => {
+    const caps = { UIDPLUS: true, 'STATUS=SIZE': true, APPENDLIMIT: 35_651_584 };
+    expect(rowToAccount(validRow({ capabilities: caps })).capabilities).toEqual(caps);
+  });
+
+  it.each([
+    ['a nested object value', { UIDPLUS: { x: 1 } }],
+    ['a string value', { UIDPLUS: 'yes' }],
+    ['false', { UIDPLUS: false }],
+    ['a negative number', { APPENDLIMIT: -1 }],
+    ['a name with a space', { 'UID PLUS': true }],
+    ['a name with a control character', { 'UID\nPLUS': true }],
+    ['an over-long name', { ['A'.repeat(65)]: true }],
+    [
+      'too many entries',
+      Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`C${i}`, true])),
+    ],
+  ])('rejects %s', (_label, capabilities) => {
+    expect(() => rowToAccount(validRow({ capabilities }))).toThrow(/capabilities/);
+  });
+
+  it('never puts a stored capability key into the error message', () => {
+    const run = (): unknown => rowToAccount(validRow({ capabilities: { 'CANARY KEY': true } }));
+    expect(run).toThrow(RepoError);
+    expect(run).not.toThrow(/CANARY/);
+  });
+});
+
+/** A client that fails the test if the repo sends any request. */
+function noRequestClient(): { client: SupabaseClient; calls: () => number } {
+  let calls = 0;
+  const client = {
+    from: () => {
+      calls += 1;
+      throw new Error('unexpected request');
+    },
+  } as unknown as SupabaseClient;
+  return { client, calls: () => calls };
+}
+
+describe('SupabaseAccountsRepo id and capabilities guards', () => {
+  const secret = { ciphertext: 'Y2lwaGVy', iv: 'aXZpdml2aXZpdml2', tag: 'dGFn', keyVersion: 1 };
+  const caps: CapabilityRecord = { UIDPLUS: true };
+
+  it.each(['', 'not-a-uuid', "1' or '1'='1", '11111111-1111-4111-8111-11111111111', 'id,eq.x'])(
+    'non-UUID id %j → no request; get null, others false',
+    async (id) => {
+      const { client, calls } = noRequestClient();
+      const repo = new SupabaseAccountsRepo(client);
+      await expect(repo.get(id)).resolves.toBeNull();
+      await expect(repo.updateSecret(id, secret)).resolves.toBe(false);
+      await expect(repo.recordCheck(id, caps, new Date())).resolves.toBe(false);
+      await expect(repo.remove(id)).resolves.toBe(false);
+      expect(calls()).toBe(0);
+    },
+  );
+
+  it('recordCheck rejects an invalid capability record before any request', async () => {
+    const { client, calls } = noRequestClient();
+    const repo = new SupabaseAccountsRepo(client);
+    const bad = { UIDPLUS: 'x' } as unknown as CapabilityRecord;
+    await expect(
+      repo.recordCheck('11111111-1111-4111-8111-111111111111', bad, new Date()),
+    ).rejects.toBeInstanceOf(RepoError);
+    expect(calls()).toBe(0);
   });
 });

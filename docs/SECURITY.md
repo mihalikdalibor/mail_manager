@@ -4,18 +4,22 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 
 ## Threat model
 
-| Threat                                     | Impact                                                    | Mitigation                                                                                                 |
-| ------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Supabase DB leaked / misconfigured RLS     | Attacker gets account rows                                | Secrets encrypted with a key **not in the DB**; RLS on every table; two-user RLS test                      |
-| Laptop / `.env.local` stolen (local phase) | Master key + session → decrypt all of that user's secrets | `.env*` gitignored, file perms 600; session file 600; document "revoke app passwords" procedure            |
-| Master key lost                            | Stored passwords unrecoverable                            | Documented: users re-enter passwords; key backup is the operator's responsibility                          |
-| Accidental mass delete (bug or user error) | Irreversible mail loss                                    | Plan → confirm → exact-UID execution; Trash default; UIDVALIDITY guard; backup-before-expunge; audit       |
-| Malicious / malformed filter input         | Wrong messages selected, injection                        | zod validation; criteria passed as imapflow objects (library quotes/escapes); never build raw IMAP strings |
-| MITM on IMAP connection                    | Credential theft                                          | Implicit TLS port 993 only, `rejectUnauthorized: true`, no STARTTLS-downgrade / plaintext fallback         |
-| Secrets in logs / error messages           | Leak via terminal, CI, bug reports                        | Central redaction; never log config objects wholesale; error messages include host/user, never password    |
-| Compromised npm dependency                 | Code execution with access to secrets                     | Few deps, committed lockfile, `npm audit` in CI, pin versions, review new deps                             |
-| Secrets committed to git                   | Permanent exposure                                        | `.gitignore`, `.env.example` only, gitleaks in CI (M0), optional local gitleaks                            |
-| Web UI (M6): CSRF / XSS / exposed port     | Session hijack, remote delete                             | Bind `127.0.0.1`, helmet + strict CSP, CSRF token, JWT verified per request, rate limiting                 |
+| Threat                                     | Impact                                                    | Mitigation                                                                                                   |
+| ------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Supabase DB leaked / misconfigured RLS     | Attacker gets account rows                                | Secrets encrypted with a key **not in the DB**; RLS on every table; two-user RLS test                        |
+| Laptop / `.env.local` stolen (local phase) | Master key + session → decrypt all of that user's secrets | `.env*` gitignored, file perms 600; session file 600; document "revoke app passwords" procedure              |
+| Master key lost                            | Stored passwords unrecoverable                            | Documented: users re-enter passwords; key backup is the operator's responsibility                            |
+| Accidental mass delete (bug or user error) | Irreversible mail loss                                    | Plan → confirm → exact-UID execution; Trash default; UIDVALIDITY guard; backup-before-expunge; audit         |
+| Malicious / malformed filter input         | Wrong messages selected, injection                        | zod validation; criteria passed as imapflow objects (library quotes/escapes); never build raw IMAP strings   |
+| MITM on IMAP connection                    | Credential theft                                          | Implicit TLS port 993 only, `rejectUnauthorized: true`, no STARTTLS-downgrade / plaintext fallback           |
+| Secrets in logs / error messages           | Leak via terminal, CI, bug reports                        | Central redaction; never log config objects wholesale; error messages include host/user, never password      |
+| Compromised npm dependency                 | Code execution with access to secrets                     | Few deps, committed lockfile, `npm audit` in CI, pin versions, review new deps                               |
+| Secrets committed to git                   | Permanent exposure                                        | `.gitignore`, `.env.example` only, gitleaks in CI (M0), optional local gitleaks                              |
+| Web UI (M6): CSRF / XSS / exposed port     | Session hijack, remote delete                             | Bind `127.0.0.1`, helmet + strict CSP, CSRF token, JWT verified per request, rate limiting                   |
+| App used to guess mailbox passwords        | Brute force against third parties; user's IP banned       | No automatic login retry (M1b-2a); login guard with attempt limits (M1b-2b); Turnstile/WAF when hosted (M6a) |
+| App used to probe hosts/accounts           | Host/port scanning, account enumeration                   | One generic login-failure message (no code); precise reason only inside core                                 |
+| SSRF / DNS rebinding via a typed IMAP host | Server connects to internal addresses                     | IP/localhost hosts refused today; resolve-and-pin guard for private ranges deferred to M6a                   |
+| Hostile IMAP server data                   | Oversized/odd data stored or printed                      | Capabilities sanitised + capped before `mail_accounts.capabilities`; server text never printed               |
 
 ## Credential encryption
 
@@ -37,6 +41,25 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 - `mm logout` always deletes the local session, even offline (server-side revocation is best effort).
 - Table privileges: `anon` has none on `mail_accounts`; `authenticated` has no TRUNCATE and can't update `id`/`user_id`/`created_at` (see DATA_MODEL.md).
 - CLI uses the publishable key (formerly "anon") + user JWT → RLS applies. Service-role key never leaves the server.
+
+## IMAP session (M1b-2a)
+
+All logins go through `openSession` (`src/core/imap/session.ts`):
+
+- Implicit TLS on 993, `rejectUnauthorized: true`, `minVersion: 'TLSv1.2'`, SNI = host. No STARTTLS, no plaintext. The host is re-validated (no IP literals, no `localhost`).
+- `logger: false`: imapflow's log lines can contain server text. Client ID sends only `name` + `version`.
+- **One attempt, no retry.** A failed login is never repeated automatically.
+- The password is removed from the imapflow client options as soon as `connect()` settles (success or failure). The session object never exposes it (`toJSON` / `inspect` show host, username, server name, features only).
+- Username/password with CR, LF, NUL (or invisible characters in the username) are rejected before any network activity, so they can't break out of an IMAP command.
+- Every failure becomes an `ImapSessionError` with a reason and a whitelisted code token. No `cause`, no server text, no executed command. `src/cli/bin.ts` shows only whitelisted core error classes (`errorText`); everything else is "Unexpected error".
+- Known gap, accepted: imapflow sends the password (AUTHENTICATE PLAIN, or LOGIN) even to a server that advertises `LOGINDISABLED` together with `AUTH=PLAIN`, or only `AUTH=XOAUTH2`. Over verified TLS to the user's own provider this is acceptable.
+- Server capabilities are untrusted: names must match `[A-Z0-9][A-Z0-9=+-._/]*` (≤ 64 chars), values `true` or a non-negative integer, at most 256 entries. The repo guards `mail_accounts.capabilities` with the same bounds (`recordCheck` and row parsing; names matched case-insensitively there, `sanitizeCapabilities` always writes upper case). An invalid stored record makes the row fail to parse (strict on purpose: only `recordCheck` writes it).
+
+## Database access (injection audit, 2026-09-22)
+
+- All Supabase access is in `src/core/db/supabase/` and uses only the parameterised supabase-js builders (`insert`, `select`, `eq`, `update`, `delete`, `order`). No `.or()`/`.filter()` strings, no `.rpc()`, no raw SQL, so no SQL or PostgREST-filter injection through user input.
+- Account ids are validated as UUIDs before any request (`get` → `null`, `updateSecret`/`recordCheck`/`remove` → `false`).
+- Keep it that way: any future `.or()`/`.filter()` with user input needs escaping and a test; prefer the typed builders.
 
 ## Destructive-operation protocol
 
@@ -76,7 +99,7 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 
 ## Checklist per milestone
 
-- [ ] No secret in logs (grep test output for the test password).
+- [ ] No secret in logs (grep test output for the test password — see the leak check in TESTING.md).
 - [ ] New tables have RLS + policies in the same migration.
 - [ ] New inputs validated by zod.
 - [ ] `npm audit` clean (or justified).

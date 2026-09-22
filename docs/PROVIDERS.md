@@ -6,7 +6,7 @@ Goal: the user types an email address and (usually) a password — the app figur
 
 1. **Autodetect** — `discover()` in `src/core/providers/discover.ts`, no login, no password. Sources are tried **one after another** and discovery stops at the first hit:
    1. **Preset by email domain** (`presets.json` `domains`) — offline.
-   2. **Preset by MX suffix** — the domain's MX records, lowest preference first, matched on a label boundary against `mxSuffixes` (longest suffix wins). This is the main path for custom domains on SK/CZ hostings, e.g. MX `mx10.websupport.sk` / `mx20.websupport.sk` → Websupport → `imap.m1.websupport.sk`. Google Workspace and Microsoft 365 domains are recognised the same way.
+   2. **Preset by MX suffix** — the domain's MX records, lowest preference first, matched on a label boundary against `mxSuffixes` (longest suffix wins). This is the main path for custom domains on SK/CZ hostings, e.g. MX `mx10.example-hosting.sk` → preset with `mxSuffixes: ["example-hosting.sk"]` → that preset's IMAP host. Google Workspace and Microsoft 365 domains are recognised the same way.
    3. **Mozilla ISPDB** — `https://autoconfig.thunderbird.net/v1.1/<domain>`.
    4. **Provider autoconfig, HTTPS only** — `https://autoconfig.<domain>/mail/config-v1.1.xml`, then `https://<domain>/.well-known/autoconfig/mail/config-v1.1.xml`.
    5. **DNS SRV** — `_imaps._tcp.<domain>` (RFC 6186; target `.` = not offered).
@@ -37,7 +37,7 @@ Preset hosts are checked live by `tests/integration/presets-live.test.ts` (TLS o
 
 ## GeoIP hint (on connection failure)
 
-Some mail hosts let the mailbox owner restrict IMAP logins by country (GeoIP). A blocked login looks like a network failure (timeout / connection refused) even with the right host and password. Discovery results carry **no** GeoIP text. From M1b-2 on, when a connection fails, `geoIpNotice()` (`src/core/providers/geoip.ts`) is printed: _"The connection was not successful. First check that the email address, password and IMAP server are correct. If they are, check whether GeoIP (country) security is turned on for this mailbox at your mail host. If it is, allow &lt;country&gt;, or turn GeoIP off while Mail Manager connects."_ The CLI names the country of this computer's public IP; the server variant names the server's country, with an optional region because the hosting isn't decided yet (local now, later Vercel or a VPS). Wherever the server is deployed, that hosting country must be configured so the message names it (CLAUDE.md).
+Some mail hosts let the mailbox owner restrict IMAP logins by country (GeoIP). A blocked login looks like a network failure (timeout / connection refused) even with the right host and password. Discovery results carry **no** GeoIP text. From M1b-2a on it is the first part of the **generic login-failure message** (`imapErrorText`, `src/cli/imap-errors.ts`), shown alike for a wrong password, unknown host and refused/reset/timeout (CLAUDE.md "User-facing errors"). The `geoIpNotice()` (`src/core/providers/geoip.ts`) text: _"The connection was not successful. First check that the email address, password and IMAP server are correct. If they are, check whether GeoIP (country) security is turned on for this mailbox at your mail host. If it is, allow &lt;country&gt;, or turn GeoIP off while Mail Manager connects."_ The CLI names the country of this computer's public IP; the server variant names the server's country, with an optional region because the hosting isn't decided yet (local now, later Vercel or a VPS). Wherever the server is deployed, that hosting country must be configured so the message names it (CLAUDE.md).
 
 ## Preset format
 
@@ -45,16 +45,16 @@ Some mail hosts let the mailbox owner restrict IMAP logins by country (GeoIP). A
 
 ```json
 {
-  "id": "websupport",
-  "name": "Websupport",
+  "id": "example-hosting",
+  "name": "Example Hosting",
   "group": "sk-cz",
   "domains": [],
-  "mxSuffixes": ["websupport.sk"],
-  "imap": { "host": "imap.m1.websupport.sk", "port": 993 },
-  "altHosts": ["imap.websupport.sk"],
+  "mxSuffixes": ["example-hosting.sk"],
+  "imap": { "host": "imap.example-hosting.sk", "port": 993 },
+  "altHosts": ["imap2.example-hosting.sk"],
   "auth": ["password"],
   "hint": "Log in with your full email address and mailbox password.",
-  "helpUrl": "https://www.websupport.sk/podpora/kb/postove-protokoly/",
+  "helpUrl": "https://www.example-hosting.sk/help/imap/",
   "verified": true
 }
 ```
@@ -71,7 +71,7 @@ Every host was resolved and a TLS handshake on 993 with certificate verification
 
 | Provider                    | id             | IMAP host             | Email domains                               | MX suffixes                                             | Auth                   | Verified                                                                                                                                             |
 | --------------------------- | -------------- | --------------------- | ------------------------------------------- | ------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Websupport                  | `websupport`   | imap.m1.websupport.sk | —                                           | websupport.sk                                           | password               | ✔ [source](https://www.websupport.sk/podpora/kb/postove-protokoly/)                                                                                  |
+| Websupport                  | `websupport`   | see `presets.json`    | —                                           | see `presets.json`                                      | password               | ✔ [source](https://www.websupport.sk/podpora/kb/postove-protokoly/)                                                                                  |
 | WebHouse                    | `webhouse`     | mail.webhouse.sk      | —                                           | webhouse.sk                                             | password               | ✔ [source](https://helpdesk.webhouse.sk/468268-Ako-nastavi%C5%A5-Mozilla-Thunderbird-pre-pr%C3%ADjem-a-odosielanie-po%C5%A1ty)                       |
 | Webglobe (CZ)               | `webglobe-cz`  | mail.webglobe.cz      | —                                           | webglobe.cz                                             | password               | ✔ [source](https://www.webglobe.cz/poradna/jake-parametry-pro-nastaveni-emailoveho-klienta-pouzit)                                                   |
 | Webglobe (SK)               | `webglobe-sk`  | mail.webglobe.sk      | —                                           | mx-hub.sk, mx-hub.cz, mx-hub.net, mx-hub.eu             | password               | ✔ [source](https://www.webglobe.sk/poradna/manualne-nastavenie-mail-klienta)                                                                         |
@@ -123,6 +123,26 @@ Notes:
 - Special-use folders (`\Trash`, `\Sent`, `\Junk`, `\All`, `\Archive`) via LIST extension; fallback to name heuristics (`Trash`, `Deleted Items`, `Kôš`, `Koš`, …) with user confirmation.
 - `QUOTA` (RFC 2087/9208) not everywhere → quota shown only when available.
 - `MOVE` / `UIDPLUS` not everywhere → capability-driven behaviour (see SECURITY.md).
+
+## Provider restrictions (IMAP session, researched 2026-09-22)
+
+What limits and policies a login runs into. Only the Websupport row is **measured**; Gmail limits are the long-standing published values (see Gmail below); everything marked _unverified_ is an expectation to re-check once a test account exists.
+
+| Provider                  | Auth for Mail Manager                                       | Connection / bandwidth limits                            | Failed-login policy                                                                                                                                                             | Capabilities                                                                                                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Websupport** (measured) | Password (LOGIN / AUTH=PLAIN over TLS)                      | Not published                                            | _Unverified:_ fail2ban-style IP bans assumed (common Dovecot hosting setup)                                                                                                     | Dovecot, TLS 1.3. UIDPLUS, MOVE, QUOTA, STATUS=SIZE, CONDSTORE, QRESYNC, ESEARCH, WITHIN, LIST-STATUS, COMPRESS=DEFLATE, BINARY, NOTIFY. **No SPECIAL-USE**, no OBJECTID, no IMAP4rev2 (full list: IMAP.md §7) |
+| Gmail / Google Workspace  | **App password** (2-step verification required); OAuth (M6) | ~15 simultaneous connections; ~2500 MB/day IMAP download | Normal password with 2-step verification → `[ALERT] Application-specific password required`; wrong password → AUTHENTICATIONFAILED; _unverified:_ temporary blocks after bursts | X-GM-EXT-1, SPECIAL-USE, UIDPLUS, MOVE, QUOTA, CONDSTORE, ESEARCH (IMAP.md §7)                                                                                                                                 |
+| Outlook / Microsoft 365   | **OAuth only** (basic auth retired) → blocked until M6      | _Unverified_                                             | —                                                                                                                                                                               | Minimal: no QUOTA, no CONDSTORE, no ESEARCH                                                                                                                                                                    |
+| Yahoo, iCloud             | **App password**                                            | _Unverified_                                             | _Unverified:_ temporary locks after repeated failures                                                                                                                           | See IMAP.md §7                                                                                                                                                                                                 |
+| Seznam, other SK/CZ hosts | Password                                                    | Not published                                            | _Unverified:_ IP bans likely (Dovecot + fail2ban is the common setup)                                                                                                           | Not measured yet (Azet: pre-login greeting lacks UIDPLUS/MOVE — re-check after login when a test account exists)                                                                                               |
+
+**Consequences for Mail Manager**
+
+- **Never retry a failed login automatically.** A wrong password is tried exactly once per user action (`openSession`, `src/core/imap/session.ts`). Retrying would get the user's IP banned and would make Mail Manager a brute-force tool. Attempt limits across actions are the login guard (M1b-2b).
+- **Bans look like network failures.** Once an IP is banned, the server refuses, resets or silently drops the connection. The user sees the same generic message as for a wrong password (address, password/app password, IMAP server, GeoIP). That's on purpose: see "User-facing errors" in CLAUDE.md.
+- **App passwords.** Gmail, iCloud and Yahoo reject the normal password; the generic message always mentions app passwords.
+- **Integration tests** make one wrong-password attempt per run against the test mailbox (TESTING.md). Don't loop them.
+- **SPECIAL-USE is missing on Websupport.** Trash/Sent/Junk must be found by name (with the user's confirmation) there (IMAP.md §6.5).
 
 ## Open questions
 

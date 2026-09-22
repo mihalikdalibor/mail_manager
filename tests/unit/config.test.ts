@@ -275,6 +275,8 @@ describe('loadEnvFiles', () => {
     try {
       expect(() => loadEnvFiles(dir, {})).toThrow(/\.env\.local.*EACCES/);
       expect(() => loadEnvFiles(dir, {})).not.toThrow(/LEAKCANARY/);
+      // A ConfigError, so the CLI shows its (value-free) message instead of "Unexpected error".
+      expect(() => loadEnvFiles(dir, {})).toThrow(ConfigError);
     } finally {
       chmodSync(join(dir, '.env.local'), 0o600);
     }
