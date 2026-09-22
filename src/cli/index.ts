@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { registerAuth } from './commands/auth.js';
+import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
 import { registerKeygen } from './commands/keygen.js';
 
@@ -23,5 +24,6 @@ export function buildProgram(options: BuildOptions = {}): Command {
   registerAuth(program);
   registerKeygen(program);
   registerDoctor(program);
+  registerDiscover(program);
   return program;
 }

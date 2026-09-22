@@ -169,3 +169,181 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - Beyond the listed boxes: the overall auth deadline and the forced clean exit in `bin.ts` (the review found the refresh path still took ~30 s); `db.retry: false`; the Request-signal fix; `signup` maps 401/403 to "key rejected".
   - Not done (optional in the review): running doctor's HTTP probes in parallel. Worst case stays ~20 s on a dead host.
   - The follow-ups (lowercase `host`, force timestamps on insert, revoke the old refresh token on re-login) stay in `review-output.md` for M1c / the next migration.
+
+## C-004 — M1b-1 provider discovery: autodetect → provider picker → manual host, GeoIP warning (`mm discover`)
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** all criteria met (GeoIP-in-output superseded by C-005); lint/typecheck/format/554 unit/31 integration/build/audit green; CLI + pseudo-terminal picker re-tested (incl. WEDOS host prompt). Follow-ups (non-blocking, carried into review-output.md): hex/octal IPv4 host names pass `normalizeHost` (MEDIUM), lowercase `%placeholder%` not rejected, free-text autoconfig username printed, displayDomain keeps IDN-dropped chars, readCapped listener not removed on cap.
+- **Date:** 2026-09-22
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-22-m1b1-provider-discovery.md`. TODO.md → "M1b-1 — Provider discovery (no login)", including the user amendment (three tiers + GeoIP warning).
+- **Base:** 4f1b6a21240dbf7f85405725b25250803d87ce47. Already dirty before the run: `TODO.md` (the M1b split and amendment from `/next`).
+- **Files:**
+  - New: `src/core/providers/{email,presets,settings,geoip,autoconfig,discover}.ts`, `src/core/providers/presets.json`, `src/cli/commands/discover.ts`, `src/cli/prompts/imap-settings.ts`, `tests/unit/{email,presets,settings,geoip,autoconfig,discover,imap-settings-prompt,cli-discover}.test.ts`, `tests/integration/discover.test.ts`.
+  - Modified: `src/cli/index.ts`, `package.json`, `package-lock.json` (fast-xml-parser ^5.11.1), `docs/PROVIDERS.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`, `docs/milestones/M6-beta.md`, `.env.example`.
+- **Requirements** (plan acceptance criteria, verbatim):
+  - [ ] `npm run dev -- discover <MM_TEST_IMAP_USER>` → provider Websupport, found via MX, host `imap.m1.websupport.sk:993`, username = full address, no manual host; exit 0.
+  - [ ] `npm run dev -- discover someone@gmail.com` → Gmail (preset by domain), hint about app password + helpUrl; exit 0.
+  - [ ] `npm run dev -- discover someone@outlook.com` → Outlook recognised, **blocked** notice ("needs OAuth2, supported from M6"); exit 1.
+  - [ ] A domain with no match anywhere (e.g. a random `*.invalid`) → status `manual` ("No IMAP settings found"), lists every tried source with its outcome; then **in a TTY** a picker offers every preset (SK/CZ first, then global; blocked ones shown disabled with the reason) plus "Enter IMAP host manually" and "Cancel".
+    - picking a preset → its settings printed ("Chosen from list"), exit 0; picking Wedos (`imap: null`) → host prompt with the hostHint;
+    - manual → host prompt (validated with `normalizeHost`, re-asked on invalid input) + username prompt (default = full address) → settings printed ("Entered manually"), exit 0;
+    - Cancel → nothing printed beyond the list, exit 1; Ctrl+C → exit 130 quietly;
+    - **no TTY** → no prompts; message "run in a terminal to choose a provider or enter the host manually", exit 1.
+  - [ ] Every printed settings block (autodetected, picked, manual, needs-host) ends with the **GeoIP warning** naming "this computer" as the connecting location.
+  - [ ] Discovery never throws for network/DNS/XML failures — each becomes a `tried` entry; only invalid email input is a user error (exit 1, clear message).
+  - [ ] No plain-HTTP request is ever made (autoconfig/ISPDB URLs are https; a redirect to non-https is rejected).
+  - [ ] STARTTLS/143-only or non-993 results are never returned as settings; a notice says they were skipped.
+  - [ ] Every preset in `presets.json` passes the zod schema; ids, domains and MX suffixes are unique; each is `verified: true` with an official `helpUrl`, or `verified: false`.
+  - [ ] `npm run build && npm start -- discover someone@gmail.com` works (presets JSON present in `dist/`).
+  - [ ] Unit tests cover every edge case listed below; integration test passes with `MM_TEST_IMAP_USER` set and skips without it.
+  - [ ] `docs/PROVIDERS.md`, `docs/milestones/M1-auth-accounts.md` updated; TODO boxes ticked; the real test domain appears in no tracked file.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm run format:check`, `npm test`, `npm run build`, `npm audit` green.
+- **Summary:** Discovery works in three tiers.
+  1. **Autodetect** (core, no prompts): preset by email domain → preset by MX suffix → ISPDB → HTTPS autoconfig → SRV. It runs sequentially and stops at the first hit.
+  2. **Provider picker** from 24 researched presets.
+  3. **Manual host entry.**
+
+  Every settings result carries a GeoIP warning (`geoIpNotice`; it has a server variant for M6). All untrusted input is hardened: strict host check including redirect targets, manual https-only redirects, a 256 KiB body cap, a deadline that also covers the body, the XML validated before parsing, and no server text in the output. `mm discover <email>` wires it together. `chooseImapSettings()` is ready for M1c's `mm account add`.
+
+- **Grade / mode:** M — solo + test writer. The spec-based test-writer subagent wrote 8 unit test files, and its one failing test found a real gap (the nested `imap` schema wasn't strict). A research subagent compiled the presets in parallel. An independent review subagent ran at the end.
+- **Verification:**
+  - Baseline: typecheck, lint, 270 tests, build and format all green.
+  - Now:
+    - `npm run lint`, `npm run typecheck`, `npm run format:check`: clean.
+    - `npm test`: 540 passed (20 files).
+    - `npm run build` + `npm start -- discover someone@gmail.com`: exit 0, `presets.json` present in `dist/`.
+    - `npm run test:integration` with `MM_TEST_IMAP_USER` set inline: 6 passed (discovery + RLS). Without it the discovery suite is skipped.
+    - `npm audit --omit=dev`: 0 vulnerabilities.
+  - Manual runs:
+    - Test address → Websupport via MX (`mx10.websupport.sk`), exit 0.
+    - gmail.com → Gmail, exit 0. outlook.com → blocked, exit 1.
+    - `a@nothing-here.invalid` → all five sources tried, no-TTY message, exit 1.
+    - seznam.cz and web.de → live ISPDB parse (web.de with a local-part username).
+    - `evil.com/x` and a zero-width domain → clean error, exit 1.
+  - The picker was driven in a real pseudo-terminal:
+    - pick Active24 → exit 0;
+    - manual: `1.2.3.4` re-asked, `IMAP.Example.COM` → `imap.example.com`, exit 0;
+    - Cancel → exit 1;
+    - Ctrl+C → exit 130.
+  - The real test domain appears in no tracked or new file (`git grep`).
+  - **Not verified:**
+    - The needs-host host prompt (WEDOS) in a real TTY; unit-tested only.
+    - The interactive picker on Windows terminals.
+    - Real DNS timeouts (the Resolver timeout is only exercised via a faked ETIMEOUT).
+    - `MM_TEST_IMAP_USER` is not yet in `.env.local` (user box), so the integration test ran with the variable set inline.
+- **Deviations:**
+  - The schema gained `group`.
+  - WEDOS/Webglobe/Centrum/GMX preset splits as described in the plan's Implementation notes.
+  - needs-host in a TTY reports "Host entered manually".
+  - Prompts require stdin **and** stdout to be terminals.
+  - An ISPDB DNS failure is reported as `error` (offline).
+  - Docs were updated as the item required. TODO.md was not touched (the Webglobe wording in the M1b-1 item still says `imap.webglobe.sk`; the preset uses `mail.webglobe.sk` with `imap.webglobe.sk` as an alt host). The CLAUDE.md "Current milestone" line was not updated.
+  - The PROVIDERS.md open question "Cache ISPDB lookups?" is annotated as moot and still waits for the user's OK.
+
+## C-005 — GeoIP hint moved from discovery output to connection failures
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** all criteria met; no GeoIP text in discovery output, failure-hint wording + optional region verified. Follow-up: absence of GeoIP only asserted for `found` results.
+- **Date:** 2026-09-22
+- **Type:** feature (requirement change from the user, on top of C-004)
+- **Source:** user, 2026-09-22: "the geoip warning should be printed when mail is not connected as something like, the connection was not succesful, check if the mail has not activated geoip security, if so add [server country] or dissalow it. for server country i am not sure where it will be hosted, for now only locally, then probably vercel or VPS."
+- **Base:** same working tree as C-004 (uncommitted).
+- **Files:** `src/core/providers/geoip.ts`, `src/cli/commands/discover.ts`, `tests/unit/geoip.test.ts`, `tests/unit/cli-discover.test.ts`, `docs/PROVIDERS.md`, `docs/milestones/M1-auth-accounts.md`, `docs/milestones/M6-beta.md`, `TODO.md` (M1b-1/M1b-2/M1c wording).
+- **Requirements:**
+  - [ ] `mm discover` prints no GeoIP text for any result.
+  - [ ] `geoIpNotice()` reads as a connection-failure hint: the connection was not successful; check whether GeoIP security is on for the mailbox; if so, allow the country (CLI: this computer's public IP) or turn GeoIP off while Mail Manager connects.
+  - [ ] Server variant: `region` is optional (hosting undecided). Without it the text reads naturally, with no `()` or `undefined`.
+  - [ ] Docs/TODO say the hint is shown on connection failure (timeout/refused, from M1b-2), not with discovery results.
+- **Summary:** removed the five GeoIP prints from `mm discover`; rewrote `geoIpNotice` as a failure hint with an optional server region; updated tests, docs and the backlog wording. Actually wiring it to connection errors is part of M1b-2 (already in its error-mapping box).
+- **Grade / mode:** S — solo.
+- **Verification:** `npx tsc --noEmit`, `npx eslint src tests`, `npm test` (541 passed), `prettier --write`. The CLI GeoIP-line tests now assert **absence**. Not verified: a real connection failure (no IMAP connection exists until M1b-2).
+- **Deviations:** none.
+
+## C-006 — Plain-language domain check, credentials-first connection hint, live preset check, error rules in CLAUDE.md
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** Passed with C-008: all criteria met (no-mail/dead-end superseded by C-007); CLAUDE.md rule and PROVIDERS quote fixed; live preset check 31/31 integration green.
+- **Date:** 2026-09-22
+- **Type:** feature (user requests on top of C-004/C-005)
+- **Source:** user, 2026-09-22. Summary of the requests:
+  - CLAUDE.md must say the server's hosting country has to be set where it's deployed.
+  - The connection message should also tell the user to check the credentials.
+  - Check the domain: a DNS server error or missing MX records gets its own message.
+  - Errors must be very well managed, because the users are mostly non-technical.
+  - Cache goes into TODO (around M4–M5).
+  - Keep the current providers and make sure they work.
+- **Base:** same working tree as C-004 (uncommitted).
+- **Files:** `src/core/providers/discover.ts`, `src/core/providers/geoip.ts`, `src/cli/commands/discover.ts`, `tests/unit/discover.test.ts`, `tests/unit/geoip.test.ts`, `tests/unit/cli-discover.test.ts`, new `tests/integration/presets-live.test.ts`, `CLAUDE.md`, `TODO.md`, `docs/PROVIDERS.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`.
+- **Requirements:**
+  - [ ] The discovery result carries `domainProblem`: `ENOTFOUND` → `not-exist` (discovery stops: no ISPDB/autoconfig/SRV); `ENODATA` or only a null MX → `no-mail`; `ESERVFAIL`/`EREFUSED` → `dns-error`; timeout and other errors → `dns-unreachable`.
+  - [ ] `mm discover` explains each problem in plain words (what happened + what to do). `not-exist` → typo hint, no picker, exit 1. The others still offer the picker/manual entry in a TTY. A `found` result with `no-mail` shows a warning.
+  - [ ] `geoIpNotice` tells the user to check address/password/IMAP server first, then GeoIP.
+  - [ ] CLAUDE.md: a "User-facing errors" section (plain language, typed reasons in core, no stack traces or raw messages) plus the rule that the server's hosting country must be configured wherever it's deployed (local → Vercel/VPS).
+  - [ ] TODO: a discovery lookup cache item under M5 (around M4–M5). The PROVIDERS.md open question is resolved.
+  - [ ] A live check that every preset host + alt host answers on 993 with a valid certificate and an IMAP greeting (no login).
+- **Summary:** `tryMx` now maps DNS error codes to a typed `DomainProblem`, and `discover` stops early for non-existent domains, which keeps typos away from Mozilla. The CLI maps each problem to a plain-language message. The connection hint now puts credentials first. The live preset test covers 25 hosts. CLAUDE.md gained the error-handling rules and the note about the server's hosting country. The docs and TODO are updated.
+- **Grade / mode:** S — solo.
+- **Verification:**
+  - `npx tsc --noEmit` and `npx eslint src tests` clean.
+  - `npm test`: 555 passed. The fake DNS default changed from `ENOTFOUND` to `ENODATA` (the domain exists but has no MX) so the full chain is still exercised; new tests cover each domain problem and the CLI messages.
+  - `npm run test:integration`: 31 passed (25 live preset hosts on 993, discovery via `.env.local`'s `MM_TEST_IMAP_USER`, RLS).
+  - **Not verified:** a real `ESERVFAIL` through the CLI (codes were probed live with Node — `sk` A record → ESERVFAIL — but the CLI path is unit-tested only); wiring the GeoIP hint to a real failed connection (M1b-2).
+- **Deviations:** none.
+
+## C-007 — Domain check made non-blocking; "no MX records" warning removed
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** all criteria met; not-exist hint non-blocking (picker in TTY, exit 1 without), missing MX never reported, verified live. Follow-ups: "below" wording without TTY; dns-unreachable hint can show next to found settings.
+- **Date:** 2026-09-22
+- **Type:** feature (user correction of C-006)
+- **Source:** user, 2026-09-22: "for domain without MX records, it may still connect via IMAP right? this may cause false error when domain has no MX records, but the address is created and imap points to correct server? mx check may be good idea to remove then."
+- **Base:** same working tree as C-004 (uncommitted).
+- **Files:** `src/core/providers/discover.ts`, `src/cli/commands/discover.ts`, `tests/unit/discover.test.ts`, `tests/unit/cli-discover.test.ts`, `CLAUDE.md`, `TODO.md`, `docs/PROVIDERS.md`, `docs/milestones/M1-auth-accounts.md`.
+- **Requirements:**
+  - [ ] Missing MX records (`ENODATA`, null MX) are never reported as a problem. The MX lookup itself stays, because it matches custom domains to hosting presets.
+  - [ ] "Domain doesn't exist" is a hint and not a dead end: it mentions typos and expired domains, still offers the picker/manual entry in a TTY (exit 0 after a choice), and prints the hint + exit 1 without a TTY. The online lookups (ISPDB/autoconfig/SRV) still stop for a non-existent domain.
+  - [ ] `DomainProblem` is `not-exist | dns-error | dns-unreachable`, all informational.
+  - [ ] CLAUDE.md: hints never block the user; no warning about missing MX.
+- **Summary:** removed `no-mail`. `not-exist` no longer returns early in the CLI. Docs, TODO and CLAUDE.md now describe the domain check as informational.
+- **Grade / mode:** S — solo.
+- **Verification:** `npx tsc --noEmit` and `npx eslint src tests` clean; `npm test`: 554 passed (no-MX tests now assert no problem; not-exist offers the picker in a TTY, exit 1 without one).
+- **Deviations:** none.
+
+## C-008 — Review fixes for C-006 (+ non-blocking follow-ups from C-004/C-005/C-007)
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** All 11 review-output items fixed and re-verified (585 unit, 31 integration, lint/typecheck/format/build/audit green; web.de/gmail/nonexistent-domain re-tested). Follow-ups (LOW): printable-ASCII username tokens without placeholder still accepted (could require a placeholder or narrower charset); dns-error wording "can't be looked up" contradicts settings found by a later source; readCapped listener not removed if read() throws non-abort.
+- **Date:** 2026-09-22
+- **Type:** review-fix
+- **Source:** `.claude/review-output.md` (fixes C-006; follow-ups from C-004, C-005, C-007)
+- **Base:** 4f1b6a21240dbf7f85405725b25250803d87ce47; files already dirty before the run: the whole uncommitted M1b-1 work of C-004…C-007
+- **Files:** `CLAUDE.md`, `docs/PROVIDERS.md`, `src/core/providers/email.ts`, `src/core/providers/autoconfig.ts`, `src/core/providers/discover.ts`, `src/cli/commands/discover.ts`, `tests/unit/email.test.ts`, `tests/unit/autoconfig.test.ts`, `tests/unit/discover.test.ts`, `tests/unit/cli-discover.test.ts`, `.claude/review-output.md` (boxes ticked, status done)
+- **Requirements** (every box of `review-output.md`):
+  - [x] `CLAUDE.md:30` states "- Never show stack traces or raw library/server messages…"; no `\1` left.
+  - [x] The `docs/PROVIDERS.md` GeoIP quote matches the credentials-first `geoIpNotice` text.
+  - [x] The `CLAUDE.md:7` milestone line names C-007 and what is still pending.
+  - [x] `normalizeHost` rejects hex/octal/decimal IPv4 forms (numeric or `0x` last label, plus a WHATWG URL round-trip); tested via email, autoconfig and SRV.
+  - [x] The unknown-placeholder check is case-insensitive and uses own properties (`%emailaddress%`, `%constructor%` rejected).
+  - [x] A server-provided username template must be one printable-ASCII token (no spaces, Unicode look-alikes or blank characters); real templates (`%EMAILADDRESS%`, `recent:%EMAILADDRESS%`, `domain\…`) still work.
+  - [x] `displayDomain` is derived from the looked-up domain (`domainToUnicode(domain)`); a domain typed as ASCII/punycode is shown as typed (no look-alike Unicode).
+  - [x] The not-exist wording works with and without a TTY (no "below"); the docs table matches.
+  - [x] `dns-unreachable` is dropped when a later online source found settings; `dns-error` is kept. There is a CLI test for found + domainProblem.
+  - [x] `readCapped` removes its abort listener when the cap is exceeded.
+  - [x] Tests assert no GeoIP text for blocked, needs-host (TTY/no TTY) and picked results. dns-error/dns-unreachable in a TTY open the picker with exit 0. Blocked exits 1.
+- **Summary:** fixed the corrupted CLAUDE.md rule and the stale PROVIDERS quote, and hardened discovery input: disguised IPv4 hosts, placeholder and property-name tricks, and free-text or look-alike usernames are rejected. The display domain now matches the lookup (typed punycode stays ASCII), the hints' wording and timing are corrected, and the missing tests are added.
+- **Grade / mode:** S — solo.
+- **Verification:**
+  - lint, typecheck and format:check clean.
+  - `npm test`: 585 passed (baseline 554).
+  - build + `npm start -- discover someone@web.de`: username `someone` still accepted.
+  - `npm run test:integration`: 31 passed.
+  - `npm audit --omit=dev`: 0 vulnerabilities.
+  - `grep '\1' CLAUDE.md`: no matches.
+  - Mutation check: with the hex-IPv4 and placeholder fixes reverted, 9 of the new tests fail; restored, all pass.
+  - Invisible-character scan of src/tests/docs is clean.
+  - The independent review found items 5 and 6 only partly done, plus the typed-punycode look-alike, a stale doc row and a missing exit-code assertion. All were fixed in this run and re-verified.
+  - Not verified: none beyond the earlier entries (a real DNS SERVFAIL through the CLI is still unit-tested only).
+- **Deviations:**
+  - Username restriction: the allowlist is applied to the server's template, not the final value, so users with Unicode local parts still work.
+  - Typed punycode is displayed as ASCII (the reviewer's look-alike concern about item 7).

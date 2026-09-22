@@ -1,0 +1,383 @@
+[
+  {
+    "id": "websupport",
+    "name": "Websupport",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["websupport.sk"],
+    "imap": {
+      "host": "imap.m1.websupport.sk",
+      "port": 993
+    },
+    "altHosts": ["imap.websupport.sk"],
+    "auth": ["password"],
+    "hint": "Log in with your full email address and mailbox password.",
+    "helpUrl": "https://www.websupport.sk/podpora/kb/postove-protokoly/",
+    "verified": true
+  },
+  {
+    "id": "webhouse",
+    "name": "WebHouse",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["webhouse.sk"],
+    "imap": {
+      "host": "mail.webhouse.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://helpdesk.webhouse.sk/468268-Ako-nastavi%C5%A5-Mozilla-Thunderbird-pre-pr%C3%ADjem-a-odosielanie-po%C5%A1ty",
+    "verified": true
+  },
+  {
+    "id": "webglobe-cz",
+    "name": "Webglobe (CZ)",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["webglobe.cz"],
+    "imap": {
+      "host": "mail.webglobe.cz",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "For Webglobe CZ mailboxes. Office Mail (IceWarp) mailboxes use webglobe1.onice.io instead.",
+    "helpUrl": "https://www.webglobe.cz/poradna/jake-parametry-pro-nastaveni-emailoveho-klienta-pouzit",
+    "verified": true
+  },
+  {
+    "id": "webglobe-sk",
+    "name": "Webglobe (SK)",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["mx-hub.sk", "mx-hub.cz", "mx-hub.net", "mx-hub.eu"],
+    "imap": {
+      "host": "mail.webglobe.sk",
+      "port": 993
+    },
+    "altHosts": ["imap.webglobe.sk", "mail.webglobe.cz"],
+    "auth": ["password"],
+    "hint": "For Webglobe SK mailboxes; Webglobe CZ mailboxes use mail.webglobe.cz. Office Mail (IceWarp) uses webglobe1.onice.io.",
+    "helpUrl": "https://www.webglobe.sk/poradna/manualne-nastavenie-mail-klienta",
+    "verified": true
+  },
+  {
+    "id": "active24",
+    "name": "Active24",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["active24.com"],
+    "imap": {
+      "host": "email.active24.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://faq.active24.com/eng/503249-POP-and-IMAP---email-client-settings-Outlook-Thunderbird-Apple",
+    "verified": true
+  },
+  {
+    "id": "hostcreators",
+    "name": "HostCreators",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["hostcreators.sk"],
+    "imap": {
+      "host": "imap.hostcreators.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://www.hostcreators.sk/pomoc/e-mail/ako-si-precitat-e-maily.html",
+    "verified": true
+  },
+  {
+    "id": "forpsi",
+    "name": "Forpsi",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["forpsi.com"],
+    "imap": {
+      "host": "imap.forpsi.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Use imap.forpsi.com (the TLS certificate is issued for forpsi.com names). Log in with your full email address.",
+    "helpUrl": "https://support.forpsi.com/kb/a3969/email-clients-settings.aspx",
+    "verified": true
+  },
+  {
+    "id": "wedos",
+    "name": "WEDOS",
+    "group": "sk-cz",
+    "domains": [],
+    "mxSuffixes": ["wedos.net"],
+    "imap": null,
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "hostHint": "Each WEDOS webhosting has its own IMAP server, e.g. wes1-imap.wedos.net. Find it in the WEDOS customer administration under your hosting service, table 'Service addresses'.",
+    "helpUrl": "https://kb.vedos.cz/maily-smtp-pop3-imap/",
+    "verified": true
+  },
+  {
+    "id": "seznam",
+    "name": "Seznam.cz",
+    "group": "sk-cz",
+    "domains": ["seznam.cz", "email.cz", "post.cz", "spoluzaci.cz"],
+    "mxSuffixes": ["seznam.cz"],
+    "imap": {
+      "host": "imap.seznam.cz",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password", "app_password"],
+    "hint": "If two-factor authentication is on, create an app password (Account security > Two-factor authentication > App password). Email Profi: log in with the full email address.",
+    "helpUrl": "https://o-seznam.cz/napoveda/email/mohlo-by-se-hodit/postovni-programy-a-aplikace/",
+    "verified": true
+  },
+  {
+    "id": "zoznam",
+    "name": "Zoznam",
+    "group": "sk-cz",
+    "domains": ["zoznam.sk"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.zoznam.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "verified": false
+  },
+  {
+    "id": "azet",
+    "name": "Azet",
+    "group": "sk-cz",
+    "domains": ["azet.sk"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.azet.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "verified": false
+  },
+  {
+    "id": "centrum-sk",
+    "name": "Centrum.sk",
+    "group": "sk-cz",
+    "domains": ["centrum.sk"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.centrum.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://pomoc.centrum.sk/problem-category/other/emailClientAccess",
+    "verified": true
+  },
+  {
+    "id": "atlas-sk",
+    "name": "Atlas.sk",
+    "group": "sk-cz",
+    "domains": ["atlas.sk"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.atlas.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://pomoc.centrum.sk/problem-category/other/emailClientAccess",
+    "verified": true
+  },
+  {
+    "id": "pobox-sk",
+    "name": "Pobox.sk",
+    "group": "sk-cz",
+    "domains": ["pobox.sk"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.pobox.sk",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://pomoc.centrum.sk/problem-category/other/emailClientAccess",
+    "verified": true
+  },
+  {
+    "id": "centrum-cz",
+    "name": "Centrum.cz",
+    "group": "sk-cz",
+    "domains": ["centrum.cz"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.centrum.cz",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://freemail.help.economia.cz/articles/44668-adresy-postovnich-serveru",
+    "verified": true
+  },
+  {
+    "id": "atlas-cz",
+    "name": "Atlas.cz",
+    "group": "sk-cz",
+    "domains": ["atlas.cz"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.atlas.cz",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://freemail.help.economia.cz/articles/44668-adresy-postovnich-serveru",
+    "verified": true
+  },
+  {
+    "id": "volny-cz",
+    "name": "Volny.cz",
+    "group": "sk-cz",
+    "domains": ["volny.cz"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.volny.cz",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://freemail.help.economia.cz/articles/44668-adresy-postovnich-serveru",
+    "verified": true
+  },
+  {
+    "id": "gmail",
+    "name": "Gmail / Google Workspace",
+    "group": "global",
+    "domains": ["gmail.com", "googlemail.com"],
+    "mxSuffixes": ["google.com", "googlemail.com"],
+    "imap": {
+      "host": "imap.gmail.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["app_password", "oauth2"],
+    "hint": "Normal Google passwords are rejected. Use an app password (requires 2-Step Verification) or OAuth2.",
+    "helpUrl": "https://developers.google.com/workspace/gmail/imap/imap-smtp",
+    "verified": true
+  },
+  {
+    "id": "outlook",
+    "name": "Outlook.com / Microsoft 365",
+    "group": "global",
+    "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com"],
+    "mxSuffixes": ["mail.protection.outlook.com", "olc.protection.outlook.com"],
+    "imap": {
+      "host": "outlook.office365.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["oauth2"],
+    "hint": "IMAP access must be enabled in Outlook.com settings (Mail > Forwarding and IMAP).",
+    "helpUrl": "https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040",
+    "verified": true,
+    "blocked": "Microsoft allows IMAP only with OAuth2 (LOGINDISABLED). Supported from M6."
+  },
+  {
+    "id": "yahoo",
+    "name": "Yahoo Mail",
+    "group": "global",
+    "domains": ["yahoo.com"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.mail.yahoo.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["app_password"],
+    "hint": "Generate an app password in Yahoo account security and use it instead of your normal password.",
+    "helpUrl": "https://help.yahoo.com/kb/SLN4075.html",
+    "verified": true
+  },
+  {
+    "id": "icloud",
+    "name": "iCloud Mail",
+    "group": "global",
+    "domains": ["icloud.com", "me.com", "mac.com"],
+    "mxSuffixes": ["mail.icloud.com"],
+    "imap": {
+      "host": "imap.mail.me.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["app_password"],
+    "hint": "Requires an app-specific password (appleid.apple.com). Apple says the username is usually the part before @; if that fails, use the full address.",
+    "helpUrl": "https://support.apple.com/en-us/102525",
+    "verified": true
+  },
+  {
+    "id": "gmx-com",
+    "name": "GMX (gmx.com)",
+    "group": "global",
+    "domains": ["gmx.com"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.gmx.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Enable IMAP first in GMX settings (Email > Settings > POP3 & IMAP).",
+    "helpUrl": "https://support.gmx.com/pop-imap/imap/server.html",
+    "verified": true
+  },
+  {
+    "id": "gmx-net",
+    "name": "GMX (gmx.net / gmx.de)",
+    "group": "global",
+    "domains": ["gmx.net", "gmx.de", "gmx.at", "gmx.ch"],
+    "mxSuffixes": [],
+    "imap": {
+      "host": "imap.gmx.net",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Enable POP3/IMAP first in GMX settings.",
+    "helpUrl": "https://hilfe.gmx.net/pop-imap/imap/imap-serverdaten.html",
+    "verified": true
+  },
+  {
+    "id": "hostinger",
+    "name": "Hostinger",
+    "group": "global",
+    "domains": [],
+    "mxSuffixes": ["hostinger.com"],
+    "imap": {
+      "host": "imap.hostinger.com",
+      "port": 993
+    },
+    "altHosts": [],
+    "auth": ["password"],
+    "hint": "Log in with your full email address.",
+    "helpUrl": "https://www.hostinger.com/support/1575756-how-to-get-email-account-configuration-details-for-hostinger-email/",
+    "verified": true
+  }
+]

@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.0.1-blue?style=flat-square" alt="Version 0.0.1">
+  <img src="https://img.shields.io/badge/version-0.1.0-blue?style=flat-square" alt="Version 0.1.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.0.1).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, and app login (`mm login` / `whoami` / `logout`) exist; mailbox features (IMAP) are not implemented yet. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.1.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`) and IMAP settings discovery (`mm discover`) exist; connecting to mailboxes (IMAP login) is not implemented yet. See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -27,6 +27,7 @@ Available today:
 - **`mm doctor`** — checks Node version, env config, master key, Supabase reachability, database schema and login session; never prints secrets.
 - **`mm keygen`** — generates a new `MM_MASTER_KEY` for credential encryption.
 - **`mm login` / `mm logout` / `mm whoami`** — sign in to the app (invite-only Supabase users, hidden password prompt).
+- **`mm discover <email>`** — finds the IMAP settings for an address without logging in: built-in presets for 24 SK/CZ and global providers (by email domain or the domain's MX records), Mozilla ISPDB, the domain's autoconfig, DNS SRV; if nothing is found, pick your provider from the list or enter the IMAP host manually. Plain-language hints for typos, DNS problems and no internet.
 
 What it looks like in the terminal (email, user ID and project ref replaced with placeholders):
 
@@ -89,21 +90,21 @@ npm run build && npm link
 mm --help
 ```
 
-Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`. Mailbox features arrive from M1b on — see the roadmap.
+Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`. Mailbox connection arrives with M1b-2 — see the roadmap.
 
 ### Environment
 
 Config is read from `.env.local`, then `.env` (real environment variables win). [`.env.example`](.env.example) documents every variable:
 
-| Variable                        | Required | Purpose                                                                |
-| ------------------------------- | -------- | ---------------------------------------------------------------------- |
-| `SUPABASE_URL`                  | yes      | Supabase project URL                                                   |
-| `SUPABASE_PUBLISHABLE_KEY`      | yes      | Publishable key (formerly "anon"); safe because every table has RLS    |
-| `MM_MASTER_KEY`                 | yes      | 32 random bytes, base64 — from `mm keygen`; encrypts mailbox passwords |
-| `MM_MASTER_KEY_VERSION`         | no       | Key version, bump when rotating (default `1`)                          |
-| `MM_CONFIG_DIR`                 | no       | Where the login session is stored (default `~/.config/mail-manager`)   |
-| `MM_TEST_SUPABASE_A_*` / `_B_*` | tests    | Two test users for the RLS integration suite                           |
-| `MM_TEST_IMAP_*`                | tests    | Throwaway IMAP mailbox for integration tests                           |
+| Variable                        | Required | Purpose                                                                                             |
+| ------------------------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `SUPABASE_URL`                  | yes      | Supabase project URL                                                                                |
+| `SUPABASE_PUBLISHABLE_KEY`      | yes      | Publishable key (formerly "anon"); safe because every table has RLS                                 |
+| `MM_MASTER_KEY`                 | yes      | 32 random bytes, base64 — from `mm keygen`; encrypts mailbox passwords                              |
+| `MM_MASTER_KEY_VERSION`         | no       | Key version, bump when rotating (default `1`)                                                       |
+| `MM_CONFIG_DIR`                 | no       | Where the login session is stored (default `~/.config/mail-manager`)                                |
+| `MM_TEST_SUPABASE_A_*` / `_B_*` | tests    | Two test users for the RLS integration suite                                                        |
+| `MM_TEST_IMAP_*`                | tests    | Throwaway IMAP mailbox for integration tests (`MM_TEST_IMAP_USER` alone enables the discovery test) |
 
 ### Development
 

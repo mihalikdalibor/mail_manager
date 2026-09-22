@@ -19,7 +19,7 @@
 
 - `config` — env validation (missing / malformed master key rejected).
 - `crypto` — round trip; wrong key fails; tampered ciphertext/tag/IV fails; AAD mismatch fails; IV unique across calls.
-- `providers/discover` — preset match, ISPDB XML parsing, SRV parsing, MX guess, fallthrough order (fetch/DNS mocked).
+- `providers/*` — email/host validation (IDN, IP literals, injection characters), presets file validity + MX-suffix matching (label boundary, longest wins), autoconfig/ISPDB XML parsing (SSL/993 only, placeholders, malformed/hostile XML), discovery order and fallthrough, HTTPS-only redirects, body cap, timeouts (fetch/DNS faked); CLI provider picker + manual host entry (prompts faked).
 - `filters/schema` + `compile` — each criterion → expected imapflow SearchObject; AND/OR/NOT nesting; date/size edge cases; invalid input rejected.
 - `stats` — aggregation over fixture envelopes; Gmail `All Mail` de-duplication.
 - `planner` — UID sets, totals, UIDVALIDITY recorded; plan serialisation.
@@ -31,7 +31,7 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 ## Integration tests (real IMAP)
 
 - **Dedicated throwaway mailbox only.** Never a personal account.
-- Configured via `MM_TEST_IMAP_HOST/PORT/USER/PASS`; tests `skip` when unset.
+- Configured via `MM_TEST_IMAP_HOST/PORT/USER/PASS`; tests `skip` when unset. `MM_TEST_IMAP_USER` alone enables the discovery test (`tests/integration/discover.test.ts`, live DNS only, no login). `tests/integration/presets-live.test.ts` needs no env, only internet: every preset host must answer on 993 with a valid certificate and an IMAP greeting (no login).
 - Tests may only touch folder **`mm-test`** (and its Trash moves). A guard in the test helper refuses any other folder.
 - `tests/integration/seed.ts` creates `mm-test` and `APPEND`s synthetic messages: varied senders/domains, dates across years, sizes (1 KB → 5 MB), with/without attachments, seen/flagged states.
 - Cleanup after run: delete `mm-test` contents.

@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b (not started)** — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003)
+**Current milestone: M1b-2 IMAP session (not started)** — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed)
 
 ---
 
@@ -53,20 +53,44 @@ Decisions (2026-09-21): migrations via Supabase CLI (npm devDependency, `npm run
 ## M1b — IMAP foundation, providers & test ground
 
 Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodemailer MailComposer (devDependency, no SMTP); ~150 messages / ~25 MB seeded deterministically into folder `mm-test` of **test@example-test-domain.eu** (Websupport).
+Split on 2026-09-22 into M1b-1 → M1b-2 → M1b-3 (each its own assignment).
 
-- [ ] **User:** add `MM_TEST_IMAP_USER=test@example-test-domain.eu` + `MM_TEST_IMAP_PASS` to `.env.local` (host comes from discovery; `MM_TEST_IMAP_HOST=imap.m1.websupport.sk` only as fallback)
-- [ ] `presets.json` — SK/CZ: Websupport (`imap.m1.websupport.sk`, alt `imap.websupport.sk`), WebHouse (`mail.webhouse.sk`), Webglobe (`mail.webglobe.cz`, `imap.webglobe.sk`), Active24 (`email.active24.com`), HostCreators (`imap.hostcreators.sk`), Forpsi (`imap.forpsi.com`), Wedos (per-mailbox `imap-*.wedos.net` → manual host), Seznam/Email.cz/Post.cz (`imap.seznam.cz`), Zoznam, Azet, Centrum; global: Gmail, **Outlook (XOAUTH2 only — LOGINDISABLED, blocked until M6 OAuth)**, Yahoo, iCloud, GMX, Hostinger. Each with domains, **MX suffixes**, auth, hint, helpUrl, verified flag
-- [ ] `providers/discover.ts` — order: email-domain preset → **MX-suffix preset** (primary for custom domains; e.g. example-test-domain.eu → mx10.websupport.sk) → ISPDB → autoconfig → SRV → manual; injectable DNS/fetch + unit tests
-- [ ] `mm discover <email>` — shows detected provider/settings (no login)
-- [ ] `imap/session.ts` — imapflow connect (993, cert verify, timeouts), post-auth capabilities, logout, error mapping (auth failed, host not found, TLS, timeout, OAuth-only/LOGINDISABLED)
-- [ ] Provider restrictions analysis in `docs/PROVIDERS.md` (connection limits, auth, capabilities per provider, brute-force/IP-ban risk, Gmail limits, Outlook OAuth)
+### M1b-1 — Provider discovery (no login)
+
+Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix** (primary for custom domains; e.g. example-test-domain.eu → mx10.websupport.sk) → ISPDB → autoconfig (**HTTPS only**: `autoconfig.<domain>` + `<domain>/.well-known/autoconfig`) → SRV `_imaps._tcp` → manual. XML parsed with **fast-xml-parser**. Only implicit-TLS / 993 results accepted.
+
+- [x] **User:** add `MM_TEST_IMAP_USER=test@example-test-domain.eu` to `.env.local` (password not needed until M1b-2)
+- [x] `src/core/providers/presets.json` + zod schema — id, name, domains, `mxSuffixes`, imap host/port, `altHosts`, auth, hint, helpUrl, `verified`, optional `blocked` reason. SK/CZ: Websupport (`imap.m1.websupport.sk`, alt `imap.websupport.sk`), WebHouse (`mail.webhouse.sk`), Webglobe (`mail.webglobe.cz`, `imap.webglobe.sk`), Active24 (`email.active24.com`), HostCreators (`imap.hostcreators.sk`), Forpsi (`imap.forpsi.com`), Wedos (per-mailbox `imap-*.wedos.net` → manual host), Seznam/Email.cz/Post.cz (`imap.seznam.cz`), Zoznam, Azet, Centrum; global: Gmail (+ Google Workspace MX), **Outlook (+ M365 MX; blocked: XOAUTH2 only — LOGINDISABLED, until M6 OAuth)**, Yahoo, iCloud, GMX, Hostinger. Each preset verified against an official help page (`helpUrl` + `verified: true`) or marked `verified: false`
+- [x] `src/core/providers/discover.ts` — injectable DNS/fetch, per-lookup timeouts; failing sources fall through (never throw); MX sorted by preference, suffix matched on label boundary; `%EMAILADDRESS%`/`%EMAILLOCALPART%`/`%EMAILDOMAIN%` substituted; STARTTLS/143-only results skipped with a notice; redirects only to https; domain lowercased + IDN → ASCII. Result: source + provider + host/port/username + altHosts + verified + blocked + notices, or `manual` with the list of tried sources
+- [x] Unit tests: each source, order/fallthrough, suffix boundary, STARTTLS skip, placeholders, malformed XML, timeouts, Outlook blocked, IDN
+- [x] Three tiers (user, 2026-09-22): (1) autodetect as above (MX → IMAP mapping, e.g. `mx10/mx20.websupport.sk` → `imap.m1.websupport.sk`); (2) autodetect fails → user **picks the provider** from the preset list (SK/CZ first, blocked shown disabled); (3) proxied DNS / provider not listed → **manual IMAP host** (+ username, default = address). Core stays prompt-free (`pickableProviders`, `settingsFromPreset`, `manualSettings`); prompts in `src/cli/prompts/imap-settings.ts` (reused by M1c)
+- [x] **GeoIP hint** (`geoIpNotice`) — changed by the user 2026-09-22: **not** shown with discovery results; printed only when a connection fails (from M1b-2): "connection not successful — first check the address, password and IMAP server; if they're right, check whether the mailbox has GeoIP security on; if so, allow [country] or turn it off while Mail Manager connects". CLI names this computer's country; server variant takes an optional region (hosting not decided: local now, later Vercel or VPS)
+- [x] `mm discover <email>` — prints the result, unverified/blocked warnings, hint + helpUrl; nothing found → picker/manual in a TTY, exit 1 without TTY or on Cancel; no login, no password prompt
+- [x] Integration test (skips without `MM_TEST_IMAP_USER`): real DNS → Websupport via MX
+- [x] Domain check in plain language (user, 2026-09-22): MX lookup tells apart domain doesn't exist (typo/expired hint; online lookups stop, nothing sent to Mozilla; picker/manual still offered) / DNS error at the domain / DNS unreachable (no internet); each with a what-to-do message
+- [x] Live preset check `tests/integration/presets-live.test.ts`: every preset host + alt host answers on 993 with a valid certificate and an IMAP greeting (no login)
+- [x] `docs/PROVIDERS.md` — new discovery order, preset format, SK/CZ table with verification status, privacy note (domain sent to Mozilla ISPDB)
+- **Acceptance:** `mm discover` on the test address → Websupport via MX without manual host; gmail.com → Gmail; outlook.com → blocked notice; unknown domain → tried sources + provider picker + manual entry (TTY); no GeoIP text in discovery output; unit + integration tests, lint, typecheck, build green.
+
+### M1b-2 — IMAP session (needs M1b-1)
+
+- [ ] **User:** add `MM_TEST_IMAP_PASS` to `.env.local` (`MM_TEST_IMAP_HOST=imap.m1.websupport.sk` only as fallback; host normally from discovery)
+- [ ] imapflow dependency; `src/core/imap/session.ts` — connect (`secure: true`, 993, `tls.rejectUnauthorized`, `disableAutoIdle`, timeouts, redacting logger, `clientInfo`), post-auth capabilities, logout
+- [ ] `ServerFeatures` from `capabilities` + `enabled` with IMAP4rev2 folding (docs/IMAP.md §3.2, §9 M1); raw capability list kept for `mail_accounts.capabilities`
+- [ ] Error mapping: auth failed, host not found, TLS, timeout, OAuth-only/LOGINDISABLED, `MissingServerExtension` — no password in any message; timeout / connection refused → include the GeoIP hint (`geoIpNotice`)
+- [ ] Provider restrictions analysis in `docs/PROVIDERS.md` (connection limits, auth, capabilities per provider, brute-force/IP-ban risk, Gmail limits, Outlook OAuth); update docs/IMAP.md §7 with the measured Websupport capabilities
+- [ ] Integration tests on test@example-test-domain.eu: login + capabilities recorded; wrong password → auth error; no password in output
+- **Acceptance:** login works on the test mailbox with the discovered host; features built correctly (unit-tested with fixture capability sets); errors mapped; no password in output.
+
+### M1b-3 — Test ground (needs M1b-2)
+
 - [ ] Test ground: integration helpers (env, **folder guard: only `mm-test`**), deterministic synthetic mail generator (seeded; Slovak diacritics, varied senders/domains, dates 2019–2026, sizes 1 KB–5 MB, attachments, seen/flagged, `X-MM-Test-Seed` header) + manifest of expected facts, `npm run test:seed` (APPEND with internal dates), `npm run test:unseed`
-- [ ] Integration tests on test@example-test-domain.eu: discovery → Websupport, login + capabilities recorded, seeded count/manifest match, guard refuses other folders
-- **Acceptance:** discovery finds Websupport for test@example-test-domain.eu without manual host; login works; seeding is idempotent and matches the manifest; unit + integration tests pass; no password in output.
+- [ ] Integration tests on test@example-test-domain.eu: seeded count/manifest match, guard refuses other folders
+- **Acceptance:** seeding is idempotent and matches the manifest; guard refuses other folders; unit + integration tests pass; no password in output.
 
 ## M1c — Account commands (needs M1a + M1b)
 
-- [ ] `mm account add [email]` — discover (+ provider picker for SK/CZ hostings) → hints → hidden password → test login → encrypt → save
+- [ ] `mm account add [email]` — discover → (`chooseImapSettings`: provider picker / manual host from M1b-1) → hints → hidden password → test login (timeout/refused → GeoIP hint) → encrypt → save
 - [ ] `mm account list` / `test` / `remove` (confirm) / `update-password`
 - [ ] Integration test: add + test account on test@example-test-domain.eu; wrong password saves nothing
 - [ ] Follow-ups from the M1a review (2026-09-22):
@@ -117,6 +141,7 @@ Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodem
 
 ## M5 — Backup / export → [doc](docs/milestones/M5-backup.md)
 
+- [ ] Discovery lookup cache (decided 2026-09-22: implement around M4–M5): remember ISPDB/autoconfig/MX results per domain for a limited time (e.g. 24 h) so repeated lookups — many users or accounts on the same domain, the server app — don't ask Mozilla/DNS again; never cache failures caused by being offline; no email addresses in the cache (domain only)
 - [ ] `backup.ts` streaming `.eml` + single-pass sha256, `.part` → rename
 - [ ] Path layout + filename/folder sanitisation + tests
 - [ ] `manifest.json` + incremental skip

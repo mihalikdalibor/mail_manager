@@ -31,6 +31,11 @@ Large milestone — split into sub-milestones, each shippable alone.
 - **Risk:** Google restricted scope → verification + CASA assessment for public use (see SECURITY.md). Beta uses "testing" mode with named test users.
 - **Acceptance:** add Outlook.com and Gmail accounts via OAuth; token refresh works after expiry.
 
+## Server-side reuse of provider discovery (applies to M6a/M6b and any hosted stage)
+
+- **SSRF:** discovery's autoconfig URLs (`https://autoconfig.<domain>/…`, `https://<domain>/.well-known/…`) are chosen by whoever controls the domain and may resolve to private, loopback or link-local addresses. Fine for the local CLI; before discovery runs on a server, block those targets (custom DNS lookup on the fetch agent).
+- **GeoIP:** when a connection from the server fails, show `geoIpNotice({ kind: 'server', region })` so users allow the server's country (or turn GeoIP off) at their mail host. Set `region` once the hosting is chosen (Vercel or a VPS); without it the text says "the country where the Mail Manager server is hosted".
+
 ## Also in beta
 
 - MFA (TOTP) for app login.

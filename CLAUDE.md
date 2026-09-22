@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b (IMAP foundation, providers & test ground) — not started.** M0 and M1a done (reviewed, v0.0.1). `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b-2 (IMAP session) — not started.** M0, M1a (v0.0.1) and M1b-1 provider discovery (v0.1.0, C-004…C-008) done and reviewed; then M1b-3 (test ground). `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
@@ -20,6 +20,15 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 - **All DB access goes through repository interfaces** (`src/core/db/repos.ts`); Supabase code lives only in `src/core/db/supabase/`. This keeps a future migration off Supabase contained.
 - **Credential decryption stays behind one core interface** (`CredentialProvider`) so the CLI can later switch from local decryption to calling the hosted API.
 - **No email content in the cloud DB**: never store message bodies, subjects, or sender/recipient addresses of messages in Supabase. Allowed: accounts (encrypted secrets), saved filters, jobs, aggregate audit data (counts, bytes, filter definition).
+
+## User-facing errors (target users are non-technical)
+
+- Users are mostly amateurs who want to tidy mailboxes and download backups: **simple, working, well-managed errors**.
+- Every error the user can hit says **what happened and what to do next**, in plain words. Raw codes (`ENOTFOUND`, `AUTHENTICATIONFAILED`, HTTP status) may follow in brackets, never alone.
+- Tell apart the causes a user can fix: typo in the address / domain doesn't exist, DNS error at the domain, no internet, wrong password, provider needs an app password or OAuth, blocked by GeoIP, server down. Core returns a typed reason; the CLI/server shell maps it to text.
+- Hints are informational, never a dead end: a check that could be wrong (e.g. "domain doesn't exist" for an expired domain whose mailbox still works) must still let the user continue (pick the provider / enter the host). Don't warn about missing MX records — IMAP doesn't depend on MX.
+- Never show stack traces or raw library/server messages (they can leak data and confuse users); unexpected errors get a generic message.
+- **GeoIP hint on failed IMAP connections** (`geoIpNotice` in `src/core/providers/geoip.ts`): the CLI names "this computer's" country; the server passes `{ kind: 'server', region }`. **Wherever the server is deployed (local now, later Vercel or a VPS), configure that hosting country so the message names the right country** — without it the text falls back to "the country where the Mail Manager server is hosted".
 
 ## Safety rules (destructive operations)
 
@@ -46,7 +55,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 - TypeScript `strict`, ESM, Node 22. File names kebab-case.
 - zod at every boundary (CLI args, API input, filter JSON, env, DB rows).
 - Pass IMAP search criteria as imapflow objects — never hand-build IMAP command strings.
-- Vitest; core logic requires unit tests. Integration tests skip when `MM_TEST_IMAP_*` is unset.
+- Vitest; core logic requires unit tests. Integration tests skip when their `MM_TEST_*` env is unset; `tests/integration/presets-live.test.ts` needs only internet (TLS greeting on 993 for every preset host, no login).
 - Keep dependencies few; justify each new one.
 - Commits only when the user asks.
 
