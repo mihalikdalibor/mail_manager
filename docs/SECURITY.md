@@ -22,7 +22,7 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 - **Algorithm:** AES-256-GCM (Node `crypto`), authenticated encryption — tampering makes decryption fail.
 - **IV:** 12 random bytes per encryption, never reused. Stored with the row.
 - **Tag:** 16 bytes, stored separately; decryption must verify it.
-- **AAD (additional authenticated data):** bind ciphertext to `account_id` + `user_id`, so a ciphertext copied into another row fails to decrypt.
+- **AAD (additional authenticated data):** `mail_accounts:<user_id>:<account_id>` (`accountAad()` in `src/core/crypto.ts`), so a ciphertext copied into another row or another user's account fails to decrypt. `id` and `user_id` are immutable at the DB level (column-level grants) to keep the binding stable.
 - **Key:** `MM_MASTER_KEY` — 32 random bytes, base64, from env. Validated at startup (exact length).
 - **Rotation:** `key_version` column; see DATA_MODEL.md.
 - **In memory:** decrypt right before connecting, don't cache plaintext longer than the operation.
@@ -30,8 +30,12 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 
 ## Auth
 
-- Supabase Auth, email + password (MVP). MFA (TOTP) in beta.
-- CLI stores the Supabase session in `~/.config/mail-manager/session.json`, mode 600; refresh tokens handled by supabase-js.
+- Supabase Auth, email + password (MVP), **invite-only**: public signups disabled in the Supabase dashboard (verified live: `/auth/v1/settings` → `disable_signup: true`), users created there. No `mm signup`. `mm doctor` fails its `signup` check if signups are re-enabled. MFA (TOTP) in beta.
+- Every Supabase request has a timeout (10 s; 5 s inside `mm doctor`) and PostgREST auto-retries are off, so a paused or unreachable project fails fast with "Supabase unreachable" instead of hanging.
+- `mm login` prompts for the password (hidden) and refuses to run without a TTY.
+- CLI stores the Supabase session in `session.json` under `$MM_CONFIG_DIR`, `$XDG_CONFIG_HOME/mail-manager` or `~/.config/mail-manager` — dir 700, file 600, written atomically (tmp file 600 → rename). A corrupt file counts as logged out.
+- `mm logout` always deletes the local session, even offline (server-side revocation is best effort).
+- Table privileges: `anon` has none on `mail_accounts`; `authenticated` has no TRUNCATE and can't update `id`/`user_id`/`created_at` (see DATA_MODEL.md).
 - CLI uses the publishable key (formerly "anon") + user JWT → RLS applies. Service-role key never leaves the server.
 
 ## Destructive-operation protocol

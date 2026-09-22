@@ -4,3 +4,4 @@ node_modules/
 package-lock.json
 .claude/plans/
 .claude/review-output.md
+supabase/.temp/

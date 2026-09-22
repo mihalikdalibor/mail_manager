@@ -30,7 +30,7 @@ Later (beta): local web UI, scheduled backups/cleanups, IMAP→IMAP migration be
 
 ## Prerequisites
 
-- Node.js 22.13+ (the CLI itself runs on 22.12+; ESLint 10 needs 22.13+)
+- Node.js 22.13+ (required by @inquirer/prompts and ESLint 10)
 - A Supabase cloud project (free tier is fine; EU region recommended)
 - A **throwaway test mailbox** with IMAP enabled (for integration tests — never test on a real mailbox)
 
@@ -42,30 +42,42 @@ cp .env.example .env.local      # fill in SUPABASE_URL and SUPABASE_PUBLISHABLE_
 npm run dev -- keygen           # copy the output into .env.local as MM_MASTER_KEY
 npm run dev -- doctor           # checks Node, config and Supabase connectivity
 
+# one-time database setup (interactive; asks for the DB password)
+npx supabase login
+npx supabase link --project-ref <your-project-ref>
+npm run db:push                 # creates the tables (RLS included)
+
+# users are invite-only: create one in the Supabase dashboard (Auth → Users → Add user)
+npm run dev -- login
+npm run dev -- whoami
+
 # optional: install the `mm` command globally from this checkout
 npm run build && npm link
 mm --help
 ```
 
-Available commands so far: `mm keygen`, `mm doctor`. Mailbox features arrive from M1 on — see the roadmap.
+Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`. Mailbox features arrive from M1b on — see the roadmap.
 
 ### Development
 
-| Command                                   | What it does                              |
-| ----------------------------------------- | ----------------------------------------- |
-| `npm run dev -- <args>`                   | Run the CLI from source (tsx)             |
-| `npm run build`                           | Compile to `dist/`                        |
-| `npm test`                                | Unit tests                                |
-| `npm run test:integration`                | Integration tests (need `MM_TEST_IMAP_*`) |
-| `npm run lint` / `npm run typecheck`      | ESLint / TypeScript checks                |
-| `npm run format` / `npm run format:check` | Prettier                                  |
+| Command                                   | What it does                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
+| `npm run dev -- <args>`                   | Run the CLI from source (tsx)                                            |
+| `npm run build`                           | Compile to `dist/`                                                       |
+| `npm test`                                | Unit tests                                                               |
+| `npm run test:integration`                | Integration tests (skip without `MM_TEST_SUPABASE_*` / `MM_TEST_IMAP_*`) |
+| `npm run db:push` / `npm run db:status`   | Apply / list Supabase migrations                                         |
+| `npm run lint` / `npm run typecheck`      | ESLint / TypeScript checks                                               |
+| `npm run format` / `npm run format:check` | Prettier                                                                 |
 
 ## Roadmap
 
 | Milestone | Scope                                      | Doc                                        |
 | --------- | ------------------------------------------ | ------------------------------------------ |
 | M0        | Scaffold & tooling                         | [M0](docs/milestones/M0-scaffold.md)       |
-| M1        | Auth, credential encryption, accounts      | [M1](docs/milestones/M1-auth-accounts.md)  |
+| M1a       | Supabase: migration, encryption, login     | [M1](docs/milestones/M1-auth-accounts.md)  |
+| M1b       | IMAP, SK/CZ providers, test mailbox        | [M1](docs/milestones/M1-auth-accounts.md)  |
+| M1c       | Account commands                           | [M1](docs/milestones/M1-auth-accounts.md)  |
 | M2        | Mailbox insight (stats)                    | [M2](docs/milestones/M2-insight.md)        |
 | M3        | Filters & search                           | [M3](docs/milestones/M3-filters-search.md) |
 | M4        | Safe delete                                | [M4](docs/milestones/M4-safe-delete.md)    |

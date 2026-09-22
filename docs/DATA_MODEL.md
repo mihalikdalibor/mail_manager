@@ -1,33 +1,41 @@
 # Data model (Supabase / Postgres)
 
-All tables live in `public`, all have **RLS enabled** with ownership `user_id = auth.uid()`. Users come from Supabase Auth (`auth.users`). Migrations live in `supabase/migrations/` and are applied via the Supabase SQL editor or CLI (`supabase db push`, CLI does not need Docker for pushing to cloud).
+All tables live in `public`, all have **RLS enabled** with ownership `user_id = auth.uid()`. Users come from Supabase Auth (`auth.users`). Migrations live in `supabase/migrations/<YYYYMMDDHHMMSS>_<name>.sql` (Supabase CLI convention) and are applied with `npm run db:push` (Supabase CLI, no Docker needed for the cloud project; link once with `npx supabase login` + `npx supabase link --project-ref <ref>`). An applied migration is never edited — changes go into a new file. Signup is **invite-only**: public signups are disabled in the dashboard (Authentication → Sign In / Providers; verified live 2026-09-22, `disable_signup: true`) and users are created there. `mm doctor`'s `signup` check fails if they are ever re-enabled. `supabase/config.toml` also has `enable_signup = false`, but that file only affects the local dev stack and a future `supabase config push` — the dashboard setting is what counts for the cloud project.
 
 **Rule:** no message content, subjects, or message addresses are stored. See [ARCHITECTURE.md](ARCHITECTURE.md#1-email-content-never-goes-to-the-cloud-db).
 
 ## Tables
 
-### `mail_accounts` (M1)
+### `mail_accounts` (M1a — `supabase/migrations/20260921221108_init.sql`)
 
-| Column                  | Type                                                | Notes                                                  |
-| ----------------------- | --------------------------------------------------- | ------------------------------------------------------ |
-| id                      | uuid PK default `gen_random_uuid()`                 |                                                        |
-| user_id                 | uuid FK → auth.users, not null, `on delete cascade` | owner                                                  |
-| label                   | text                                                | user-facing name ("Work", "Old Gmail")                 |
-| email                   | text not null                                       | the mailbox address (the user's own, not message data) |
-| provider                | text                                                | preset key (`gmail`, `seznam`, …) or `custom`          |
-| host                    | text not null                                       |                                                        |
-| port                    | int not null default 993                            |                                                        |
-| username                | text not null                                       |                                                        |
-| auth_type               | text check in (`password`,`oauth2`)                 | `oauth2` from M6                                       |
-| secret_ciphertext       | bytea not null                                      | AES-256-GCM output                                     |
-| secret_iv               | bytea not null                                      | 12 bytes, unique per encryption                        |
-| secret_tag              | bytea not null                                      | 16 bytes GCM auth tag                                  |
-| key_version             | int not null                                        | which master key encrypted it                          |
-| capabilities            | jsonb                                               | cached server capabilities (UIDPLUS, MOVE, QUOTA, …)   |
-| created_at / updated_at | timestamptz                                         |                                                        |
-| last_checked_at         | timestamptz                                         | last successful login test                             |
+| Column                  | Type                                                                      | Notes                                                                          |
+| ----------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| id                      | uuid PK default `gen_random_uuid()`                                       | the app sends a client-generated id (bound into the AAD)                       |
+| user_id                 | uuid FK → auth.users, not null, default `auth.uid()`, `on delete cascade` | owner                                                                          |
+| label                   | text                                                                      | user-facing name ("Work", "Old Gmail")                                         |
+| email                   | text not null, check `email = lower(email)`                               | the mailbox address (the user's own, not message data); lowercased by the repo |
+| provider                | text                                                                      | preset key (`gmail`, `seznam`, …) or `custom`                                  |
+| host                    | text not null                                                             |                                                                                |
+| port                    | int not null default 993                                                  |                                                                                |
+| username                | text not null                                                             |                                                                                |
+| auth_type               | text check in (`password`,`oauth2`)                                       | `oauth2` from M6                                                               |
+| secret_ciphertext       | text not null (base64)                                                    | AES-256-GCM output                                                             |
+| secret_iv               | text not null (base64)                                                    | 12 bytes, unique per encryption                                                |
+| secret_tag              | text not null (base64)                                                    | 16 bytes GCM auth tag                                                          |
+| key_version             | int not null                                                              | which master key encrypted it                                                  |
+| capabilities            | jsonb                                                                     | cached server capabilities (UIDPLUS, MOVE, QUOTA, …)                           |
+| created_at / updated_at | timestamptz                                                               |                                                                                |
+| last_checked_at         | timestamptz                                                               | last successful login test                                                     |
 
-Unique `(user_id, email, host)`.
+Unique `(user_id, email, host)`. `updated_at` is set by a `before update` trigger.
+
+Secrets are base64 **text**, not `bytea`: PostgREST returns bytea as `\x…` hex strings, and text is portable to a future non-Supabase Postgres.
+
+**Access (M1a):**
+
+- RLS enabled; four policies (select / insert / update / delete) for `authenticated`, each `user_id = (select auth.uid())`.
+- Privileges are reset explicitly — `revoke all … from anon, authenticated` (Supabase's defaults include TRUNCATE, which bypasses RLS) — then `select, insert, delete` plus **column-level `update`** on everything except `id`, `user_id`, `created_at`. Changing `id`/`user_id` would break the AAD binding, so they are immutable.
+- `anon` has no privileges at all: an anon read fails with `42501` (`mm doctor`'s `database` check relies on this).
 
 ### `saved_filters` (M3)
 

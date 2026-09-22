@@ -4,8 +4,8 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M0 implemented, awaiting `/review-changes`; M1 next.** `TODO.md` is the source of truth for progress.
-- Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
+- **Current milestone: M1a (Supabase foundation) implemented, awaiting `/review-changes`; M1b next.** M0 done. `TODO.md` is the source of truth for progress.
+- Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
 
@@ -53,7 +53,9 @@ npm run dev -- <args>      # run CLI from source (tsx), e.g. npm run dev -- doct
 npm run build              # tsc -p tsconfig.build.json → dist/
 npm start -- <args>        # run the built CLI (dist/cli/bin.js)
 npm test                   # unit tests (tests/unit)
-npm run test:integration   # integration tests (tests/integration, needs MM_TEST_IMAP_*)
+npm run test:integration   # integration tests (tests/integration); suites skip without their env (MM_TEST_SUPABASE_*, later MM_TEST_IMAP_*)
+npm run db:push            # apply supabase/migrations to the linked cloud project (supabase CLI)
+npm run db:status          # local vs remote migrations
 npm run lint               # eslint (type-checked)
 npm run typecheck          # tsc --noEmit (src + tests + configs)
 npm run format             # prettier --write .
@@ -61,6 +63,8 @@ npm run format:check       # prettier --check . (run in CI)
 ```
 
 - Env: `.env.local` then `.env` from the repo root; real env wins. `mm doctor` validates it.
+- Supabase: link once with `npx supabase login` + `npx supabase link --project-ref <ref>` (interactive, asks for the DB password — the user runs these). Never edit an applied migration; add a new timestamped file.
+- Supabase code only in `src/core/db/supabase/`; everything else uses `createSupabaseServices()` (auth + accounts repo) and the interfaces in `src/core/auth.ts` / `src/core/db/repos.ts`.
 - TypeScript is pinned to 6.0.x (typescript-eslint doesn't support 7 yet) — don't bump without checking.
 - ESM + NodeNext: relative imports need `.js` extensions.
 - CLI entry: `src/cli/bin.ts` (executable) → `buildProgram()` in `src/cli/index.ts`; commands live in `src/cli/commands/`.

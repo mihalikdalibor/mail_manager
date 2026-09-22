@@ -4,7 +4,8 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
 
 ## C-001 — M0 scaffold & tooling (+ mm doctor, mm keygen)
 
-- **Status:** unreviewed
+- **Status:** reviewed (2026-09-21)
+- **Review:** All 13 criteria met (criterion 13 via the documented TODO deviation). Fresh-copy checks green, real `mm doctor` 4× OK exit 0, edge cases re-tested, no secrets in the commit. Deviations judged justified. Follow-ups (non-blocking): [MEDIUM] `src/core/config.ts:77-80` "set but empty — check your shell environment" hint also fires for an empty value in `.env.local` (reproduced), so reword it or track the source, and add a test for the hint; [LOW] gitleaks CI job never run, image pinned by tag not digest, add `persist-credentials: false`; [LOW] `src/cli/bin.ts` catch path untested; [LOW] CLAUDE.md:7 still says "awaiting /review-changes", update to "M0 done, M1 next".
 - **Date:** 2026-09-21
 - **Type:** feature
 - **Source:** `.claude/plans/2026-09-21-m0-scaffold.md` · TODO.md → "M0 — Scaffold & tooling"
@@ -43,3 +44,128 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - URL credentials rejected; strict decimal key version.
   - CI actions pinned by SHA, plus a `test:integration` step and a push branch filter.
   - TODO.md not updated (belongs to /review-changes): it still says "M0 (not started)" and references `dist/cli/index.js`.
+
+## C-002 — M1a Supabase foundation: migration, crypto, auth
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** Round 1 failed (public signups open on the cloud project, no Supabase timeouts). Round 2 passes together with C-003: all 12 criteria met; signups disabled live (`disable_signup: true`, doctor `signup` OK); 270 unit + 5 live RLS tests; CLI re-tested including an unreachable host. Follow-ups moved to TODO.md (M1c).
+- **Date:** 2026-09-22
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-21-m1a-supabase-foundation.md` · TODO.md → "M1a — Supabase foundation: migration, crypto, auth"
+- **Base:** 3805b587be9c5242efb4544365ef588f37994330; files already dirty before the run: `.claude/changes.md` (C-001 review), `.gitignore` (user edits: `.test.users.cred`, `.prettierignore`, `.prettierrc.json`), `CLAUDE.md` (user: docs line), `TODO.md` (M1 split), `docs/IMAP.md` (new, user)
+- **Files:**
+  - created:
+    - `supabase/config.toml`, `supabase/.gitignore`, `supabase/migrations/20260921221108_init.sql`
+    - `src/core/crypto.ts`, `src/core/credentials.ts`, `src/core/auth.ts`, `src/core/db/repos.ts`
+    - `src/core/db/supabase/{client,session-storage,accounts-repo,auth-service,index}.ts`, `src/cli/commands/auth.ts`
+    - `tests/unit/{crypto,credentials,session-storage,accounts-repo,auth-service,cli-auth}.test.ts`
+    - `tests/integration/setup.ts`, `tests/integration/supabase-rls.test.ts`
+  - modified:
+    - `package.json`, `package-lock.json`
+    - `src/core/doctor.ts`, `src/cli/commands/doctor.ts`, `src/cli/index.ts`
+    - `tests/unit/doctor.test.ts`, `vitest.integration.config.ts`
+    - `.github/workflows/ci.yml`, `.prettierignore`, `.gitignore` (removed a duplicate line only), `.env.example`
+    - `README.md`, `CLAUDE.md` (milestone line + Commands), `docs/DATA_MODEL.md`, `docs/SECURITY.md`, `docs/milestones/M1-auth-accounts.md`
+  - deleted: `src/core/db/.gitkeep`, `supabase/migrations/.gitkeep`, `tests/integration/.gitkeep`
+- **Requirements** (plan acceptance criteria, verbatim):
+  - [ ] `npm run db:push` applies the migration to the linked cloud project; re-running it is a no-op. (The user performs the link. If the project isn't linked yet, ask the user; don't work around it.)
+  - [ ] In the cloud DB, `public.mail_accounts` exists with RLS enabled, 4 policies (select/insert/update/delete) for `authenticated` only, and no privileges for `anon`.
+  - [ ] `mm login`: prompts for email (or takes `--email`) and a hidden password; on success prints `Logged in as <email>` and writes the session file (dir 700, file 600); wrong credentials → a clear message and exit 1, with no session file written or changed.
+  - [ ] `mm whoami` prints the email and user id when logged in; when not logged in it prints "Not logged in — run `mm login`" and exits 1.
+  - [ ] `mm logout` removes the local session (file deleted) and succeeds even when already logged out.
+  - [ ] `mm doctor` has 2 new checks: `database` (ok when the table exists and anon is blocked; fail when the table is missing, with the hint "run `npm run db:push`"; fail when anon can read it) and `session` (ok with the email when logged in; warn when not logged in). Doctor's existing behaviour is otherwise unchanged.
+  - [ ] `crypto.ts` unit tests pass: round trip; wrong key fails; tampered ciphertext / IV / tag fails; AAD mismatch fails, i.e. a ciphertext copied to another account or user can't be decrypted; IV is unique across calls; a wrong-length key is rejected.
+  - [ ] The RLS integration test (`npm run test:integration`, with test-user env set) passes: A can create, read, update and delete its own row; B sees 0 of A's rows, B's update/delete of A's row affects 0 rows, and B can't insert a row with A's `user_id`; an anon client's select fails with Postgres code `42501` (an empty result is not acceptable); B can't change `user_id` or `id` of its own row (column-level grants); the stored `secret_ciphertext` isn't the plaintext and decrypts back with `CredentialProvider`; all test rows are cleaned up.
+  - [ ] The integration suite **skips** (doesn't fail) cleanly when the test-user env is missing, which is the CI case.
+  - [ ] No password, token, master key or secret value appears in any command output, log, error or test snapshot. Verify by grepping outputs for the test passwords.
+  - [ ] Full checks green: lint, format:check, typecheck, test, test:integration, build, `npm audit --audit-level=high`.
+  - [ ] Docs updated: DATA_MODEL, SECURITY, the M1 milestone doc, CLAUDE.md (Commands + current milestone), README (commands), `.env.example`.
+- **Summary:** Added the persistence and identity layer:
+  - `mail_accounts` migration: RLS, reset grants (no anon, no TRUNCATE), immutable `id`/`user_id`, `updated_at` trigger; applied to the cloud project.
+  - AES-256-GCM secret encryption bound to user and account.
+  - `AccountsRepo` + Supabase impl and `CredentialProvider`; auth service + file session storage behind a `createSupabaseServices` factory.
+  - `mm login` / `logout` / `whoami`, and 2 new doctor checks (`database`, `session`).
+  - Node floor raised to 22.13; CI runs 22.13 + 22.
+- **Grade / mode:** M — solo + test writer (the risk signal alone is L; no disjoint slices; M1 was already split)
+- **Verification:**
+  - Mechanical:
+    - lint, format:check, typecheck, build: clean
+    - unit tests 242/242 (the test writer wrote 235 from the spec; 7 more were added after the review)
+    - `npm audit`: 0 vulnerabilities
+  - Live database:
+    - migration listed as applied remotely; second `db:push` printed "Remote database is up to date"
+    - anon `GET /rest/v1/mail_accounts` → 401 `42501`
+    - `test:integration` 5/5 against the cloud project with the 2 test users; 0 leftover rows; skips 5/5 without the env
+  - Secrets: 0 matches for the test passwords or the master key in the test output.
+  - CLI, agent shell:
+    - non-TTY login refused
+    - `whoami` logged out → exit 1
+    - `logout` idempotent
+    - logout with a broken config still deletes `session.json`
+    - missing config → clear error
+  - CLI, **user ran interactively:** wrong password → error; correct → logged in as test@mihalikdalibor.eu. Then from the agent shell:
+    - session dir 700, file 600
+    - `whoami` printed email + id
+    - doctor 6× OK
+    - `logout` removed the file; `whoami` → exit 1
+  - Mutation checks: each review fix is caught by a test.
+  - **Not verified:**
+    - the CI workflow run on GitHub (repo is private)
+    - Ctrl+C exit 130 in a real terminal (unit-tested only)
+    - an RLS policy mutation test: the policies on the shared cloud DB weren't broken on purpose to prove the test would fail
+- **Deviations:**
+  - The user's Supabase steps ran after Iterations 2–3, and in an external terminal: `supabase login` needs a TTY.
+  - Beyond the plan: `revoke execute` on the trigger function; `enable_signup = false` in `supabase/config.toml`.
+  - Review fixes:
+    - `currentUser` throws `unreachable` on network errors
+    - logout falls back to deleting the local session
+    - fully hidden password prompt
+    - unique tmp files
+    - empty-email check
+    - stronger plaintext test
+    - CI Node matrix
+  - Review findings #6, #7 and #8 were deliberately left (reasons in the plan's Implementation notes).
+  - TODO.md was not updated; that belongs to /review-changes.
+
+## C-003 — Review fixes for C-002: signup guard, Supabase timeouts
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** All 6 previous findings resolved and verified (signup guard with 8 tests, request timeouts + overall auth deadline, narrowed isUnreachable, anon write denials live). The extras (forced clean exit, `db.retry: false`, Request-signal fix, 401 mapping) are justified; exit codes, help/version and piped output intact. Non-blocking follow-ups: `bin.ts` exit path has no unit test; the auth deadline doesn't cancel the underlying library call (ms window, acceptable for a CLI; add a comment).
+- **Date:** 2026-09-22
+- **Type:** review-fix
+- **Source:** `.claude/review-output.md` (fixes C-002)
+- **Base:** 3805b587be9c5242efb4544365ef588f37994330; files already dirty before the run: all C-002 work (uncommitted), `.claude/changes.md`, `.claude/review-output.md`, `docs/IMAP.md`, the user's `.gitignore`/`CLAUDE.md` edits
+- **Files:**
+  - modified: `src/core/doctor.ts`, `src/cli/commands/doctor.ts`, `src/cli/bin.ts`, `src/core/db/supabase/{client,index,auth-service,accounts-repo}.ts`, `tests/unit/doctor.test.ts`, `tests/unit/accounts-repo.test.ts`, `tests/integration/supabase-rls.test.ts`, `docs/DATA_MODEL.md`, `docs/SECURITY.md`, `docs/milestones/M1-auth-accounts.md`, `.claude/review-output.md` (boxes ticked)
+  - created: `tests/unit/supabase-client.test.ts`
+- **Requirements** (the review-output checkboxes):
+  - [x] Docs accurate about invite-only; the `supabase/config.toml` `enable_signup` note corrected. **Correction to C-002's Deviations** (that entry isn't edited): `enable_signup = false` in `config.toml` affects only the local dev stack and a future `supabase config push`. The cloud setting is the dashboard toggle.
+  - [x] [HIGH] Public signups disabled on the cloud project. The user toggled it in the dashboard; `/auth/v1/settings` → `disable_signup: true` (verified live).
+  - [x] [HIGH→guard] `mm doctor` `signup` check (7 checks): ok / fail / key rejected / network / timeout / skipped, with tests.
+  - [x] [MEDIUM] Timeout on all Supabase calls: fetch wrapper with `AbortSignal.timeout` combined with the caller's or Request's signal; configurable (10 s default, 5 s in doctor). Timeouts surface as `AuthError('unreachable')` / `RepoError('unavailable')`, with never-resolving-fetch tests.
+  - [x] [LOW] `isUnreachable` narrowed to network failures and timeouts; a programming TypeError is not "unreachable" (tested).
+  - [x] [LOW] RLS integration test asserts anon insert/update/delete → 42501.
+- **Summary:**
+  - Added the doctor `signup` guard.
+  - Every Supabase request now has a timeout. PostgREST auto-retries are off (`db.retry: false`); otherwise one timeout becomes about 4× the budget plus 7 s.
+  - After the independent review: auth operations get an overall deadline (auth-js retries an expired-token refresh for about 30 s before every call). `bin.ts` flushes output and exits when a command finishes, so library retry timers can't keep the CLI alive or print late error stacks.
+- **Grade / mode:** M by file count — run solo (downgraded: small, fully specified fixes; the spec is the review file, so a spec-only test writer adds no independence). Independent review done.
+- **Verification:**
+  - lint, format:check, typecheck, build: clean
+  - unit tests 270/270 (+28 over C-002)
+  - `test:integration` 5/5 live, including the anon write checks
+  - `npm audit`: 0 vulnerabilities
+  - live `/auth/v1/settings` → `disable_signup: true`
+  - live `mm doctor`: 7 checks, `signup OK (invite-only)`, under 1 s
+  - Unreachable host (10.255.255.1) with an expired seeded session:
+    - `whoami` → "Supabase unreachable" in 10.1 s (before this fix: 31.2 s plus a raw auth-js error stack)
+    - `doctor` 20.1 s, each check capped at 5 s, session "could not check: Supabase unreachable"
+    - `logout` 10.2 s, still deletes the session
+  - piped `mm --help` output intact after the forced exit
+  - secret leak grep: 0 hits
+  - mutation checks: removing the timeout wrapper, re-enabling retries, not failing on `disable_signup: false`, or widening `isUnreachable` each make tests fail
+  - **Not verified:** the CI run on GitHub (private repo); a real paused Supabase project (simulated with an unroutable IP)
+- **Deviations:**
+  - Beyond the listed boxes: the overall auth deadline and the forced clean exit in `bin.ts` (the review found the refresh path still took ~30 s); `db.retry: false`; the Request-signal fix; `signup` maps 401/403 to "key rejected".
+  - Not done (optional in the review): running doctor's HTTP probes in parallel. Worst case stays ~20 s on a dead host.
+  - The follow-ups (lowercase `host`, force timestamps on insert, revoke the old refresh token on re-login) stay in `review-output.md` for M1c / the next migration.

@@ -8,6 +8,7 @@ coverage/
 .env
 .env.*
 !.env.example
+.test.users.cred
 
 # Local mail exports (contain personal data)
 backups/
@@ -21,8 +22,12 @@ npm-debug.log*
 .idea/
 .vscode/
 review-output
-
+.prettierignore
+.prettierrc.json
 supabase_pass
 
 # Local planning files (from /next)
 .claude/plans/
+
+# Local credential files (never commit)
+*.cred

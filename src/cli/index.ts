@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
+import { registerAuth } from './commands/auth.js';
 import { registerDoctor } from './commands/doctor.js';
 import { registerKeygen } from './commands/keygen.js';
 
@@ -19,6 +20,7 @@ export function buildProgram(options: BuildOptions = {}): Command {
     .name('mm')
     .description('Mail Manager — manage IMAP mailboxes: insight, filters, safe delete, backup')
     .version(pkg.version);
+  registerAuth(program);
   registerKeygen(program);
   registerDoctor(program);
   return program;
