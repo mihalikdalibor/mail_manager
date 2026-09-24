@@ -25,6 +25,7 @@
 - `planner` — UID sets, totals, UIDVALIDITY recorded; plan serialisation.
 - `delete` — with a **mocked session interface**: batching, UIDVALIDITY change aborts, no-UIDPLUS refuses expunge, never calls folder-wide expunge, audit written for ok/partial/failed.
 - `backup` — manifest generation, sha256 verify, incremental skip, filename sanitisation (path traversal in folder names / subjects).
+- `test-ground-generator` — the synthetic test mail (M1b-3a): byte-identical builds + pinned digest, sizes/dates/flags/attachment mixes, raw headers ↔ manifest facts, reserved domains only, diacritics, no network.
 
 Design for testability: core modules depend on small interfaces (`ImapSession`, repos, `CredentialProvider`) so unit tests pass fakes.
 
@@ -33,8 +34,12 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 - **Dedicated throwaway mailbox only.** Never a personal account.
 - Configured via `MM_TEST_IMAP_HOST/PORT/USER/PASS`; tests `skip` when unset. `MM_TEST_IMAP_USER` alone enables the discovery test (`tests/integration/discover.test.ts`, live DNS only, no login). `tests/integration/presets-live.test.ts` needs no env, only internet: every preset host must answer on 993 with a valid certificate and an IMAP greeting (no login).
 - Tests may only touch folder **`mm-test`** (and its Trash moves). A guard in the test helper refuses any other folder.
-- `tests/integration/seed.ts` creates `mm-test` and `APPEND`s synthetic messages: varied senders/domains, dates across years, sizes (1 KB → 5 MB), with/without attachments, seen/flagged states.
-- Cleanup after run: delete `mm-test` contents.
+- **Test ground** (`tests/support/test-ground/`, test tooling: typechecked and linted, not built, not collected as tests):
+  - M1b-3a — `generator.ts` builds 150 synthetic messages (~26.7 MiB; 1 KiB–4.9 MB each; internal dates 2019–2026; Slovak diacritics; senders on reserved domains only, incl. `spam.test` and the look-alike `spam.test.evil.test`; with/without attachments; seen/flagged mixes) with nodemailer MailComposer (devDependency, no SMTP), byte-identical on every run, plus a manifest of expected facts (`manifest.ts`).
+  - M1b-3b — folder guard, `npm run test:seed` (APPEND with flags + internal dates, only missing messages; refuses when `mm-test` holds foreign or older-version mail) and `npm run test:unseed` (deletes the `mm-test` folder).
+- **Identity contract:** every seeded message carries `X-MM-Test-Seed: v<SEED_VERSION>-<NNN>` (3-digit index; match the header name case-insensitively, as IMAP does) and `Message-ID: <v<N>-<NNN>@mm-test.invalid>`. The manifest's `size` equals the server's `RFC822.SIZE` (CRLF bytes).
+- **Changing the generator:** any change to the output or facts (pools, sizes, flags, dates, the nodemailer version) fails the pinned digest in `tests/unit/test-ground-generator.test.ts`. Bump `SEED_VERSION`, add a new `PINNED_DIGESTS` entry (never edit an old one), then `npm run test:unseed` + `npm run test:seed`.
+- `mm-test` stays seeded between runs (M3–M5 reuse it); `npm run test:unseed` (M1b-3b) deletes the folder. No cleanup after each run.
 - Keep runs small — provider rate limits (Gmail bandwidth/connection limits).
 - **IMAP session test** (`tests/integration/imap-session.test.ts`, needs `MM_TEST_IMAP_USER` + `MM_TEST_IMAP_PASS`; `MM_TEST_IMAP_HOST` only as a fallback when discovery finds nothing): the host comes from discovery (real DNS, no HTTP) → login → features (UIDPLUS, MOVE, QUOTA on Websupport) → logout, then **exactly one** wrong-password attempt → `auth-failed` with the generic message. All stdout/stderr and every inspected session/error is checked for the password.
 - **One wrong attempt per run, no retries.** Providers ban IPs after repeated failures (fail2ban). Never add more wrong-password cases and never enable vitest `retry` in `vitest.integration.config.ts` or that file. Don't run the suite in a loop.

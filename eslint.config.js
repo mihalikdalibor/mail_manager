@@ -16,4 +16,15 @@ export default tseslint.config(
   },
   // Core logic must not print; only the CLI shell talks to the terminal.
   { files: ['src/core/**/*.ts'], rules: { 'no-console': 'error' } },
+  // nodemailer is a devDependency for the synthetic test mail only (tests/support); the app
+  // itself never sends or composes mail.
+  {
+    files: ['src/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [{ group: ['nodemailer', 'nodemailer/*'], message: 'Test tooling only.' }] },
+      ],
+    },
+  },
 );

@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" alt="Version 0.3.0">
+  <img src="https://img.shields.io/badge/version-0.4.0-blue?style=flat-square" alt="Version 0.4.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.3.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.4.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a deterministic synthetic test-mail generator for the integration test ground exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -144,6 +144,7 @@ src/
 supabase/migrations/   SQL migrations (applied with npm run db:push)
 tests/unit/            Vitest unit tests
 tests/integration/     real-Supabase suites (skip without MM_TEST_* env)
+tests/support/         test tooling (synthetic test mail generator; seed/unseed from M1b-3b)
 docs/                  architecture, security, data model, milestones
 ```
 

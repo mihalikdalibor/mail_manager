@@ -548,3 +548,50 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - username trim;
   - the `pairLockoutChallengeMs` policy field;
   - the test writer's tests updated to these spec changes.
+
+## C-013 — M1b-3a synthetic mail generator (offline test ground)
+
+- **Status:** reviewed (2026-09-24)
+- **Review:** All 16 criteria met (reviewer re-ran typecheck/lint/test/build/format, the generator test incl. another TZ, npm ls/audit; a throwaway double build matched the pinned digest; dumped messages inspected; sub-stream no-overlap claim verified; tests/integration not run). Non-blocking follow-ups: the tiny message has one base sentence though the plan's edge-case text said none (guarded by the <1,100 B check); the test comment "every message has a diacritic in From or Subject" (encoded-words check) only holds for this seed — relax it when `SEED_VERSION` changes; the live `imap-session` integration failure from the accidental run is still uninvestigated (user to check the mailbox).
+- **Date:** 2026-09-24
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-24-m1b3a-test-ground-generator.md`, TODO.md → "M1b-3 — Test ground" → "M1b-3a — Synthetic mail generator (offline)"
+- **Base:** c113bf24c4309f4596b788b0ec4b9d97cf78fd72. Files already dirty before the run: `TODO.md` (the M1b-3 rewrite + 3a/3b split from `/next`, confirmed by the user).
+- **Files:**
+  - Created: `tests/support/test-ground/prng.ts`, `tests/support/test-ground/content.ts`, `tests/support/test-ground/manifest.ts`, `tests/support/test-ground/generator.ts`, `tests/unit/test-ground-generator.test.ts`.
+  - Modified: `package.json` + `package-lock.json` (devDependency `nodemailer` 10.0.10, exact), `eslint.config.js` (`no-restricted-imports` for `nodemailer` under `src/**`), `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md` (M1b-3 decisions, M1b-3a design + verification), `README.md` (project tree), `CLAUDE.md` (one Conventions line on `tests/support/` + `SEED_VERSION`).
+- **Requirements (plan acceptance criteria):**
+  - [ ] `buildTestGround()` returns exactly 150 messages; building twice gives identical `raw` bytes and identical facts.
+  - [ ] `groundDigest()` covers raw bytes **and** each message's facts; equals `PINNED_DIGESTS[SEED_VERSION]` in the unit test; any output/facts change fails with "generator output changed: bump SEED_VERSION and add a new PINNED_DIGESTS entry" (existing entries never edited).
+  - [ ] Every message 1,024–4,900,000 bytes; total 20 MiB–28 MiB; ≥ 1 message < 1,100 bytes and ≥ 1 > 4,718,592 bytes.
+  - [ ] Internal dates 2019-01-01 … 2026-06-30 (UTC, whole seconds), ≥ 8 per year 2019–2026; exactly 6 messages with a Date header 1–3 days earlier, all others equal.
+  - [ ] Raw `Date` header = `new Date(sentDate).toUTCString().replace('GMT', '+0000')`.
+  - [ ] Header ↔ facts: `From` address + name, `To`, decoded `Subject`, `Message-ID`, number of attachment parts, decoded `filename*0*=utf-8''…` names.
+  - [ ] Slovak diacritics in each category (names, subjects, file names, bodies — QP-encoded Slovak letter in ≥ 90% of bodies); full set `áäčďéíľĺňóôŕšťúýž` across categories; all pool strings NFC.
+  - [ ] Exactly one case-sensitive `X-MM-Test-Seed: v<SEED_VERSION>-<NNN>` header and a unique `Message-ID: <v<N>-<NNN>@mm-test.invalid>` per message.
+  - [ ] CRLF only; no `X-Mailer`; `=?UTF-8?Q?` words; `filename*0*=utf-8''` parameters.
+  - [ ] Reserved domains only (`*.test`, `*.example`, `*.invalid`, `example.com/.net/.org` + subdomains); ≥ 10 × `spam.test`, ≥ 3 × `spam.test.evil.test`; recipient always `mm-test@mm-test.invalid`.
+  - [ ] Flag combos ≥ 5 each (none, `\Seen`, `\Flagged`, both); ≥ 30 with and ≥ 30 without attachments; ≥ 5 with exactly 2.
+  - [ ] Manifest totals (count, bytes, per year, per domain, seen, flagged, with attachments, date offset) = sums over facts; `facts.size === raw.length`.
+  - [ ] No network: socket connect / DNS / fetch spied to throw during building; MailComposer with `disableUrlAccess` + `disableFileAccess`.
+  - [ ] nodemailer devDependency pinned exactly 10.0.10, no transitive packages, only `nodemailer/lib/mail-composer` imported, nothing under `src/` imports it.
+  - [ ] lint, typecheck, test, build, format:check green; digest identical under `TZ=Pacific/Kiritimati`.
+- **Summary:** Deterministic synthetic test mail for the `mm-test` folder, in `tests/support/test-ground/` (test tooling, no `src/` change): mulberry32 PRNG with per-message sub-streams, invented Slovak content pools on reserved domains, a two-phase generator (plan all specs from one stream → compose each with nodemailer MailComposer, adjusting a text filler to fixed size-class targets), and an in-code manifest. Output: 150 messages, 28,044,687 bytes (26.75 MiB), 1,030 B … 4,850,000 B, digest `4e691928…481b` pinned for `SEED_VERSION` 1. Seeding/guard/live test are M1b-3b.
+- **Grade / mode:** M — solo + test writer. The test writer wrote the unit test file from the spec + interfaces only (34 tests; 33 passed on first run against the code, the 34th was the digest placeholder). After the independent review the file was tightened to 36 tests.
+- **Verification:**
+  - Baseline: 30 files / 1078 unit tests, lint/typecheck/build/format green. Now: 31 files / 1114 passed; lint, typecheck, build, format:check green, no warnings; `dist/` contains no `tests/support`.
+  - `TZ=Pacific/Kiritimati LANG=tr_TR.UTF-8 npx vitest run tests/unit/test-ground-generator.test.ts` → 36 passed (same digest). Throwaway build script: identical digest over 3 runs + another TZ; ~0.8 s per build.
+  - `npm ls nodemailer` → 10.0.10, no children; `npm audit --audit-level=high` → 0 vulnerabilities; `grep -rn nodemailer src/` → nothing; the new ESLint rule was proven to fire on a probe import under `src/core/` (probe deleted).
+  - Raw output inspected (`.eml` dumps in the session scratchpad, not committed): exact `X-MM-Test-Seed` casing, valid `Date: … +0000`, Q-encoded words, `filename*0*=utf-8''`, fixed boundaries, CRLF, no `X-Mailer`.
+  - Mutation checks (each reverted): no `normalizeHeaderKey`, date as string, LF newlines, no date offsets, real-domain recipient, ASCII-only bodies, wrong attachment bytes, B-encoded headers — each fails the intended test(s).
+  - Offline security probes (`bash .claude/security/probes/run-all.sh`): static-rules, input-fuzz, discovery-ssrf, imap-session, crypto-local, local-hygiene clean; secrets-scan reports the same 6 findings in git history commit 0ed2604 as in C-012 (pre-existing, not this change).
+  - Independent review: 0 bugs in the generator (it independently verified sizes, dates, 85/85 attachment decodes, 7-bit output, no split multibyte Q-words). 1 medium + 7 low test/doc findings, all resolved: body-diacritics test now checks only the text/plain part (it previously also matched Q-encoded headers); attachments decoded and checked against `bytes`/`contentType`; every encoded word must be `=?UTF-8?Q?` and every disposition `filename*0*=utf-8''`; strict per-word UTF-8 decoding; exact design constants asserted (50/60/20/20 flags, 12/4 spam senders, 79 with attachments, 6 with two); network spies cover both builds + `dns.resolve`; ESLint rule for `src/`; comments corrected (~26.7 MiB; sub-stream independence wording).
+  - **Accidental live run:** `npm run test:integration` was run once as a "suite loads" check, but `.env.local` has `MM_TEST_IMAP_*` set, so it ran the live IMAP session test (one good login + its one allowed wrong-password attempt). 1 of 33 failed; re-running only the three non-login files (presets, discover, supabase-rls) → 31/31 passed, so the failure is in `tests/integration/imap-session.test.ts`. This change touches nothing under `src/` or `tests/integration/`; the live test was deliberately **not** re-run (no repeated wrong-password attempts) — cause not investigated, no baseline for it.
+  - Not verified: anything live (upload, server `RFC822.SIZE`/`INTERNALDATE` equality, `PERMANENTFLAGS`) — that is M1b-3b.
+- **Deviations:**
+  - `TODO.md` boxes and the "Current milestone" lines in `TODO.md` / `CLAUDE.md` not updated (left to `/review-changes`, per `/implement`).
+  - 79 messages with attachments, not the 77 the plan's table text said (31 + 38 + 8 + 2 = 79; plan arithmetic slip); the test asserts 79.
+  - Added the `eslint.config.js` rule (review finding) — not in the plan.
+  - Unit test file tightened after review beyond the plan's list (see above).
+
+---

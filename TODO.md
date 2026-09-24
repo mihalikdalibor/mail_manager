@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-3 Test ground (not started)**, then **M1b-4 Logging foundation** (added 2026-09-23), then M1c — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M1b-3 Test ground — M1b-3a generator done 2026-09-24 (C-013, reviewed); next M1b-3b guard + seed/unseed + live test**, then **M1b-4 Logging foundation** (added 2026-09-23), then M1c — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -102,9 +102,24 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 
 ### M1b-3 — Test ground (needs M1b-2a)
 
-- [ ] Test ground: integration helpers (env, **folder guard: only `mm-test`**), deterministic synthetic mail generator (seeded; Slovak diacritics, varied senders/domains, dates 2019–2026, sizes 1 KB–5 MB, attachments, seen/flagged, `X-MM-Test-Seed` header) + manifest of expected facts, `npm run test:seed` (APPEND with internal dates), `npm run test:unseed`
-- [ ] Integration tests on test@example-test-domain.eu: seeded count/manifest match, guard refuses other folders
-- **Acceptance:** seeding is idempotent and matches the manifest; guard refuses other folders; unit + integration tests pass; no password in output.
+Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-test` holds foreign/unexpected mail (never deletes messages); `test:unseed` deletes the whole `mm-test` folder (IMAP DELETE, no EXPUNGE); the integration test runs seed itself (first run uploads ~25 MB, later runs nothing); `mm-test` stays seeded between runs for M3–M5. Split into M1b-3a (generator, offline) → M1b-3b (guard, seed/unseed, live test). Both live in `tests/support/test-ground/` (tsx, no `src/` changes).
+
+#### M1b-3a — Synthetic mail generator (offline) ✅
+
+- [x] Deterministic generator: seeded PRNG + nodemailer MailComposer (devDependency, exact pin, MIT-0, 0 deps, no SMTP), CRLF, fixed boundaries/Message-ID/Date → byte-identical per `SEED_VERSION`: exactly 150 messages, 20–30 MB total, 1 KB–5 MB each, internal dates 2019–2026 (Date header equal except a few deliberately offset), Slovak diacritics (names, subjects, bodies, attachment names), senders on reserved domains only (`.test`/`.example`, incl. `spam.test` and a look-alike `spam.test.evil.test`), with/without attachments, `\Seen`/`\Flagged` mixes, `X-MM-Test-Seed: v<N>-<NNN>` (3-digit index) on every message
+- [x] In-code manifest (per message: seed id, Message-ID, sender/domain, subject, sent + internal date, exact byte size, flags, attachments; totals per year/domain/flag/attachment + total bytes)
+- [x] Unit tests: byte-identical twice + pinned digest (a generator change fails until `SEED_VERSION` is bumped), count/size/total/year ranges, diacritics, header + unique Message-ID on every message, CRLF only, reserved domains only, flag/attachment/date-offset mixes, manifest totals = per-message facts
+- **Acceptance:** same bytes on every run; all ranges above hold; manifest matches the generated messages; no network; lint, typecheck, unit tests, build green.
+- Logging: none (test tooling).
+
+#### M1b-3b — Folder guard, seed/unseed, live test (needs M1b-3a)
+
+- [ ] Live-IMAP env helper (address/password from `MM_TEST_IMAP_*`, host via discovery with `MM_TEST_IMAP_HOST` fallback, plain message when unset; reused by `imap-session.test.ts`), one login per run via `guardedOpenSession`
+- [ ] **Folder guard**: resolves the real `mm-test` path once (namespace prefix) and refuses any other path — before any IMAP command — for every folder operation; tests never get the raw client
+- [ ] `npm run test:seed`: create `mm-test` if missing → append only messages whose seed id is missing (flags + internal date) → reset drifted flags → verify; refuses (appends nothing) when the folder holds foreign, duplicate, older-version or changed messages and says to run unseed. `npm run test:unseed`: deletes the `mm-test` folder (guarded). Output: counts only — no password, address, host or server text
+- [ ] Unit tests: guard path resolution + refusals (fake client records zero calls), seed/unseed against a fake client (empty, partial, complete, foreign, duplicate, flag drift)
+- [ ] Integration test on test@example-test-domain.eu (skips without env): seed → second seed appends 0 → server count, sizes, internal dates, flags, Message-IDs match the manifest → guard refuses `INBOX`, `Trash`, `mm-test/x`, `MM-TEST`, `mm-test2`, `*`; no password in captured output
+- **Acceptance:** a second seed changes nothing; server state matches the manifest; guard refuses other folders before any IMAP command; unseed leaves no `mm-test` folder; no `src/` change; lint, typecheck, unit + integration tests, build green; leak check clean.
 - Logging: none (seed/unseed are npm scripts, not `mm` commands).
 
 ### M1b-4 — Logging foundation (needs M1b-2b; after M1b-3, before M1c) → [design](docs/LOGGING.md)
@@ -157,7 +172,7 @@ Decisions (2026-09-23): four kinds of records split by purpose — audit trail (
 - [ ] `mm search` (count, size, top senders, samples, `--json`)
 - [ ] Gmail `X-GM-RAW` compile + cross-check vs standard search, `--gmail-only` (IMAP.md §5.6)
 - [ ] Gmail search equivalence integration test (one case per mapping row, expected-differences list)
-- [ ] Integration seed script (`tests/integration/seed.ts`) + folder guard
+- [ ] Extend the M1b-3 test-ground generator with one seeded case per filter criterion (bump `SEED_VERSION`, then `npm run test:unseed` + `test:seed`)
 - [ ] `0002_saved_filters.sql` + `FiltersRepo`
 - [ ] `mm filter save/list/show/delete`, `--filter <name>`
 - [ ] Logging: `search.finish` (criterion names only, never values), `gmail.search-mismatch`, `filter.save`/`filter.delete` → `audit_log`

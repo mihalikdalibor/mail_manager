@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-3 (test ground) — not started**, then M1b-4 (logging foundation, added 2026-09-23), then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010) and M1b-2b login guard (C-012) done and reviewed. `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b-3 (test ground) — M1b-3a generator done (v0.4.0, C-013); next M1b-3b** (folder guard, `npm run test:seed`/`test:unseed`, live test), then M1b-4 (logging foundation, added 2026-09-23), then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012) and M1b-3a synthetic mail generator (v0.4.0, C-013) done and reviewed. `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `LOGGING.md` (what is logged, where, retention, event catalog), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
@@ -68,6 +68,7 @@ Design and event catalog: `docs/LOGGING.md` (foundation built in M1b-4).
 - zod at every boundary (CLI args, API input, filter JSON, env, DB rows).
 - Pass IMAP search criteria as imapflow objects — never hand-build IMAP command strings.
 - Vitest; core logic requires unit tests. Integration tests skip when their `MM_TEST_*` env is unset; `tests/integration/presets-live.test.ts` needs only internet (TLS greeting on 993 for every preset host, no login).
+- Test tooling that isn't a test lives in `tests/support/` (typechecked + linted, not built, not collected by Vitest). The synthetic test mail (`tests/support/test-ground/`) is byte-deterministic: any change to its output must bump `SEED_VERSION` (see `docs/TESTING.md`).
 - Keep dependencies few; justify each new one.
 - Commits only when the user asks.
 

@@ -68,7 +68,25 @@ Three tiers (user decision 2026-09-22):
 
 ### M1b-3 — Test ground
 
-- Test ground on **test@example-test-domain.eu** (Websupport): folder guard (`mm-test` only), deterministic synthetic mail (~150 messages / ~25 MB, nodemailer MailComposer), `npm run test:seed` / `test:unseed`.
+- Test ground on **test@example-test-domain.eu** (Websupport): folder guard (`mm-test` only), deterministic synthetic mail (150 messages / ~26.7 MiB, nodemailer MailComposer), `npm run test:seed` / `test:unseed`.
+- Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-test` holds foreign, duplicate, older-version or changed mail (it never deletes messages); `test:unseed` deletes the whole `mm-test` folder (IMAP `DELETE`, no `EXPUNGE`); the integration test runs seed itself (the first run uploads ~27 MiB, later runs nothing); `mm-test` stays seeded for M3–M5. Split into **M1b-3a** (generator, offline) → **M1b-3b** (guard, seed/unseed, live test). Code in `tests/support/test-ground/` (test tooling, no `src/` changes).
+
+#### M1b-3a — Synthetic mail generator (implemented)
+
+- `prng.ts`: mulberry32 (`createPrng(seed)`) and `subPrng(seed, index)`, an independent stream per message so one message's content never shifts another's.
+- Two phases in `generator.ts`: **A** plans every message's spec from one stream (size class, year/day/time, date offset, flags, sender, subject, attachment names); **B** composes each message from its own sub-stream (body sentences, attachment content) and adjusts a text filler (compose → measure → adjust, ≤ 4 passes) to hit the size target.
+- Size classes with fixed, evenly spaced targets (total ≈ 26.7 MiB, a design constant): tiny 1 (1,030 B), small 101 (1.5–30 KiB; 31 with a `.txt`/`.csv`), medium 38 (40–400 KiB; 1 `.bin`, the 4 largest 2), large 8 (0.8–1.5 MiB), huge 2 (3.2 MiB and 4,850,000 B; 2 attachments each). Every message 1,024–4,900,000 bytes, so both "1 KB–5 MB" readings (decimal and binary) hold.
+- Dates: internal dates 2019-01-01 … 2026-06-30 UTC, whole seconds, ≥ 18 per year; messages 25, 50 … 150 have a Date header 1–3 days earlier (M3's sent vs received date).
+- Flags 50 none / 60 `\Seen` / 20 `\Flagged` / 20 both; senders on reserved domains only (12 × `spam.test`, 4 × look-alike `spam.test.evil.test`); recipient `mm-test@mm-test.invalid`.
+- Identity: `X-MM-Test-Seed: v<N>-<NNN>` + `Message-ID: <v<N>-<NNN>@mm-test.invalid>`; `manifest.ts` holds per-message facts (seed id, Message-ID, sender/domain, subject, sent + internal date, exact size, flags, attachments) and totals.
+- nodemailer options that make it deterministic and offline: fixed `baseBoundary`, `messageId`, `date` as a `Date` object (a string is copied verbatim into the header), `newline: '\r\n'`, `normalizeHeaderKey` (nodemailer would write `X-Mm-Test-Seed`), `textEncoding: 'Q'`, `disableUrlAccess` + `disableFileAccess`. Attachment names come out as RFC 2231 `filename*0*=utf-8''…`.
+- `groundDigest` = sha256 over sha256(raw) + sha256(canonical facts) per message; pinned per `SEED_VERSION` in the unit test (see `docs/TESTING.md` for the bump rule).
+
+#### Verification (M1b-3a)
+
+1. `npm test` — `tests/unit/test-ground-generator.test.ts` passes (determinism, pinned digest, ranges, headers ↔ facts, no network).
+2. `TZ=Pacific/Kiritimati npx vitest run tests/unit/test-ground-generator.test.ts` — same digest in another time zone.
+3. `npm ls nodemailer` — exactly 10.0.10, devDependency, no children; `grep -rn nodemailer src/` finds nothing (an ESLint `no-restricted-imports` rule in `eslint.config.js` blocks it under `src/`).
 
 ### M1b-4 — Logging foundation
 
