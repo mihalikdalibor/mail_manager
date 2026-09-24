@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Blocks a commit that stages a secret file or adds a line containing a real secret value
+# (from the gitignored env/cred files) or a secret-shaped string. Value-blind output.
+# Installed with: git config core.hooksPath .claude/security/hooks
+# Bypass only for a verified false positive: git commit --no-verify
+exec node "$(git rev-parse --show-toplevel)/.claude/security/probes/secrets-scan.mjs" --staged

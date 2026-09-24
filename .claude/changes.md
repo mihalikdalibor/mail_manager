@@ -422,3 +422,129 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - `git grep -i websupport.sk` outside presets.json and tests leaves only the official help-page link in the PROVIDERS.md table.
   - Not verified: Windows (the chmod there is a no-op, which is harmless).
 - **Deviations:** none. Noted: `mm` with no arguments prints the help to stderr and exits 1 (commander's default). It is unchanged.
+
+## C-011 — `mm logout` says "Not logged in" when there is no session
+
+- **Status:** reviewed (2026-09-22)
+- **Review:** all 7 criteria met. Root cause fixed in core (`LogoutResult`), CLI only prints. Re-tested with the built `mm` on a temp `MM_CONFIG_DIR`: no dir, corrupt/array file (deleted), data file twice (`Logged out` → `Not logged in`), broken config with/without data, `whoami` unchanged. lint/typecheck/build/910 tests green. Follow-ups (non-blocking): `session.json` as a dir or an unwritable config dir still gives "Unexpected error" (pre-existing). Not verified: a real `mm login` → `mm logout` (needs a TTY). Note: the uncommitted `eslint.config.js` change (ignores `.claude/`) is not part of C-011.
+- **Date:** 2026-09-22
+- **Type:** bugfix
+- **Source:** `.claude/plans/2026-09-22-logout-without-session.md`, TODO.md → "Fixes (do first, before M1b-2b)" → "`mm logout` without a session"
+- **Base:** 734a0aa1a5c1e3f3c937b250e22d931db46a0350. Files already dirty before the run: `TODO.md` (the item itself was added); untracked `.claude/agents/`, `.claude/commands/` (the user's, untouched).
+- **Files:** `src/core/db/supabase/session-storage.ts`, `src/core/auth.ts`, `src/core/db/supabase/auth-service.ts`, `src/cli/commands/auth.ts`, `tests/unit/session-storage.test.ts`, `tests/unit/auth-service.test.ts`, `tests/unit/cli-auth.test.ts`, `docs/milestones/M1-auth-accounts.md`, `docs/SECURITY.md`.
+- **Requirements** (the plan's acceptance criteria):
+  - [x] No session file → `mm logout` prints exactly `Not logged in` (stdout), exit code 0, and `signOut` is **not** called (no network).
+  - [x] A corrupt or unreadable session file (invalid JSON, a JSON array, only non-string values) → `Not logged in`, exit 0, no `signOut`. The corrupt file is deleted.
+  - [x] A valid session → `signOut({ scope: 'local' })` is attempted (with a deadline, as today), the file is deleted, and it prints `Logged out`, exit 0. Unchanged when Supabase is unreachable: still `Logged out`, and the file is deleted.
+  - [x] Broken config (`ConfigError` while building the service): if a session file with data existed, it's deleted and `Logged out` is printed. Otherwise `Not logged in` is printed. Exit 0 in both cases.
+  - [x] Unit tests cover all cases in `tests/unit/cli-auth.test.ts` (CLI) and `tests/unit/auth-service.test.ts` (service result + no signOut when empty). `SessionStorage.isEmpty()` is covered by the contract tests in `tests/unit/session-storage.test.ts` for both implementations.
+  - [x] Manual check with the built CLI: `mm logout` twice in a row → `Logged out` (if logged in), then `Not logged in`.
+  - [x] `npm run lint`, `npm run typecheck`, `npm run format:check`, `npm test` and `npm run build` are green. (`format:check` over the whole repo flags only the user's untracked `.claude/agents/security-auditor.md` and `.claude/commands/security.md`, which this run didn't touch. Every file this run touched passes.)
+- **Summary:**
+  - `SessionStorage.isEmpty()` is added (File: a missing or corrupt file is empty; Memory: map size).
+  - `AuthService.logout()` returns `'logged-out' | 'not-logged-in'`. With no local session it clears (a corrupt file is deleted) and returns before any network call. The check runs synchronously first, so auth-js `initialize()` can't race it.
+  - `mm logout` prints "Logged out" or "Not logged in" (exit 0 both). The broken-config fallback reports whether a session existed.
+- **Grade / mode:** M planned → **solo** (downgraded as the plan allowed: tiny change, tests specified case by case). The independent review ran.
+- **Verification:**
+  - Baseline: 898 unit tests. Now: 910 passed. lint, typecheck and build are clean; prettier is clean on every tracked/touched file.
+  - Mutation check: with the CLI message reverted to the unconditional "Logged out", 2 new CLI tests fail.
+  - Built CLI with `MM_CONFIG_DIR` set to a temp dir (the real session was untouched):
+    - no dir → `Not logged in` (exit 0, no dir created)
+    - corrupt file → `Not logged in`, file deleted
+    - data under another key → `Logged out`
+    - again → `Not logged in`
+    - `SUPABASE_URL=not-a-url` with a session → `Logged out`; without one → `Not logged in`
+    - `mm whoami` unchanged (exit 1)
+  - Independent review: no blocking findings. Fixed: the docs (M1 doc, SECURITY.md) and a missing end-to-end corrupt-file test. Accepted:
+    - `session.json` being a directory or unremovable gives "Unexpected error" (unchanged from before);
+    - any leftover key counts as a session (deliberate, documented, tested);
+    - a mock-reset detail.
+  - Not verified: a real login → logout against Supabase from this shell (the password prompt needs a TTY). The user can check `mm login` → `mm logout` → `Logged out` → `mm logout` → `Not logged in` in their own terminal.
+- **Deviations:** the mode was downgraded to solo. Added: a `clearSession.mockClear()` in `beforeEach`, an end-to-end corrupt-file test, and two doc lines.
+
+## C-012 — M1b-2b login guard: attempt policy, guardedOpenSession, block records
+
+- **Status:** reviewed (2026-09-23)
+- **Review:** all criteria met. lint/typecheck/build/prettier clean, 1078 tests. Scenario script (fake clock + opener): challenge → pair lock → post-lock challenge, 3 parallel pairs → IP block (also for `::ffff:` form, other IP unaffected), 10 parallel on one pair → opener 5×, no canary in keys/events, fail2ban regex = doc and matches only ip-blocked, texts with end time + zone. No deadlock between the pair and state queues. Follow-ups (LOW): an attempt already past its check still reaches the server when another pair triggers the IP block; loopback/link-local IPv6 share a bucket (server must pass the real client address); a logout error after a store error hides the store error; challenge wording always says "this mailbox".
+- **Date:** 2026-09-22
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-22-m1b2b-login-guard.md`, TODO.md → "M1b-2b — Login guard (needs M1b-2a; before M1c)"
+- **Base:** 734a0aa1a5c1e3f3c937b250e22d931db46a0350. Files already dirty before the run:
+  - the uncommitted C-011 work (`src/cli/commands/auth.ts`, `src/core/auth.ts`, `src/core/db/supabase/{auth-service,session-storage}.ts`, their tests, `docs/SECURITY.md`, `docs/milestones/M1-auth-accounts.md`, `TODO.md`, `.claude/changes.md`);
+  - the user's security tooling (`.github/workflows/ci.yml`, `eslint.config.js`, the `CLAUDE.md` hooks line, untracked `.claude/{agents,commands,security,settings.json}`), untouched.
+- **Files:**
+  - New: `src/core/security/{ip,events,attempt-store,login-guard}.ts`, `src/core/imap/guarded-session.ts`, `src/cli/login-guard-text.ts`, `tests/unit/{security-ip,security-events,login-guard,guarded-session,cli-login-guard-text}.test.ts`.
+  - Modified: `src/cli/error-text.ts`, `tests/unit/cli-error-text.test.ts`, `docs/SECURITY.md` (Login guard section, threat row), `docs/milestones/M1-auth-accounts.md` (M1b-2b), `CLAUDE.md` (one sentence in "Secrets rules": only `guardedOpenSession` calls `openSession`).
+- **Requirements** (the plan's acceptance criteria):
+  - [x] **Pair policy** (same IP + same mailbox, fake clock):
+    - after 0–1 counted failures `check` → `allow`; after 2 → `challenge-required`;
+    - the 5th counted failure within 15 min locks the pair until `t5 + 15 min` (`too-many-attempts`, `until`);
+    - at `until` exactly → no longer locked;
+    - failures older than 15 min don't count (sliding window).
+  - [x] **IP policy:**
+    - 3 pair lockouts from one IP within 24 h (any mailboxes) → IP blocked 24 h (`ip-blocked`, `until`), for every mailbox from that IP;
+    - lockouts older than 24 h don't count;
+    - 3 IP blocks within 30 days → `permanent` (no `until`), which never expires on its own.
+  - [x] **After a lock expires:** a pair with a lockout in the last 24 h stays `challenge-required` from its first new attempt.
+  - [x] **Concurrency:** 10 parallel `guardedOpenSession` attempts for one pair → the opener is called at most 5 times; the rest get `LoginBlockedError`. Also, after the review: parallel attempts on different pairs don't lose IP or mailbox counter updates.
+  - [x] **Mailbox policy:** 10 counted failures on one mailbox from 10 different IPs within 15 min → `challenge-required` for any IP (including a fresh one), **never** a lock. After 15 min the challenge is gone.
+  - [x] **Only credential failures count:** `recordFailure` with `timeout`, `refused`, `reset`, `unreachable`, `host-not-found`, `no-internet`, `tls-certificate`, `server-unavailable`, `throttled`, `unsupported-server`, `invalid-credentials-input`, `oauth-only` or `unexpected` changes nothing. `auth-failed`, `app-password-required`, `password-expired`, `contact-admin` and `server-rejected` count.
+  - [x] **Success** resets the pair failure counter. It does not remove existing IP lockouts, blocks or the permanent flag.
+  - [x] **Store keys never contain a plain host, username or password**; the mailbox part is the HMAC target. Tested with a canary.
+  - [x] **Permanent blocks survive serialization:** "permanent" is an explicit store flag, never `Infinity`.
+  - [x] **IP normalization:** `::ffff:1.2.3.4` and `1.2.3.4` → the same bucket; IPv6 → the /64 prefix; `local` stays; invalid → `invalid`. Also: IPv4-compatible and NAT64 forms → IPv4, zone ids ignored.
+  - [x] **Mailbox key normalization:** the host goes through `hostFromUserInput` (fallback: the lower-cased raw host). The HMAC input is `JSON.stringify([host, username])`, with the username lower-cased and trimmed.
+  - [x] **Event records:**
+    - one `SecurityEvent` per pair lock, IP block and permanent block (ts, event, kind, reason, ip, `addr`, attempts, until, target);
+    - `formatEventLine` gives a single line starting `mm-security `;
+    - the fail2ban regex matches only ip-blocked and permanent, captures `addr` via `<ADDR>`, and never matches a line without an `addr`;
+    - no canary address, host or password in any event.
+  - [x] **`guardTargetKey`:** deterministic HKDF-SHA256 (info `mm-login-guard-v1`, 32 bytes) returned as a Buffer; random without a master key. `hmacTarget` is case-insensitive.
+  - [x] **`guardedOpenSession`:**
+    - blocked → `LoginBlockedError`, the opener never called;
+    - challenge → `onChallenge` runs before the opener; if it rejects, the opener isn't called;
+    - allowed → the opener is called exactly once;
+    - success → `recordSuccess`;
+    - a counted failure → `recordFailure`, then either `LoginBlockedError` (if that failure caused a block) or the original error;
+    - an uncounted failure → rethrown, nothing recorded.
+  - [x] **CLI text** (`errorText`, distinct messages):
+    - too-many-attempts: says so, names the end time, and gives the next step (password or app password, try again after);
+    - ip-blocked: says so, names the end time, and says to try again;
+    - `formatUntil` shows the time only today, the date and time otherwise, always with the time zone;
+    - permanent: "Couldn't connect — this connection is blocked. Contact Mail Manager support.";
+    - no brackets and no `undefined`.
+  - [x] If `recordSuccess` throws, the just-opened session is logged out before the error propagates.
+  - [x] `cliChallenge()` waits 5 s and prints one line saying so.
+  - [x] Docs:
+    - SECURITY.md "Login guard" section: policy table, what counts, effectiveness, event line, fail2ban filter (identical to the code constant, checked by script), 90-day retention;
+    - M1 milestone doc updated;
+    - CLAUDE.md rule: only `guardedOpenSession` calls `openSession`.
+  - [x] lint, typecheck, prettier (touched paths), `npm test` and build are green.
+- **Summary:**
+  - New core login guard. The policy per (IP + mailbox) pair / IP / mailbox is as decided with the user: only credential failures count; challenge → 15 min lock → 24 h IP block → permanent; mailbox-wide attacks get a challenge only.
+  - Counters are keyed by normalized IP and an HMAC target, never a plain address. All updates are serialized, and `withPairLock` makes check → login → record atomic per pair.
+  - `guardedOpenSession` wraps `openSession` (blocked attempts never reach the server).
+  - Block events become `mm-security {json}` lines with a fail2ban `<ADDR>` filter.
+  - The CLI texts give the end time and next step. `cliChallenge` is an announced 5 s wait.
+  - No command uses the guard yet; M1c wires it up.
+- **Grade / mode:** M — solo + test writer. The test writer wrote 189 spec-driven tests (6 files) and found no implementation bugs.
+- **Verification:**
+  - Baseline: 910 unit tests. Now: 1078 passed (30 files). lint, typecheck and build are clean; prettier is clean on `src tests docs *.md package.json .claude/changes.md`; `npm audit` shows 0 vulnerabilities.
+  - The time-format and guard tests also pass with `TZ=UTC` and `TZ=Asia/Kathmandu`.
+  - Scenario script with a fake clock: challenge from the 3rd attempt, a lock on the 5th, the challenge after the lock, an IP block after 3 locks, another IP unaffected, no canary in store keys, the fail2ban regex matching only ip-blocked.
+  - Mutation checks:
+    - without the guard-wide serialization, both new cross-pair concurrency tests fail;
+    - the 10-parallel test depends on `withPairLock` (reviewer confirmed).
+  - The user's offline security probes (`CI=1 bash .claude/security/probes/run-all.sh`): static-rules, input-fuzz, discovery-ssrf, imap-session and crypto-local are clean. secrets-scan reports 6 findings, all in git history commit 0ed2604 (pre-existing, not this change).
+  - Independent review: 1 high (cross-pair lost updates → fixed + tests), 3 medium (IPv6 forms → fixed; the fail2ban `<HOST>` vs /64 → `addr` + `<ADDR>`; `withPairLock` re-entrancy → documented), 5 low (username trim → fixed; the docs overstated wiring → fixed; host aliases, store TTL and spoofable `local` → documented; a store error hiding the IMAP error → accepted).
+  - Not verified:
+    - a real fail2ban/Cloudflare setup (M6a);
+    - behaviour with a persistent store (M6a);
+    - an end-to-end CLI flow, since no command calls `guardedOpenSession` yet (M1c).
+- **Deviations:**
+  - guard-wide `exclusive` serialization;
+  - the `addr` event field and the `<ADDR>` regex;
+  - wider IPv4-in-IPv6 handling;
+  - username trim;
+  - the `pairLockoutChallengeMs` policy field;
+  - the test writer's tests updated to these spec changes.

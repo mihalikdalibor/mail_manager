@@ -4,22 +4,22 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 
 ## Threat model
 
-| Threat                                     | Impact                                                    | Mitigation                                                                                                   |
-| ------------------------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Supabase DB leaked / misconfigured RLS     | Attacker gets account rows                                | Secrets encrypted with a key **not in the DB**; RLS on every table; two-user RLS test                        |
-| Laptop / `.env.local` stolen (local phase) | Master key + session → decrypt all of that user's secrets | `.env*` gitignored, file perms 600; session file 600; document "revoke app passwords" procedure              |
-| Master key lost                            | Stored passwords unrecoverable                            | Documented: users re-enter passwords; key backup is the operator's responsibility                            |
-| Accidental mass delete (bug or user error) | Irreversible mail loss                                    | Plan → confirm → exact-UID execution; Trash default; UIDVALIDITY guard; backup-before-expunge; audit         |
-| Malicious / malformed filter input         | Wrong messages selected, injection                        | zod validation; criteria passed as imapflow objects (library quotes/escapes); never build raw IMAP strings   |
-| MITM on IMAP connection                    | Credential theft                                          | Implicit TLS port 993 only, `rejectUnauthorized: true`, no STARTTLS-downgrade / plaintext fallback           |
-| Secrets in logs / error messages           | Leak via terminal, CI, bug reports                        | Central redaction; never log config objects wholesale; error messages include host/user, never password      |
-| Compromised npm dependency                 | Code execution with access to secrets                     | Few deps, committed lockfile, `npm audit` in CI, pin versions, review new deps                               |
-| Secrets committed to git                   | Permanent exposure                                        | `.gitignore`, `.env.example` only, gitleaks in CI (M0), optional local gitleaks                              |
-| Web UI (M6): CSRF / XSS / exposed port     | Session hijack, remote delete                             | Bind `127.0.0.1`, helmet + strict CSP, CSRF token, JWT verified per request, rate limiting                   |
-| App used to guess mailbox passwords        | Brute force against third parties; user's IP banned       | No automatic login retry (M1b-2a); login guard with attempt limits (M1b-2b); Turnstile/WAF when hosted (M6a) |
-| App used to probe hosts/accounts           | Host/port scanning, account enumeration                   | One generic login-failure message (no code); precise reason only inside core                                 |
-| SSRF / DNS rebinding via a typed IMAP host | Server connects to internal addresses                     | IP/localhost hosts refused today; resolve-and-pin guard for private ranges deferred to M6a                   |
-| Hostile IMAP server data                   | Oversized/odd data stored or printed                      | Capabilities sanitised + capped before `mail_accounts.capabilities`; server text never printed               |
+| Threat                                     | Impact                                                    | Mitigation                                                                                                                                                      |
+| ------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supabase DB leaked / misconfigured RLS     | Attacker gets account rows                                | Secrets encrypted with a key **not in the DB**; RLS on every table; two-user RLS test                                                                           |
+| Laptop / `.env.local` stolen (local phase) | Master key + session → decrypt all of that user's secrets | `.env*` gitignored, file perms 600; session file 600; document "revoke app passwords" procedure                                                                 |
+| Master key lost                            | Stored passwords unrecoverable                            | Documented: users re-enter passwords; key backup is the operator's responsibility                                                                               |
+| Accidental mass delete (bug or user error) | Irreversible mail loss                                    | Plan → confirm → exact-UID execution; Trash default; UIDVALIDITY guard; backup-before-expunge; audit                                                            |
+| Malicious / malformed filter input         | Wrong messages selected, injection                        | zod validation; criteria passed as imapflow objects (library quotes/escapes); never build raw IMAP strings                                                      |
+| MITM on IMAP connection                    | Credential theft                                          | Implicit TLS port 993 only, `rejectUnauthorized: true`, no STARTTLS-downgrade / plaintext fallback                                                              |
+| Secrets in logs / error messages           | Leak via terminal, CI, bug reports                        | Typed, allowlisted log events only ([LOGGING.md](LOGGING.md)) + canary tests; never log config objects; user-facing errors are whitelisted text, never password |
+| Compromised npm dependency                 | Code execution with access to secrets                     | Few deps, committed lockfile, `npm audit` in CI, pin versions, review new deps                                                                                  |
+| Secrets committed to git                   | Permanent exposure                                        | `.gitignore`, `.env.example` only, gitleaks in CI (M0), optional local gitleaks                                                                                 |
+| Web UI (M6): CSRF / XSS / exposed port     | Session hijack, remote delete                             | Bind `127.0.0.1`, helmet + strict CSP, CSRF token, JWT verified per request, rate limiting                                                                      |
+| App used to guess mailbox passwords        | Brute force against third parties; user's IP banned       | No automatic login retry (M1b-2a); login guard (M1b-2b, `guardedOpenSession`): challenge → pair lock → IP block → permanent; Turnstile/WAF when hosted (M6a)    |
+| App used to probe hosts/accounts           | Host/port scanning, account enumeration                   | One generic login-failure message (no code); precise reason only inside core                                                                                    |
+| SSRF / DNS rebinding via a typed IMAP host | Server connects to internal addresses                     | IP/localhost hosts refused today; resolve-and-pin guard for private ranges deferred to M6a                                                                      |
+| Hostile IMAP server data                   | Oversized/odd data stored or printed                      | Capabilities sanitised + capped before `mail_accounts.capabilities`; server text never printed                                                                  |
 
 ## Credential encryption
 
@@ -38,7 +38,7 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 - Every Supabase request has a timeout (10 s; 5 s inside `mm doctor`) and PostgREST auto-retries are off, so a paused or unreachable project fails fast with "Supabase unreachable" instead of hanging.
 - `mm login` prompts for the password (hidden) and refuses to run without a TTY.
 - CLI stores the Supabase session in `session.json` under `$MM_CONFIG_DIR`, `$XDG_CONFIG_HOME/mail-manager` or `~/.config/mail-manager` — dir 700, file 600, written atomically (tmp file 600 → rename). A corrupt file counts as logged out.
-- `mm logout` always deletes the local session, even offline (server-side revocation is best effort).
+- `mm logout` always deletes the local session, even offline (server-side revocation is best effort). Without a local session (missing or corrupt file) it says "Not logged in" and sends nothing to Supabase.
 - Table privileges: `anon` has none on `mail_accounts`; `authenticated` has no TRUNCATE and can't update `id`/`user_id`/`created_at` (see DATA_MODEL.md).
 - CLI uses the publishable key (formerly "anon") + user JWT → RLS applies. Service-role key never leaves the server.
 
@@ -54,6 +54,43 @@ All logins go through `openSession` (`src/core/imap/session.ts`):
 - Every failure becomes an `ImapSessionError` with a reason and a whitelisted code token. No `cause`, no server text, no executed command. `src/cli/bin.ts` shows only whitelisted core error classes (`errorText`); everything else is "Unexpected error".
 - Known gap, accepted: imapflow sends the password (AUTHENTICATE PLAIN, or LOGIN) even to a server that advertises `LOGINDISABLED` together with `AUTH=PLAIN`, or only `AUTH=XOAUTH2`. Over verified TLS to the user's own provider this is acceptable.
 - Server capabilities are untrusted: names must match `[A-Z0-9][A-Z0-9=+-._/]*` (≤ 64 chars), values `true` or a non-negative integer, at most 256 entries. The repo guards `mail_accounts.capabilities` with the same bounds (`recordCheck` and row parsing; names matched case-insensitively there, `sanitizeCapabilities` always writes upper case). An invalid stored record makes the row fail to parse (strict on purpose: only `recordCheck` writes it).
+
+## Login guard (M1b-2b)
+
+From M1c on, every IMAP login the app makes goes through `guardedOpenSession` (`src/core/imap/guarded-session.ts`) → `LoginGuard` (`src/core/security/login-guard.ts`); no command logs in yet. A blocked attempt never reaches the mail server.
+
+| Counter                | Rule                          | Result                                                          |
+| ---------------------- | ----------------------------- | --------------------------------------------------------------- |
+| (IP + mailbox) pair    | 2 counted failures in 15 min  | challenge (CLI: 5 s announced wait; server: Turnstile in M6a)   |
+| (IP + mailbox) pair    | 5 counted failures in 15 min  | pair locked 15 min ("too many wrong passwords", end time)       |
+| (IP + mailbox) pair    | a lockout in the last 24 h    | challenge on every attempt (no free guesses after a lock)       |
+| IP                     | 3 pair lockouts in 24 h       | IP blocked 24 h, all mailboxes                                  |
+| IP                     | 3 IP blocks in 30 days        | permanent ("contact Mail Manager support")                      |
+| mailbox across all IPs | 10 counted failures in 15 min | challenge only — never a lock, so nobody can lock the owner out |
+
+- **Counted:** only credential failures — `auth-failed`, `app-password-required`, `password-expired`, `contact-admin`, `server-rejected`. Timeouts, refused/reset, TLS, no internet, OAuth-only and input validation never count (a flaky network must not lock anyone out). A success resets the pair's failure counter; lockout/block history stays.
+- **Keys:** the mailbox is `HMAC-SHA256(key, [normalised host, trimmed lower-cased username])`, key = HKDF(`MM_MASTER_KEY`, `mm-login-guard-v1`) (random per process without a master key). Stores and records never contain a plain address, host or password.
+- **IP buckets** (`normalizeIp`, `src/core/security/ip.ts`): IPv4 and every IPv4-in-IPv6 form (mapped in any spelling, IPv4-compatible, NAT64 `64:ff9b::/96`) → the IPv4 address; other IPv6 → its /64; zone ids ignored; anything unparsable → `invalid`. `local` is the CLI's own bucket — the server must pass the socket (or trusted proxy) address and never accept `local` from a request.
+- **Known gaps:** a different host name for the same server (an alias/CNAME) gives a different mailbox target, so the pair/mailbox counters start again — the IP tier still applies; the server (M6a) should use the discovered host. In-memory entries are pruned only when their key is used again; the hosted store needs TTLs.
+- **Concurrency:** in-process, attempts for the same pair are serialised (`withPairLock`, not re-entrant) and every counter update runs one at a time, so parallel attempts on different pairs can't skip the IP block or the mailbox challenge. The hosted store (M6a) must make each read-modify-write atomic (transaction / Redis script).
+- **Where it's effective:** the store is in-memory for now. In the CLI the counters live for one `mm` run (M1c's password retries); IP blocks and the permanent tier matter once the server has a persistent store (M6a). Known limit until then: no unblock procedure — a permanently blocked shared/NAT IP needs M6a's support tooling.
+- **Block records:** one `SecurityEvent` per block (pair lock, IP block, permanent) to a `SecurityEventSink`; `LineEventSink` writes one line per event:
+
+  ```text
+  mm-security {"ts":"2026-09-22T14:17:00.000Z","event":"login-guard.block","kind":"ip-blocked","reason":"auth-failed","ip":"203.0.113.7","addr":"203.0.113.7","attempts":3,"until":"2026-09-23T14:17:00.000Z","target":"<64 hex>"}
+  ```
+
+  `ip` is the counting bucket (IPv4, IPv6 /64, `local`, `invalid`); `addr` is one concrete address a firewall can ban, or `null`. fail2ban filter (`FAIL2BAN_FAILREGEX` in `src/core/security/events.ts`; `<ADDR>` needs fail2ban ≥ 0.10) — matches only `ip-blocked` and `permanent`, never a single mailbox lock, and never a line without a bannable `addr`:
+
+  ```ini
+  [Definition]
+  failregex = ^.*mm-security \{"ts":"[^"]+","event":"login-guard\.block","kind":"(?:ip-blocked|permanent)","reason":"[a-z-]+","ip":"[^"]+","addr":"<ADDR>"
+  ```
+
+  Behind Cloudflare, the client IP must come from `CF-Connecting-IP` (and the ban go through Cloudflare's API / WAF rules), not the socket address (M6a).
+
+- **Where they go:** from M1b-4 the CLI writes them to the local security log (`<config dir>/logs/security-<date>.log`, dir 700 / file 600) together with the other security events (`auth.*`, `imap.login*`, `login-guard.challenge`); on a VPS a fixed `security.log` for fail2ban, on Vercel the `security_events` table (M6a). Details: [LOGGING.md](LOGGING.md).
+- **Retention:** records contain IP addresses (personal data under GDPR): keep them at most **90 days**, then delete.
 
 ## Database access (injection audit, 2026-09-22)
 
@@ -100,6 +137,7 @@ All logins go through `openSession` (`src/core/imap/session.ts`):
 ## Checklist per milestone
 
 - [ ] No secret in logs (grep test output for the test password — see the leak check in TESTING.md).
+- [ ] New commands/operations have their events in the [LOGGING.md](LOGGING.md) catalog and the milestone's Logging section; canary test covers them; state changes write an `audit_log` row.
 - [ ] New tables have RLS + policies in the same migration.
 - [ ] New inputs validated by zod.
 - [ ] `npm audit` clean (or justified).

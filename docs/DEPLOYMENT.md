@@ -8,6 +8,7 @@ Staged — each stage only when the previous one is stable.
 - Supabase **cloud** project (EU region) for auth + DB. No Docker.
 - `.env.local` (or `.env`) with `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` and `MM_MASTER_KEY`. `mm doctor` checks them.
 - Backups written to local disk (`./backups` by default, gitignored).
+- Logs (from M1b-4): `<config dir>/logs/` — `app-<date>.log` (30 days), `security-<date>.log` (90 days); read with `mm logs`. See [LOGGING.md](LOGGING.md).
 
 ## Stage 2 — Local web UI + worker (M6)
 
@@ -28,7 +29,7 @@ Staged — each stage only when the previous one is stable.
 - HTTPS only (Caddy / platform TLS), HSTS.
 - `MM_MASTER_KEY` + service-role key in the platform secret store; **CLI becomes an API client** (see ARCHITECTURE.md decision 3).
 - Backups for hosted users: download as archive, or push to user-owned storage — **design needed** (don't keep users' mail on our servers by default).
-- Monitoring: uptime check, structured logs (redacted), error tracking.
+- Monitoring: uptime check, structured logs, error tracking, alerting — what is logged where, retention and tool candidates in [LOGGING.md](LOGGING.md) (Vercel runtime logs last 1 h on Hobby / 1 day on Pro, so a log drain or shipper is needed).
 - Legal prerequisites from SECURITY.md (GDPR) must be done first.
 
 ## Stage 5 — Beyond Supabase

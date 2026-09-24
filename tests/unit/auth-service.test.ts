@@ -2,7 +2,13 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, it, expect, vi } from 'vitest';
 import { AuthError } from '../../src/core/auth.js';
 import { SupabaseAuthService, toAuthError } from '../../src/core/db/supabase/auth-service.js';
-import { MemorySessionStorage } from '../../src/core/db/supabase/session-storage.js';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  FileSessionStorage,
+  MemorySessionStorage,
+} from '../../src/core/db/supabase/session-storage.js';
 
 const PASSWORD = 'hunter2-ÄŠť';
 
@@ -117,16 +123,17 @@ describe('SupabaseAuthService.logout', () => {
     const { auth, clear, service, storage } = setup();
     storage.setItem('sb-auth-token', 'fake');
     auth.signOut.mockResolvedValue({ error: null });
-    await service.logout();
+    await expect(service.logout()).resolves.toBe('logged-out');
     expect(auth.signOut).toHaveBeenCalledWith({ scope: 'local' });
     expect(clear).toHaveBeenCalled();
     expect(storage.getItem('sb-auth-token')).toBeNull();
   });
 
   it('still clears storage when signOut resolves with an error', async () => {
-    const { auth, clear, service } = setup();
+    const { auth, clear, service, storage } = setup();
+    storage.setItem('sb-auth-token', 'fake');
     auth.signOut.mockResolvedValue({ error: { status: 0, message: 'fetch failed' } });
-    await expect(service.logout()).resolves.toBeUndefined();
+    await expect(service.logout()).resolves.toBe('logged-out');
     expect(clear).toHaveBeenCalled();
   });
 
@@ -134,18 +141,49 @@ describe('SupabaseAuthService.logout', () => {
     const { auth, clear, service, storage } = setup();
     storage.setItem('sb-auth-token', 'fake');
     auth.signOut.mockRejectedValue(new TypeError('fetch failed'));
-    await expect(service.logout()).resolves.toBeUndefined();
+    await expect(service.logout()).resolves.toBe('logged-out');
     expect(clear).toHaveBeenCalled();
     expect(storage.getItem('sb-auth-token')).toBeNull();
   });
 
   it('clears storage after calling signOut', async () => {
-    const { auth, clear, service } = setup();
+    const { auth, clear, service, storage } = setup();
+    storage.setItem('sb-auth-token', 'fake');
     auth.signOut.mockResolvedValue({ error: null });
     await service.logout();
     const signOutOrder = auth.signOut.mock.invocationCallOrder[0] ?? Infinity;
     const clearOrder = clear.mock.invocationCallOrder.at(-1) ?? -Infinity;
     expect(signOutOrder).toBeLessThan(clearOrder);
+  });
+
+  it('no local session → not-logged-in, no signOut (no network), storage cleared', async () => {
+    const { auth, clear, service } = setup();
+    await expect(service.logout()).resolves.toBe('not-logged-in');
+    expect(auth.signOut).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalled();
+  });
+
+  it('corrupt session file on disk → not-logged-in, no signOut, file deleted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mm-logout-'));
+    try {
+      const storage = new FileSessionStorage(dir);
+      writeFileSync(storage.file, '{not json');
+      const { auth, client } = fakeClient();
+      const service = new SupabaseAuthService(client, storage);
+      await expect(service.logout()).resolves.toBe('not-logged-in');
+      expect(auth.signOut).not.toHaveBeenCalled();
+      expect(existsSync(storage.file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('data under a non-auth key still counts as a session → logged-out', async () => {
+    const { auth, service, storage } = setup();
+    storage.setItem('sb-oldproject-auth-token', 'leftover');
+    auth.signOut.mockResolvedValue({ error: null });
+    await expect(service.logout()).resolves.toBe('logged-out');
+    expect(storage.isEmpty()).toBe(true);
   });
 });
 

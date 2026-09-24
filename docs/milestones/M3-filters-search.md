@@ -39,6 +39,10 @@ Any modification of mail; GUI filter builder (M6).
 - Body search is slow/partial on some servers → warn in output.
 - Should saved filters be account-specific or global? (Proposal: global with optional default account.)
 
+## Logging
+
+Events ([LOGGING.md](../LOGGING.md)): `search.finish` (account id, count, bytes, ms, `criteria` = the criterion **names** used, never their values), `gmail.search-mismatch` (warn, counts only), `filter.save` / `filter.delete` (filter id) → app log + `audit_log` row. Saved-filter values stay in `saved_filters`, not in logs.
+
 ## Tasks
 
 See `TODO.md` → M3.

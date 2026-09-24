@@ -79,6 +79,25 @@ function contractTests(name: string, make: () => SessionStorage): void {
       expect(s.getItem('b')).toBeNull();
       expect(() => s.clear()).not.toThrow();
     });
+
+    it('isEmpty: true initially, false after setItem, true after clear', () => {
+      const s = make();
+      expect(s.isEmpty()).toBe(true);
+      s.setItem('a', TOKEN);
+      expect(s.isEmpty()).toBe(false);
+      s.clear();
+      expect(s.isEmpty()).toBe(true);
+    });
+
+    it('isEmpty: true after removeItem of the last key', () => {
+      const s = make();
+      s.setItem('a', '1');
+      s.setItem('b', '2');
+      s.removeItem('a');
+      expect(s.isEmpty()).toBe(false);
+      s.removeItem('b');
+      expect(s.isEmpty()).toBe(true);
+    });
   });
 }
 
@@ -130,6 +149,17 @@ describe('FileSessionStorage', () => {
     writeFileSync(s.file, '{not json');
     expect(() => s.getItem('k')).not.toThrow();
     expect(s.getItem('k')).toBeNull();
+  });
+
+  it.each([
+    ['invalid JSON', '{not json'],
+    ['a JSON array', '["a","b"]'],
+    ['only non-string values', '{"a":1,"b":{"c":"d"},"e":null}'],
+  ])('a corrupt file (%s) counts as empty', (_label, content) => {
+    mkdirSync(dir, { recursive: true });
+    const s = new FileSessionStorage(dir);
+    writeFileSync(s.file, content);
+    expect(s.isEmpty()).toBe(true);
   });
 
   it('can overwrite a corrupt file with setItem', () => {

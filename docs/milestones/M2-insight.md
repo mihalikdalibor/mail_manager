@@ -34,6 +34,10 @@ Filtering (M3), any modification.
 - Should `stats` default to all folders or INBOX only? (Proposal: all folders summary; details via `--folder`.)
 - Size semantics: RFC822.SIZE ≠ quota bytes exactly — label clearly as "approximate".
 
+## Logging
+
+Events ([LOGGING.md](../LOGGING.md)): `stats.finish` (account id, folders, messages, bytes, ms) and `imap.capability-fallback` (warn: which feature was missing and which fallback ran, e.g. no `QUOTA`, no `STATUS=SIZE`). Per-batch progress only at `debug`. Largest-message rows (from, subject) are displayed only — never logged.
+
 ## Tasks
 
 See `TODO.md` → M2.

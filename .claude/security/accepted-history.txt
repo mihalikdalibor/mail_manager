@@ -1,0 +1,2 @@
+# Commits whose leaked values were handled (credentials rotated; history rewrite declined).
+# secrets-scan reports them as GAP instead of FIND. One per line: <short-sha> # what + when

@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { errorText } from '../../src/cli/error-text.js';
 import { imapErrorText } from '../../src/cli/imap-errors.js';
+import { loginBlockedText } from '../../src/cli/login-guard-text.js';
 import { AuthError } from '../../src/core/auth.js';
 import { ConfigError } from '../../src/core/config.js';
 import { CredentialError } from '../../src/core/credentials.js';
@@ -8,6 +9,8 @@ import { CryptoError } from '../../src/core/crypto.js';
 import { RepoError } from '../../src/core/db/repos.js';
 import { IMAP_FAILURE_REASONS, ImapSessionError } from '../../src/core/imap/errors.js';
 import { DiscoveryInputError } from '../../src/core/providers/email.js';
+import type { BlockKind } from '../../src/core/security/events.js';
+import { LoginBlockedError } from '../../src/core/security/login-guard.js';
 
 const CANARY = 'raw library text CANARY-7f3a';
 const UNEXPECTED = 'Unexpected error';
@@ -77,5 +80,25 @@ describe('errorText', () => {
       },
     };
     expect(errorText(hostile)).toBe(UNEXPECTED);
+  });
+});
+
+describe('errorText — LoginBlockedError', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each<[BlockKind, Date | null]>([
+    ['too-many-attempts', new Date(2026, 2, 10, 14, 30)],
+    ['ip-blocked', new Date(2026, 2, 11, 9, 5)],
+    ['permanent', null],
+  ])('%s → loginBlockedText', (kind, until) => {
+    vi.useFakeTimers({ now: new Date(2026, 2, 10, 8, 0) });
+    const err = new LoginBlockedError(kind, until);
+    expect(errorText(err)).toBe(loginBlockedText(err));
+  });
+
+  it('a look-alike LoginBlockedError (plain object) → Unexpected error', () => {
+    expect(errorText({ name: 'LoginBlockedError', kind: 'permanent' })).toBe(UNEXPECTED);
   });
 });

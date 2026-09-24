@@ -35,6 +35,10 @@ Restore/upload to another account (→ M6 IMAP→IMAP migration), encrypted arch
 - Duplicate messages across Gmail labels → back up from `\All` only for Gmail by default.
 - Disk space check before starting.
 
+## Logging
+
+Events ([LOGGING.md](../LOGGING.md)): `backup.start`, `backup.finish` (backup id, count, bytes, ms), `backup.verify` (ok, number of hash failures) → `audit_log` action `backup`. Paths, file names and per-message data stay in `manifest.json`, not in logs.
+
 ## Tasks
 
 See `TODO.md` → M5.

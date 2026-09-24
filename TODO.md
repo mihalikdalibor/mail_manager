@@ -2,9 +2,13 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-2b Login guard (not started)** — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed)
+**Current milestone: M1b-3 Test ground (not started)**, then **M1b-4 Logging foundation** (added 2026-09-23), then M1c — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
+
+## Fixes (do first, before M1b-2b) ✅
+
+- [x] **`mm logout` without a session** (user, 2026-09-22): today it always prints "Logged out" (`src/cli/commands/auth.ts`), even when nobody is logged in. Check the local session first: no session (or an unreadable/corrupt one) → print "Not logged in" and exit 0 without contacting Supabase; logged in → revoke + delete as now, "Logged out". Broken config: still delete any local session file; say "Logged out" only if one existed. Unit tests for all three cases in `tests/unit/cli-auth.test.ts`.
 
 ## Step 0 — Planning & docs ✅
 
@@ -53,7 +57,7 @@ Decisions (2026-09-21): migrations via Supabase CLI (npm devDependency, `npm run
 ## M1b — IMAP foundation, providers & test ground
 
 Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodemailer MailComposer (devDependency, no SMTP); ~150 messages / ~25 MB seeded deterministically into folder `mm-test` of **test@example-test-domain.eu** (Websupport).
-Split on 2026-09-22 into M1b-1 → M1b-2 → M1b-3 (each its own assignment).
+Split on 2026-09-22 into M1b-1 → M1b-2 → M1b-3 (each its own assignment); M1b-4 logging foundation added 2026-09-23 (after M1b-3, before M1c).
 
 ### M1b-1 — Provider discovery (no login)
 
@@ -85,26 +89,45 @@ Decisions (2026-09-22): split into M1b-2a (session) → M1b-2b (login guard). Fa
 - [x] Integration tests on test@example-test-domain.eu: discovered host → login + capabilities + features; exactly **one** wrong-password attempt per run → generic auth error; canary check: the test password appears in no output, error or log line
 - **Acceptance:** login works on the test mailbox with the discovered host; features built correctly (unit-tested with fixture capability sets incl. the measured Websupport set); every error reason mapped and unit-tested with a canary password; no password in output; lint, typecheck, unit + integration tests, build green.
 
-### M1b-2b — Login guard (needs M1b-2a; before M1c)
+### M1b-2b — Login guard (needs M1b-2a; before M1c) ✅
 
-Decisions (2026-09-22): app-level guard is the primary brute-force layer (works on any hosting); fail2ban / Cloudflare WAF are outer layers added when hosted (M6a). Attempts counted per **client IP** and per **target mailbox** (host+username).
+Decisions (2026-09-22): app-level guard is the primary brute-force layer (works on any hosting); fail2ban / Cloudflare WAF are outer layers added when hosted (M6a). Refined 2026-09-22: only **credential failures** count (auth-failed, app-password-required, password-expired, contact-admin, server-rejected — not timeouts/refused/TLS/no-internet/input validation); the lock counts per **(IP + mailbox) pair**, while one mailbox attacked from many IPs only gets the challenge (never locked, so nobody can lock the owner out); target hashed with HMAC keyed by HKDF(`MM_MASTER_KEY`, `mm-login-guard-v1`), random per-process key without a master key. In-memory store now: in the CLI the counters live for one `mm` run (M1c's password retries); persistent store + IP/permanent tiers become effective on the server (M6a).
 
-- [ ] `src/core/security/login-guard.ts` — policy: failures 1–2 free; from the 3rd → `challenge-required` (server: Cloudflare Turnstile in M6a; CLI: short delay instead); 5 failures within 15 min → `too-many-attempts` for 15 min; 3 lockouts from one IP within 24 h → IP blocked 24 h; 3 IP blocks within 30 days → **permanent** block ("couldn't connect — contact our support"). Success resets the mailbox counter. Injectable clock; store behind an interface (in-memory now)
-- [ ] User is told about every block in plain words with the time it ends (or "contact support" when permanent)
-- [ ] Block-event record (time, IP, reason, attempt count, target as HMAC of host+username — no plain address) + `SecurityEventSink` interface; one structured log line per block, fail2ban/Cloudflare-parsable; retention note (IPs are personal data, e.g. 90 days)
-- [ ] Unit tests: every threshold, window expiry, per-IP vs per-mailbox counting, reset on success, permanent tier, event records
-- **Acceptance:** policy fully unit-tested with a fake clock; messages name the unblock time; no plain address or password in event records.
+- [x] `src/core/security/login-guard.ts` — policy with injectable clock and a store interface (in-memory now). Per (IP + mailbox) pair: failures 1–2 free; from the 3rd → `challenge-required`; 5 failures within 15 min → `too-many-attempts` for 15 min. Per IP: 3 lockouts within 24 h → IP blocked 24 h; 3 IP blocks within 30 days → **permanent** block. Per mailbox across all IPs: 10+ failures within 15 min → `challenge-required` only. Success resets the pair counter (lockout/block history stays). Mailbox key = lower-cased host + username
+- [x] `guardedOpenSession` (core): check the guard → blocked: throw `LoginBlockedError` (kind + end time) without contacting the server; challenge: the caller's challenge hook runs (CLI: 5 s delay; server: Turnstile in M6a) → `openSession` once → record success / counted failure
+- [x] User is told about every block in plain words with the time it ends, or "couldn't connect — contact Mail Manager support" when permanent (`errorText` / CLI texts; distinct messages per CLAUDE.md)
+- [x] Block-event record (time, IP, reason, attempt count, target = HMAC of host+username — no plain address) + `SecurityEventSink` interface; one structured JSON log line per block, fail2ban/Cloudflare-parsable (example filter regex in docs); retention note (IPs are personal data, e.g. 90 days)
+- [x] Unit tests: every threshold, window expiry, pair vs IP vs mailbox counting, only credential failures counted, reset on success, permanent tier, event records (no address/password), `guardedOpenSession` with a fake session opener
+- **Acceptance:** policy fully unit-tested with a fake clock; a blocked attempt never reaches the server; messages name the unblock time; no plain address or password in event records; lint, typecheck, tests, build green.
 
 ### M1b-3 — Test ground (needs M1b-2a)
 
 - [ ] Test ground: integration helpers (env, **folder guard: only `mm-test`**), deterministic synthetic mail generator (seeded; Slovak diacritics, varied senders/domains, dates 2019–2026, sizes 1 KB–5 MB, attachments, seen/flagged, `X-MM-Test-Seed` header) + manifest of expected facts, `npm run test:seed` (APPEND with internal dates), `npm run test:unseed`
 - [ ] Integration tests on test@example-test-domain.eu: seeded count/manifest match, guard refuses other folders
 - **Acceptance:** seeding is idempotent and matches the manifest; guard refuses other folders; unit + integration tests pass; no password in output.
+- Logging: none (seed/unseed are npm scripts, not `mm` commands).
+
+### M1b-4 — Logging foundation (needs M1b-2b; after M1b-3, before M1c) → [design](docs/LOGGING.md)
+
+Decisions (2026-09-23): four kinds of records split by purpose — audit trail (Supabase `audit_log`), security events (`security-*.log`), app log (`app-*.log`), metrics/alerts (hosted only); local files in `<config dir>/logs/`; typed, allowlisted events only; the cloud `audit_log` is created **here** (moved from M4) so M1c's account actions are audited from day one. Settles the M1c "security log file" note (location, events, `mm logs`).
+
+- [ ] **User:** Supabase dashboard → Authentication → Audit Logs: decide "write audit logs to the database" + retention (proposal: on, 90 days — IPs)
+- [ ] `src/core/paths.ts` — `configDir()` moved out of `src/core/db/supabase/session-storage.ts` (`sessionDir`); session storage uses it
+- [ ] `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`; fixed key order), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync `appendFileSync`, dir 700 / files 600, one file per day and kind, 5 MB cap, startup pruning app 30 d / security 90 d, 4 KB line cap, never throws), run context (run id, version), zod schema for reading lines back; `MM_LOG_LEVEL` in `config.ts`
+- [ ] Security events: `SecurityEvent` joins the catalog (new fields only after `target`, fail2ban regex unchanged + test); new `auth.login`, `auth.login-failed` (reason + HMAC of the typed e-mail), `auth.logout`; `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (**all** guard kinds incl. `too-many-attempts`) emitted by `guardedOpenSession` (tested with a fake opener; M1c wires the file)
+- [ ] CLI run logging: `src/cli/bin.ts` + commander `preAction` hook → `command.start` (command path, option **names** only) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit` and Ctrl+C (`interrupted`); `error.unexpected` (class, code, relative stack frames, no message); events for today's commands (`doctor.check`, `discover.finish` with source + provider id and no domain, auth events; keygen start/finish only)
+- [ ] `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language lines in `src/cli/log-text.ts`; interrupted runs marked
+- [ ] `mm doctor` `logs` check (folder writable, 700/600, size, oldest file)
+- [ ] Audit trail: new migration — generic `audit_log` (docs/DATA_MODEL.md), `AuditRepo` interface + Supabase implementation, `audit.write-failed` event; two-user RLS integration test (own rows only, no update/delete)
+- [ ] Tests: canary (no password/address/host/subject in any line), daily files + pruning with a fake clock and temp dir, file modes, two concurrent appenders, write failure doesn't change the command result, catalog ↔ `docs/LOGGING.md`, every registered command logs start + finish, fail2ban regex still matches
+- **Acceptance:** every existing command leaves start + finish lines with one run id; failed `mm login` → `auth.login-failed` with a reason and no e-mail/password; `mm logs` readable, interrupted runs marked; canary clean; 700/600; pruning works; `audit_log` RLS test passes; lint, typecheck, tests, build green.
 
 ## M1c — Account commands (needs M1a + M1b)
 
 - [ ] `mm account add [email]` — discover → (`chooseImapSettings`: provider picker / manual host from M1b-1) → hints → hidden password → test login through the login guard (M1b-2b; generic failure message incl. GeoIP hint) → encrypt → save
 - [ ] `mm account list` / `test` / `remove` (confirm) / `update-password`
+- [ ] `mm --help` shows how to connect a mailbox (user, 2026-09-22): the `account` command group with its subcommands, plus a short "Getting started" footer (`mm login` → `mm discover <email>` → `mm account add <email>` → `mm account test`)
+- [ ] Logging ([LOGGING.md](docs/LOGGING.md); foundation from M1b-4): `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`); `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; no address, host or password in any event (canary)
 - [ ] Integration test: add + test account on test@example-test-domain.eu; wrong password saves nothing
 - [ ] Follow-ups from the M1a review (2026-09-22):
   - [ ] lowercase `host` in the accounts repo + a DB check in the next migration (the `(user_id, email, host)` uniqueness can be bypassed by case)
@@ -122,6 +145,7 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 - [ ] Quota (when supported)
 - [ ] `mm stats` (table + `--json`, progress)
 - [ ] Measure on a large mailbox; decide on local cache need
+- [ ] Logging: `stats.finish`, `imap.capability-fallback` (docs/LOGGING.md catalog + canary test)
 - **Acceptance:** counts match webmail; totals within rounding; Gmail not double-counted; memory bounded.
 
 ## M3 — Filters & search → [doc](docs/milestones/M3-filters-search.md)
@@ -136,6 +160,7 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 - [ ] Integration seed script (`tests/integration/seed.ts`) + folder guard
 - [ ] `0002_saved_filters.sql` + `FiltersRepo`
 - [ ] `mm filter save/list/show/delete`, `--filter <name>`
+- [ ] Logging: `search.finish` (criterion names only, never values), `gmail.search-mismatch`, `filter.save`/`filter.delete` → `audit_log`
 - **Acceptance:** each criterion returns expected seeded set; nested logic tested; webmail counts match.
 
 ## M4 — Safe delete → [doc](docs/milestones/M4-safe-delete.md)
@@ -145,7 +170,8 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 - [ ] `delete.ts` capability matrix (IMAP.md §6.2) with notice + confirm per fallback, UIDVALIDITY guard, batching + tests with fake session (never `messageDelete`/`messageMove`/`CLOSE` without UIDPLUS/MOVE)
 - [ ] Expunge mode (UIDPLUS only) — gated
 - [ ] Plan files + `--resume`
-- [ ] `0003_audit_log.sql` (append-only) + `AuditRepo`
+- [ ] Audit rows in the existing `audit_log` (created in M1b-4): `mail.trash` / `mail.expunge` / `mail.move`, one per folder per run
+- [ ] Logging: `delete.plan`, `delete.confirm`, `delete.batch` (debug), `delete.finish`, `trash.select`, notices; resume offer from interrupted runs
 - [ ] `mm delete` confirmation UX: notices → full paged list (`--list-file`) → `y/N` → type count; interactive only, `--max` (IMAP.md §6.4); `mm audit`
 - [ ] Trash selection: candidate scan, root ranking, always shown, saved on account + migration (IMAP.md §6.5)
 - [ ] Decide: guarded plain EXPUNGE for servers without MOVE/UIDPLUS (IMAP.md §6.3 B; proposal: no)
@@ -162,16 +188,23 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 - [ ] Optional mbox / zip
 - [ ] Disk-space + Gmail daily-limit estimate
 - [ ] Enable expunge-with-verified-backup in M4 flow
+- [ ] Logging: `backup.start` / `backup.finish` / `backup.verify` → `audit_log` action `backup` (paths stay in the manifest)
 - **Acceptance:** counts/hashes verify; opens in Thunderbird; re-run adds 0; expunge removes only verified messages.
 
 ## M6 — Beta → [doc](docs/milestones/M6-beta.md)
 
 - [ ] M6a Local HTML page (Fastify, localhost, CSP, CSRF)
   - [ ] Login-guard hosting layer (from M1b-2b): persistent store + `security_events` table (RLS, service role, retention job), Cloudflare Turnstile on `challenge-required`, real client IP from `CF-Connecting-IP` only behind Cloudflare, Cloudflare WAF rate-limit rules / fail2ban (Cloudflare action) on the block log lines, support unblock procedure
+  - [ ] Hosting-aware client IP + network-level bans (user, 2026-09-23 — **Vercel first, VPS later**). Split: the app (login guard) decides and logs; the network layer blocks traffic before the app; the app never runs firewall commands
+    - [ ] Client IP from a trusted source only: Vercel → `x-real-ip` / `x-forwarded-for` set by Vercel's edge (country from `x-vercel-ip-country`); behind Cloudflare → `CF-Connecting-IP` + `CF-IPCountry`, accepted only when the request comes from Cloudflare's IP ranges; direct VPS → socket address (+ source port) and a GeoIP database (MaxMind GeoLite2, licence key, regular updates) for the country. Never take `local` or an IP header from an untrusted request
+    - [ ] `mm-security` block lines gain `country` and `port` (source port when known — needed for ISP abuse reports behind carrier-grade NAT; not used for bans); same 90-day retention (IP + country are personal data)
+    - [ ] Vercel phase: serverless instances don't share memory → login-guard store must be persistent (Supabase `security_events` / attempt table, atomic updates) before the web login goes live; bans via Vercel Firewall custom rules / IP blocking (dashboard or API) fed from the block records; check function time limits for IMAP sessions and that the GeoIP hint names the right region (Vercel's outgoing IPs vary)
+    - [ ] VPS phase: fail2ban reading the `mm-security` log with `FAIL2BAN_FAILREGEX` (`<ADDR>`) → nftables bans, or the Cloudflare action / WAF rules when proxied; nftables allows web traffic only from Cloudflare's ranges (no bypassing the proxy); log rotation
+  - [ ] Logging (docs/LOGGING.md): `http.request` via Fastify's pino (no query strings/bodies), `http.csrf-failed` / `http.csp-violation` / `http.session-invalid`, `security_events` table + 90-day retention job, alert rules (permanent block, block spikes, error rate)
   - [ ] SSRF / DNS-rebinding guard (deferred from M1b-2a): resolve the IMAP host once, refuse loopback/private/link-local/CGNAT/metadata IPs, connect to the resolved IP with `servername` = host; server hides host-not-found vs refused vs timeout (generic message)
-- [ ] M6c IMAP→IMAP migration (old → new address)
-- [ ] M6b `mm worker` + jobs (scheduled backup/cleanup)
-- [ ] M6d OAuth2 Gmail + Microsoft
+- [ ] M6c IMAP→IMAP migration (old → new address) — logging: `migrate.finish` run summary → `audit_log` `migrate`
+- [ ] M6b `mm worker` + jobs (scheduled backup/cleanup) — logging: `job.start` / `job.finish` → `job_runs` + heartbeat (missed runs alert)
+- [ ] M6d OAuth2 Gmail + Microsoft — logging: `oauth.token-refresh` / `oauth.token-revoked`, never token values
 - [ ] MFA for app login
 - [ ] Docker + hermetic IMAP tests in CI
 
@@ -181,7 +214,7 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 
 - Local metadata index (SQLite) for instant filtering on huge mailboxes
 - Encrypted backup archives
-- Hosted beta (M7) — after GDPR prerequisites (see docs/SECURITY.md)
+- Hosted beta (M7) — after GDPR prerequisites (see docs/SECURITY.md); hosted observability from docs/LOGGING.md: log service (Vercel Log Drain / VPS shipper), error tracking (EU region), uptime, alerting, logs in the GDPR record of processing
 - Migrate off Supabase (self-hosted Postgres / own auth)
 - UI/UX design pass (priority after functionality)
 - i18n: Slovak + English

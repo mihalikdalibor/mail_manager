@@ -74,4 +74,5 @@ Target at least: Gmail, one SK/CZ provider (Seznam), one standard Dovecot (later
   ```
 
 - Unit tests use canary passwords/server texts and assert they never appear in any error message, `String`, `util.inspect`, JSON or CLI text (`tests/unit/imap-*.test.ts`).
+- Logs (from M1b-4, [LOGGING.md](LOGGING.md#keeping-it-complete)): every event builder is fed canary passwords/addresses/hosts/subjects and none may appear in a log line; the event names in code must match the LOGGING.md catalog; every registered command must write `command.start` + `command.finish`; the fail2ban regex must still match `login-guard.block` lines. After an integration run, the value-blind leak check above also runs over the log folder.
 - RLS: two Supabase users; B reads A's rows → 0 rows; B inserts with A's user_id → rejected.

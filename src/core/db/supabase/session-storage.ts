@@ -19,6 +19,8 @@ export interface SessionStorage {
   removeItem(key: string): void;
   /** Deletes all stored session data. */
   clear(): void;
+  /** true when no session data is stored (a missing or corrupt file counts as empty). */
+  isEmpty(): boolean;
 }
 
 /** Config dir: MM_CONFIG_DIR → $XDG_CONFIG_HOME/mail-manager → ~/.config/mail-manager. */
@@ -90,6 +92,10 @@ export class FileSessionStorage implements SessionStorage {
   clear(): void {
     rmSync(this.file, { force: true });
   }
+
+  isEmpty(): boolean {
+    return Object.keys(this.read()).length === 0;
+  }
 }
 
 export class MemorySessionStorage implements SessionStorage {
@@ -109,5 +115,9 @@ export class MemorySessionStorage implements SessionStorage {
 
   clear(): void {
     this.data.clear();
+  }
+
+  isEmpty(): boolean {
+    return this.data.size === 0;
   }
 }

@@ -1,5 +1,5 @@
 import { isAuthRetryableFetchError, type SupabaseClient } from '@supabase/supabase-js';
-import { AuthError, type AuthService, type AuthUser } from '../../auth.js';
+import { AuthError, type AuthService, type AuthUser, type LogoutResult } from '../../auth.js';
 import { DEFAULT_TIMEOUT_MS } from './client.js';
 import type { SessionStorage } from './session-storage.js';
 
@@ -87,7 +87,16 @@ export class SupabaseAuthService implements AuthService {
     return { email: data.user.email ?? email, userId: data.user.id };
   }
 
-  async logout(): Promise<void> {
+  async logout(): Promise<LogoutResult> {
+    // Checked first, before any await: auth-js initialize() (started with the client) may
+    // asynchronously remove an invalid stored session, which would flip the answer.
+    // Any stored data counts as a session: with the implicit flow, password login writes only
+    // the `sb-<host>-auth-token` key, and that name depends on SUPABASE_URL — so data left under
+    // an old key is still a local session to delete ("Logged out", the conservative answer).
+    if (this.storage.isEmpty()) {
+      this.storage.clear(); // removes a corrupt file
+      return 'not-logged-in';
+    }
     try {
       // Revokes the refresh token server-side when reachable; result deliberately ignored.
       await withDeadline(this.client.auth.signOut({ scope: 'local' }), this.deadlineMs);
@@ -96,6 +105,7 @@ export class SupabaseAuthService implements AuthService {
     }
     // signOut keeps the session on network errors, so always clear it ourselves.
     this.storage.clear();
+    return 'logged-out';
   }
 
   currentUser(): Promise<AuthUser | null> {

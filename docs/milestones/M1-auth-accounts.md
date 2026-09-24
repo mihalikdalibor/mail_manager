@@ -15,7 +15,7 @@ Decisions (2026-09-21): migrations via the Supabase CLI (`npm run db:push`); **i
 - `src/core/credentials.ts` — `CredentialProvider` + `LocalCredentialProvider` (key-version guard; rotation tooling later).
 - `src/core/db/repos.ts` — `AccountsRepo`, `MailAccount`, `RepoError` (no Supabase imports). `src/core/db/supabase/` — `SupabaseAccountsRepo` (zod-validated rows, email lowercased, update/remove return whether exactly one row changed), `SupabaseAuthService`, file session storage, `createSupabaseServices()` factory.
 - `src/core/auth.ts` — `AuthService` / `AuthError`.
-- CLI: `mm login [--email]` (hidden prompt — nothing echoed, TTY required, empty email refused, Ctrl+C → exit 130), `mm logout` (always clears the local session, even offline or with a broken config), `mm whoami` (reports "Supabase unreachable" instead of "not logged in" on network failures).
+- CLI: `mm login [--email]` (hidden prompt — nothing echoed, TTY required, empty email refused, Ctrl+C → exit 130), `mm logout` (always clears the local session, even offline or with a broken config; prints "Not logged in" (exit 0) without contacting Supabase when no session existed), `mm whoami` (reports "Supabase unreachable" instead of "not logged in" on network failures).
 - `mm doctor`: now 7 checks — adds `database` (table present and anon blocked with 42501; missing → "run `npm run db:push`"; anon readable → FAIL), `signup` (public signups disabled → OK; enabled → FAIL) and `session` (logged in → OK, else WARN; "Supabase unreachable" on network failure). The session check may refresh and rewrite the session file.
 - Supabase client: per-request timeout (10 s default, 5 s in doctor) via a `fetch` wrapper; PostgREST retries disabled (fail fast).
 - Node floor raised to 22.13 (`@inquirer/prompts` requirement).
@@ -23,7 +23,7 @@ Decisions (2026-09-21): migrations via the Supabase CLI (`npm run db:push`); **i
 
 ## M1b — IMAP foundation, providers & test ground
 
-Split on 2026-09-22 into **M1b-1** discovery → **M1b-2** IMAP session → **M1b-3** test ground.
+Split on 2026-09-22 into **M1b-1** discovery → **M1b-2** IMAP session → **M1b-3** test ground; **M1b-4** logging foundation added 2026-09-23 (runs after M1b-3, before M1c).
 
 ### M1b-1 — Provider discovery (implemented)
 
@@ -59,18 +59,44 @@ Three tiers (user decision 2026-09-22):
 - Repo: UUID guard on ids, capabilities schema-checked.
 - Measured Websupport capabilities in IMAP.md §7 (no SPECIAL-USE); provider restrictions in PROVIDERS.md.
 
-### M1b-2b — Login guard (next)
+### M1b-2b — Login guard (implemented)
 
-- Attempt policy per client IP and per target mailbox: 3 failures → challenge (Turnstile when hosted, delay in the CLI), 5 in 15 min → 15 min lock, 3 locks from one IP in 24 h → 24 h IP block, 3 IP blocks in 30 days → permanent ("contact support"). Block-event records (time, IP, reason, attempts, HMAC of the target) behind a sink interface; in-memory store now, persistent store + Cloudflare/fail2ban in M6a.
+- `src/core/security/login-guard.ts` `LoginGuard`: per (IP + mailbox) pair 2 failures → challenge, 5 in 15 min → 15 min lock, challenge for 24 h after a lock; per IP 3 lockouts in 24 h → 24 h block, 3 blocks in 30 days → permanent; per mailbox across IPs 10 in 15 min → challenge only. Only credential failures count. In-memory `AttemptStore` (async interface for the M6a store), per-pair serialisation.
+- `src/core/imap/guarded-session.ts` `guardedOpenSession`: guard → challenge hook → `openSession` once → record; blocked → `LoginBlockedError` without contacting the server.
+- `src/core/security/events.ts`: HMAC targets (HKDF from `MM_MASTER_KEY`), `SecurityEvent` + sinks, `mm-security {json}` line, fail2ban regex (IP-level blocks only). `ip.ts`: IP normalisation (IPv4-mapped, IPv6 /64).
+- CLI texts (`src/cli/login-guard-text.ts`): end time with time zone + next step; permanent → "contact Mail Manager support"; `cliChallenge` = announced 5 s wait. Details: SECURITY.md "Login guard".
 
 ### M1b-3 — Test ground
 
 - Test ground on **test@example-test-domain.eu** (Websupport): folder guard (`mm-test` only), deterministic synthetic mail (~150 messages / ~25 MB, nodemailer MailComposer), `npm run test:seed` / `test:unseed`.
 
+### M1b-4 — Logging foundation
+
+Decisions (2026-09-23): runs after M1b-3 and before M1c, so every command that manages mailboxes logs from day one; the cloud `audit_log` table is created here (moved from M4). Full design: [LOGGING.md](../LOGGING.md).
+
+- **Goal:** every run leaves a readable, leak-free trace — local app and security logs, a cloud audit trail, and `mm logs` to read them.
+- **Scope:**
+  - `src/core/paths.ts` — neutral `configDir()` (moved out of `db/supabase/session-storage.ts`; the session storage uses it).
+  - `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync append, dir 700 / files 600, one file per day and kind, 5 MB cap, startup pruning: app 30 days, security 90 days, 4 KB line cap, never throws), run context, zod schema for reading lines back. `SecurityEvent` joins the catalog; new fields only after `target` (fail2ban regex unchanged).
+  - Security events: `auth.login`, `auth.login-failed` (reason + HMAC of the typed e-mail), `auth.logout`; `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (all guard events, incl. `too-many-attempts`) built and tested through `guardedOpenSession` with a fake opener — M1c wires them to the file.
+  - CLI: run logger in `src/cli/bin.ts` + commander `preAction` hook → `command.start` (command path, option **names**) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit` and Ctrl+C (`interrupted`); `error.unexpected` (class, code, relative stack frames, no message). Events for today's commands: `login`/`logout`/`whoami`, `doctor` (`doctor.check`), `discover` (`discover.finish`: source + provider id, no domain), `keygen` (start/finish only).
+  - `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language text in `src/cli/log-text.ts`. `mm doctor` `logs` check. `MM_LOG_LEVEL` in `config.ts`.
+  - Audit trail: new migration — generic `audit_log` ([DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4)), `AuditRepo` interface + Supabase implementation, `audit.write-failed` when a row can't be written. First rows are written by M1c.
+  - **User:** Supabase dashboard → Authentication → Audit Logs: decide on "write audit logs to the database" and its retention (proposal: on, 90 days).
+- **Out of scope:** account events (M1c), hosted log shipping, error tracking, alerting (M6a/M7), `security_events` table (M6a).
+- **Acceptance:** every existing command leaves `command.start` + `command.finish` with the same `run`; a failed `mm login` writes `auth.login-failed` with a reason and no e-mail or password; `mm logs` shows readable lines and marks interrupted runs; canary test clean (no password, address, host, subject in any line); files 600, dir 700; daily files pruned by age; a write failure doesn't change the command's result; catalog ↔ LOGGING.md test and "every command logs start/finish" test pass; the fail2ban regex still matches `login-guard.block` lines; two-user RLS test on `audit_log` (select/insert own rows only, no update/delete); lint, typecheck, tests, build green.
+- **Verification:**
+  1. `MM_CONFIG_DIR=$(mktemp -d) mm discover <placeholder address>` → `mm logs` shows the run; `mm logs --json` lines parse with `jq`.
+  2. `mm login` with a wrong password (external terminal, dashboard test user) → `mm logs --security` shows "Mail Manager login failed"; `grep` the log folder for the typed address → nothing.
+  3. Ctrl+C during a `mm login` prompt → `mm logs` shows the run as interrupted.
+  4. `ls -la` on the log folder → 700 / 600. `mm doctor` → `logs` OK.
+  5. `npm run test:integration` with `MM_TEST_SUPABASE_*` → `audit_log` RLS suite passes.
+
 ## M1c — Account commands
 
 - `mm account add [email]` — `discover` → `chooseImapSettings` (picker / manual, from M1b-1) → hints → hidden password → test login (on timeout/refused: GeoIP hint) → encrypt → save.
 - `mm account list` · `test` · `remove` (confirm) · `update-password`.
+- **Logging** ([LOGGING.md](../LOGGING.md)): `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`). No address, host or password in any event.
 
 ## Out of scope (M1)
 

@@ -2,7 +2,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/', 'coverage/', 'node_modules/'] },
+  // .claude/: agent tooling (security probes), not app code — outside tsconfig and the build.
+  { ignores: ['dist/', 'coverage/', 'node_modules/', '.claude/'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {

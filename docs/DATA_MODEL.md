@@ -52,25 +52,26 @@ Secrets are base64 **text**, not `bytea`: PostgREST returns bytea as `\x…` hex
 
 Note: filter values may contain addresses the user typed (e.g. "from newsletter@shop.com"). That is user-authored config, accepted as necessary; documented in SECURITY.md.
 
-### `audit_log` (M4)
+### `audit_log` (M1b-4)
 
-Append-only record of destructive / export actions.
+Append-only record of every state change a user makes to accounts, filters or mail (moved from M4 to M1b-4 on 2026-09-23 and made generic, so M1c's account actions are audited from day one). Part of the logging design: [LOGGING.md](LOGGING.md).
 
-| Column        | Type                                                        | Notes                              |
-| ------------- | ----------------------------------------------------------- | ---------------------------------- |
-| id            | bigint identity PK                                          |                                    |
-| user_id       | uuid FK                                                     |                                    |
-| account_id    | uuid FK null (`on delete set null`)                         | keep history after account removal |
-| action        | text check in (`trash`,`expunge`,`backup`,`move`,`migrate`) |                                    |
-| folder        | text                                                        | folder name                        |
-| message_count | int                                                         |                                    |
-| bytes         | bigint                                                      |                                    |
-| filter_json   | jsonb                                                       | what was selected                  |
-| result        | text check in (`ok`,`partial`,`failed`,`aborted`)           |                                    |
-| error         | text null                                                   | redacted                           |
-| created_at    | timestamptz default now()                                   |                                    |
+| Column        | Type                                                                      | Notes                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| id            | bigint identity PK                                                        |                                                                                                                                                                                 |
+| user_id       | uuid FK → auth.users, not null, default `auth.uid()`, `on delete cascade` | deleting the user deletes their audit rows                                                                                                                                      |
+| account_id    | uuid FK null (`on delete set null`)                                       | keep history after account removal                                                                                                                                              |
+| action        | text not null, check `action ~ '^[a-z]+(\.[a-z-]+)?$'`                    | zod enum in the app: `account.add`, `account.remove`, `account.password-update`, `filter.save`, `filter.delete`, `mail.trash`, `mail.expunge`, `mail.move`, `backup`, `migrate` |
+| folder        | text null                                                                 | folder name (mail actions)                                                                                                                                                      |
+| message_count | int null                                                                  |                                                                                                                                                                                 |
+| bytes         | bigint null                                                               |                                                                                                                                                                                 |
+| details       | jsonb null, size-capped (check on `pg_column_size`)                       | zod-validated per action: provider id, filter JSON, plan/backup id, notices — no mail content                                                                                   |
+| result        | text check in (`ok`,`partial`,`failed`,`aborted`)                         |                                                                                                                                                                                 |
+| reason        | text null                                                                 | typed reason code, never raw error text                                                                                                                                         |
+| run_id        | text null                                                                 | the local run id — links the row to `mm logs --run`                                                                                                                             |
+| created_at    | timestamptz not null default `now()`                                      | set by the database (no insert privilege on the column)                                                                                                                         |
 
-RLS: `select` and `insert` policies only — **no update/delete policies**, so rows are immutable for users.
+RLS: `select` and `insert` policies only — **no update/delete policies**, so rows are immutable for users. Privileges reset explicitly like `mail_accounts` (no TRUNCATE, no anon). Writers: M1c (account actions), M3 (filters), M4 (delete), M5 (backup), M6c (migrate).
 
 ### `jobs` / `job_runs` (M6)
 
@@ -91,5 +92,5 @@ RLS: `select` and `insert` policies only — **no update/delete policies**, so r
 
 ## Open questions
 
-- Account deletion: cascade audit rows too, or keep with `account_id = null`? (Current proposal: keep, set null.)
+- Account deletion: cascade audit rows too, or keep with `account_id = null`? (Current proposal: keep, set null; deleting the whole user deletes them.)
 - Should `email` of the account be considered sensitive enough to encrypt? (Proposal: no — needed for display and uniqueness.)

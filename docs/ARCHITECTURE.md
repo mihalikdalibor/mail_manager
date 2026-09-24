@@ -45,6 +45,8 @@ Core functions take plain typed inputs and return plain results plus progress ca
 | `providers/presets.json`, `providers/discover.ts` | IMAP settings lookup                                                                       | M1        |
 | `imap/session.ts`                                 | Open/close connections, TLS policy, capability detection, folder listing, batching helpers | M1–M2     |
 | `credentials.ts`                                  | `CredentialProvider` interface + local implementation                                      | M1        |
+| `security/`                                       | Login guard, IP buckets, security event records                                            | M1b-2b    |
+| `log/`, `paths.ts`                                | Typed log events, `EventLog` + file sink, config/log folder ([LOGGING.md](LOGGING.md))     | M1b-4     |
 | `stats.ts`                                        | Counts/sizes per folder, sender, year; quota                                               | M2        |
 | `filters/schema.ts`, `filters/compile.ts`         | Filter model → imapflow SearchObject + client-side post-filters                            | M3        |
 | `planner.ts`                                      | Immutable action plan (folder, UIDVALIDITY, UID set, totals)                               | M4        |

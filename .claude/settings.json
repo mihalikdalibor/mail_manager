@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Read(./supabase_pass)",
+      "Read(./**/*.cred)",
+      "Read(./.test.users.cred)",
+      "Read(~/.config/mail-manager/**)",
+      "Edit(./.env)",
+      "Edit(./.env.local)",
+      "Edit(./supabase_pass)",
+      "Edit(./**/*.cred)",
+      "Edit(~/.config/mail-manager/**)",
+      "Bash(cat .env:*)",
+      "Bash(cat .env.local:*)",
+      "Bash(cat supabase_pass:*)",
+      "Bash(cat .test.users.cred:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(npm publish:*)"
+    ]
+  }
+}

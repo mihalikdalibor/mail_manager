@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { AuthError } from '../../src/core/auth.js';
+import { AuthError, type LogoutResult } from '../../src/core/auth.js';
 import { ConfigError } from '../../src/core/config.js';
 
 // Mock the core + prompts so the CLI wiring is tested without Supabase, env files or a TTY.
 const PASSWORD = 'hunter2-ÄŠť';
 
 // vi.hoisted: vi.mock factories are hoisted above the static imports, so the fakes must be too.
-const { fakeAuth, createSupabaseServices, loadEnvFiles, input, password, clearSession } =
+const { fakeAuth, createSupabaseServices, loadEnvFiles, input, password, clearSession, session } =
   vi.hoisted(() => ({
     fakeAuth: {
       login:
         vi.fn<(email: string, password: string) => Promise<{ email: string; userId: string }>>(),
-      logout: vi.fn<() => Promise<void>>(),
+      logout: vi.fn<() => Promise<LogoutResult>>(),
       currentUser: vi.fn<() => Promise<{ email: string; userId: string } | null>>(),
     },
     createSupabaseServices: vi.fn<(...args: unknown[]) => unknown>(),
@@ -19,6 +19,8 @@ const { fakeAuth, createSupabaseServices, loadEnvFiles, input, password, clearSe
     input: vi.fn<(...args: unknown[]) => Promise<string>>(),
     password: vi.fn<(...args: unknown[]) => Promise<string>>(),
     clearSession: vi.fn(),
+    // Whether the mocked local session file is empty (per test).
+    session: { empty: true },
   }));
 
 vi.mock('../../src/core/config.js', async (importOriginal) => {
@@ -39,6 +41,9 @@ vi.mock('../../src/core/db/supabase/index.js', () => ({
     removeItem(): void {}
     clear(): void {
       clearSession();
+    }
+    isEmpty(): boolean {
+      return session.empty;
     }
   },
   sessionDir: vi.fn(() => '/nonexistent/mm-test-config'),
@@ -76,6 +81,7 @@ beforeEach(() => {
     return true;
   });
   createSupabaseServices.mockReturnValue({ auth: fakeAuth, accounts: {} });
+  session.empty = true;
   setTTY(true);
 });
 
@@ -212,21 +218,50 @@ describe('mm whoami', () => {
 });
 
 describe('mm logout', () => {
+  beforeEach(() => {
+    clearSession.mockClear();
+  });
+
   it('logs out once and confirms', async () => {
-    fakeAuth.logout.mockResolvedValue(undefined);
+    fakeAuth.logout.mockResolvedValue('logged-out');
     await runCli('logout');
     expect(fakeAuth.logout).toHaveBeenCalledTimes(1);
     expect(out.join('\n')).toContain('Logged out');
+    expect(process.exitCode).toBeUndefined();
   });
 
-  it('still deletes the local session when the config is broken', async () => {
+  it('without a session says "Not logged in" (exit 0), never "Logged out"', async () => {
+    fakeAuth.logout.mockResolvedValue('not-logged-in');
+    await runCli('logout');
+    expect(fakeAuth.logout).toHaveBeenCalledTimes(1);
+    expect(out.join('\n')).toContain('Not logged in');
+    expect(allOutput()).not.toContain('Logged out');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  const brokenConfig = (): void => {
     createSupabaseServices.mockImplementation(() => {
       throw new ConfigError([{ variable: 'SUPABASE_URL', problem: 'is missing' }]);
     });
+  };
+
+  it('broken config + a local session: deletes it and says "Logged out"', async () => {
+    brokenConfig();
+    session.empty = false;
     await runCli('logout');
     expect(clearSession).toHaveBeenCalledTimes(1);
     expect(fakeAuth.logout).not.toHaveBeenCalled();
     expect(out.join('\n')).toContain('Logged out');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('broken config + no session: still clears, says "Not logged in"', async () => {
+    brokenConfig();
+    await runCli('logout');
+    expect(clearSession).toHaveBeenCalledTimes(1);
+    expect(fakeAuth.logout).not.toHaveBeenCalled();
+    expect(out.join('\n')).toContain('Not logged in');
+    expect(allOutput()).not.toContain('Logged out');
     expect(process.exitCode).toBeUndefined();
   });
 });

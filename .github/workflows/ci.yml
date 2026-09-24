@@ -29,6 +29,8 @@ jobs:
       - run: npm run test:integration # no secrets in CI → only checks the suite loads
       - run: npm run build
       - run: npm audit --audit-level=high
+      # Offline security probes (.claude/security): SSRF, input validation, IMAP session, crypto, rule greps.
+      - run: bash .claude/security/probes/run-all.sh "$RUNNER_TEMP/probes"
 
   secrets:
     runs-on: ubuntu-latest

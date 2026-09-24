@@ -36,6 +36,16 @@ Large milestone — split into sub-milestones, each shippable alone.
 - **SSRF:** discovery's autoconfig URLs (`https://autoconfig.<domain>/…`, `https://<domain>/.well-known/…`) are chosen by whoever controls the domain and may resolve to private, loopback or link-local addresses. Fine for the local CLI; before discovery runs on a server, block those targets (custom DNS lookup on the fetch agent).
 - **GeoIP:** when a connection from the server fails, show `geoIpNotice({ kind: 'server', region })` so users allow the server's country (or turn GeoIP off) at their mail host. Set `region` once the hosting is chosen (Vercel or a VPS); without it the text says "the country where the Mail Manager server is hosted".
 
+## Logging (all sub-milestones)
+
+Events and storage per stage: ([LOGGING.md](../LOGGING.md)).
+
+- **M6a:** `http.request` via Fastify's logger (pino): method, route template, status, ms, request id — never query strings or bodies. `http.csrf-failed`, `http.csp-violation`, `http.session-invalid`. `security_events` table (RLS, service role, 90-day retention job) for the login guard; client IP only from a trusted source (see TODO M6a). Alert rules (permanent block, block spikes, error rate).
+- **M6b:** `job.start` / `job.finish` → `job_runs` row + Healthchecks.io-style heartbeat, so a job that **didn't** run is noticed.
+- **M6c:** `migrate.finish` run summary (copied / skipped / failed / bytes) → `audit_log` action `migrate`.
+- **M6d:** `oauth.token-refresh`, `oauth.token-revoked` — never token values.
+- **Hosted (M7):** pick log service, error tracking (EU region) and uptime monitoring; Vercel Log Drain or VPS shipper; logs in the GDPR record of processing; who may read them.
+
 ## Also in beta
 
 - MFA (TOTP) for app login.

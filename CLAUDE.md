@@ -4,8 +4,8 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-2b (login guard) — not started.** M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008) and M1b-2a IMAP session (v0.2.0, C-009, C-010) done and reviewed; then M1b-3 (test ground). `TODO.md` is the source of truth for progress.
-- Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
+- **Current milestone: M1b-3 (test ground) — not started**, then M1b-4 (logging foundation, added 2026-09-23), then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010) and M1b-2b login guard (C-012) done and reviewed. `TODO.md` is the source of truth for progress.
+- Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `LOGGING.md` (what is logged, where, retention, event catalog), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
 
@@ -49,8 +49,18 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 - Never log passwords, OAuth tokens, `MM_MASTER_KEY`, or message bodies. Redact in errors.
 - `MM_MASTER_KEY` lives only in env (`.env.local` or `.env`, both gitignored) — never in Supabase, never in code.
 - CLI uses the Supabase publishable key (formerly "anon") + user JWT. Service-role key is server-side only (M6+).
-- IMAP: implicit TLS (993) only, certificate verification on. No plaintext fallback. All logins go through `openSession` (`src/core/imap/session.ts`): TLS 1.2+, logger off, password dropped from the client after connect, **never an automatic retry** of a failed login (provider IP bans / brute force).
+- IMAP: implicit TLS (993) only, certificate verification on. No plaintext fallback. All logins go through `openSession` (`src/core/imap/session.ts`): TLS 1.2+, logger off, password dropped from the client after connect, **never an automatic retry** of a failed login (provider IP bans / brute force). All core login paths go through `guardedOpenSession` (`src/core/imap/guarded-session.ts`, login guard); only it calls `openSession`.
 - This repo is **public**. Never write the real test mailbox address/domain or its IMAP host into tracked files (docs, `TODO.md`, `.claude/changes.md`, code, comments, commit messages). Use a placeholder like `test@example-test-domain.eu` instead — real values belong only in the gitignored `.env.local`.
+
+## Logging rules
+
+Design and event catalog: `docs/LOGGING.md` (foundation built in M1b-4).
+
+- Only **typed, allowlisted events** through the core `EventLog` interface — no free-form logging of objects, errors or strings. Core never prints; the shell picks the sink.
+- Never in any log or audit row (local files included): passwords, tokens, keys, message bodies/subjects/addresses, the mailbox address/domain/IMAP host, what was typed into a failed login, raw server/library text, option values, home-directory paths. Use ids instead (user id, account UUID, provider id, plan/backup id, HMAC target, reason codes, counts, bytes).
+- Every new command or core operation adds its events to the `docs/LOGGING.md` catalog and its milestone doc's **Logging** section in the same change, with a canary test. Command start/finish is automatic — don't bypass `src/cli/bin.ts`.
+- State changes to accounts, filters or mail also write an `audit_log` row (counts/bytes/folder/filter only).
+- Retention: app log 30 days, security log 90 days (IPs), audit rows while the user exists. Security lines keep the `mm-security {json}` format; new fields go after `target` (fail2ban regex).
 
 ## Conventions
 
@@ -77,6 +87,7 @@ npm run format             # prettier --write .
 npm run format:check       # prettier --check . (run in CI)
 ```
 
+- Once per clone: `git config core.hooksPath .claude/security/hooks` (pre-commit + commit-msg secret scan). Security probes, playbook and incident runbook: `.claude/security/` (`/security` runs them).
 - Env: `.env.local` then `.env` from the repo root; real env wins. `mm doctor` validates it.
 - Supabase: link once with `npx supabase login` + `npx supabase link --project-ref <ref>` (interactive, asks for the DB password — the user runs these). Never edit an applied migration; add a new timestamped file.
 - Supabase code only in `src/core/db/supabase/`; everything else uses `createSupabaseServices()` (auth + accounts repo) and the interfaces in `src/core/auth.ts` / `src/core/db/repos.ts`.

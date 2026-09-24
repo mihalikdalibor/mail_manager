@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Blocks a commit message that contains a real secret value, the test mailbox address/domain,
+# or a secret-shaped string (the repo is public: messages are published too).
+exec node "$(git rev-parse --show-toplevel)/.claude/security/probes/secrets-scan.mjs" --message "$1"

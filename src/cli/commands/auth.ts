@@ -1,6 +1,6 @@
 import { input, password } from '@inquirer/prompts';
 import type { Command } from 'commander';
-import type { AuthService } from '../../core/auth.js';
+import type { AuthService, LogoutResult } from '../../core/auth.js';
 import { ConfigError, loadEnvFiles } from '../../core/config.js';
 import { errorText } from '../error-text.js';
 import {
@@ -15,8 +15,11 @@ function authService(): AuthService {
 }
 
 /** Last resort for logout when no client can be built (e.g. broken config). */
-function clearLocalSession(): void {
-  new FileSessionStorage(sessionDir(process.env)).clear();
+function clearLocalSession(): LogoutResult {
+  const storage = new FileSessionStorage(sessionDir(process.env));
+  const hadSession = !storage.isEmpty();
+  storage.clear();
+  return hadSession ? 'logged-out' : 'not-logged-in';
 }
 
 /** Ctrl+C in an inquirer prompt → exit 130 quietly; other errors → message + exit 1. */
@@ -70,9 +73,9 @@ export function registerAuth(program: Command): void {
           if (!(err instanceof ConfigError)) throw err;
         }
         // Without a usable config there's no server to notify; still delete the local session.
-        if (auth) await auth.logout();
-        else clearLocalSession();
-        console.log('Logged out');
+        const result = auth ? await auth.logout() : clearLocalSession();
+        // Idempotent: "Not logged in" is not an error (exit 0).
+        console.log(result === 'logged-out' ? 'Logged out' : 'Not logged in');
       } catch (err) {
         handleError(err);
       }

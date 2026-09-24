@@ -6,10 +6,15 @@ export interface AuthUser {
   userId: string;
 }
 
+export type LogoutResult = 'logged-out' | 'not-logged-in';
+
 export interface AuthService {
   login(email: string, password: string): Promise<AuthUser>;
-  /** Always clears the local session, even when the server can't be reached. */
-  logout(): Promise<void>;
+  /**
+   * Always clears the local session, even when the server can't be reached.
+   * 'not-logged-in' when no local session existed (nothing is sent to the server).
+   */
+  logout(): Promise<LogoutResult>;
   /**
    * null when not logged in or the session is no longer valid.
    * Throws AuthError('unreachable') when the auth server can't be reached.
