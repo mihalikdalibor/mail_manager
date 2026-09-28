@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-3 (test ground) — M1b-3a generator done (v0.4.0, C-013); next M1b-3b** (folder guard, `npm run test:seed`/`test:unseed`, live test), then M1b-4 (logging foundation, added 2026-09-23), then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012) and M1b-3a synthetic mail generator (v0.4.0, C-013) done and reviewed. `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b-4 (logging foundation, added 2026-09-23)**, then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012), M1b-3a synthetic mail generator (v0.4.0, C-013) and M1b-3b test ground seed/unseed + live test (v0.5.0, C-014) done and reviewed. `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `LOGGING.md` (what is logged, where, retention, event catalog), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
@@ -79,7 +79,9 @@ npm run dev -- <args>      # run CLI from source (tsx), e.g. npm run dev -- doct
 npm run build              # tsc -p tsconfig.build.json → dist/
 npm start -- <args>        # run the built CLI (dist/cli/bin.js)
 npm test                   # unit tests (tests/unit)
-npm run test:integration   # integration tests (tests/integration); suites skip without their env (MM_TEST_SUPABASE_*, later MM_TEST_IMAP_*)
+npm run test:integration   # integration tests (tests/integration); suites skip without their env (MM_TEST_SUPABASE_*, MM_TEST_IMAP_*) — live logins: run once, never in a loop
+npm run test:seed          # fill mm-test of the test mailbox with the 150 synthetic messages (only missing ones; ~28 MB first time)
+npm run test:unseed        # delete the mm-test folder of the test mailbox (only that folder)
 npm run db:push            # apply supabase/migrations to the linked cloud project (supabase CLI)
 npm run db:status          # local vs remote migrations
 npm run lint               # eslint (type-checked)

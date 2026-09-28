@@ -88,6 +88,26 @@ Three tiers (user decision 2026-09-22):
 2. `TZ=Pacific/Kiritimati npx vitest run tests/unit/test-ground-generator.test.ts` — same digest in another time zone.
 3. `npm ls nodemailer` — exactly 10.0.10, devDependency, no children; `grep -rn nodemailer src/` finds nothing (an ESLint `no-restricted-imports` rule in `eslint.config.js` blocks it under `src/`).
 
+#### M1b-3b — Folder guard, seed/unseed, live test (implemented)
+
+- **Guard** (`folder.ts`): `TestFolder` resolves `<personal namespace prefix>mm-test` once; every operation (`exists`, `create`, `remove`, `messageCount`, `open`) compares the path with `===` as its first statement and throws `FolderGuardError` otherwise — no IMAP call happens first. An opened folder checks, before each fetch/append/flag change, that it isn't released and that the selected folder is still `mm-test`; a second `open()` is refused (imapflow's lock would wait forever).
+- **Adapter:** the only IMAP surface is a small `FolderClient` interface, implemented over imapflow (`imapFolderClient`) and faked in unit tests. It exists because imapflow reports some failures as falsy results instead of errors (`mailboxCreate`/`mailboxDelete` → `undefined` on a dropped connection, `status`/`append`/`messageFlagsSet`/`mailboxUnsubscribe` → `false`); the adapter turns each into an error. `TestFolder.fromSession` narrows `session.client` with `instanceof ImapFlow` — no `src/` change. No expunge, CLOSE, move or rename exists in the tooling.
+- **Remove** refuses while `mm-test` is selected: imapflow would send `CLOSE` first, which expunges `\Deleted` messages. Unseed runs in a fresh session: `DELETE` → best-effort unsubscribe (CREATE auto-subscribes; a server may decline for a deleted folder, which must not block unseed) → check it's gone.
+- **Seed** (`seed.ts`): classify by the `X-MM-Test-Seed` header → refuse with counts (foreign, duplicate, older version, changed = size or internal date differs) **before any write** → reset differing system flags (keywords the server adds, e.g. Dovecot's `$HasAttachment`, are ignored and kept) → APPEND the missing messages with flags and internal date while `mm-test` is selected (its PERMANENTFLAGS apply) → verify count/size/date/flags (a cached count of 0 is refreshed with `NOOP` first — right after the APPENDs it can be stale). Websupport's PERMANENTFLAGS weren't measured; verify is the safety net.
+- **Scripts** (`cli.ts`): one login per run via `guardedOpenSession` (in-memory guard, random target key), logout in `finally`, counts-only output, fixed error texts (login → the app's generic message; OVERQUOTA → "the test mailbox is full"; other → `Unexpected error (<allowlisted name>)`), unhandled errors routed the same way, flush + exit like `src/cli/bin.ts`.
+- **Env** (`live-env.ts`): shared with `imap-session.test.ts`; the password is used raw (never trimmed); address and password are hidden from `inspect`/JSON.
+
+#### Verification (M1b-3b)
+
+Live commands are real logins — each once, in this order, never in a loop:
+
+1. Offline: `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`; `MM_TEST_IMAP_USER= npm run test:seed` → the missing-env text, exit 1, no login.
+2. `npm run test:seed` → `created: yes, appended 150`.
+3. `npm run test:integration` → all suites pass (test ground: second seed appends 0; server = manifest; guard refusals).
+4. `npm run test:unseed` → `deleted (150 messages)`; again → `nothing to delete`.
+5. `npm run test:seed` → appended 150; again → appended 0, flags reset 0.
+6. `npx tsx tests/support/test-ground/leak-check.ts …` over the saved outputs → all `clean`.
+
 ### M1b-4 — Logging foundation
 
 Decisions (2026-09-23): runs after M1b-3 and before M1c, so every command that manages mailboxes logs from day one; the cloud `audit_log` table is created here (moved from M4). Full design: [LOGGING.md](../LOGGING.md).

@@ -4,22 +4,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { imapErrorText } from '../../src/cli/imap-errors.js';
 import { ImapSessionError } from '../../src/core/imap/errors.js';
 import { openSession } from '../../src/core/imap/session.js';
-import { defaultDiscoveryDeps, discover } from '../../src/core/providers/discover.js';
 import type { ImapSettings } from '../../src/core/providers/settings.js';
+import { readLiveImapEnv, resolveLiveSettings } from '../support/test-ground/live-env.js';
 
 // Real login to the dedicated test mailbox. The address, host and password come from env and
 // are never printed: assertions compare single fields or booleans, so a failing diff can't
-// show them. No folder is opened (the mm-test folder guard comes with the test ground).
+// show them. No folder is opened (folder access goes through the mm-test guard in
+// tests/support/test-ground/folder.ts; this test only logs in).
 //
 // Exactly ONE wrong-password attempt per run — providers ban IPs after repeated failures
 // (fail2ban-style). Never add more, and never enable vitest `retry` for this suite: a retry
 // would repeat the wrong-password attempt.
-const address = process.env.MM_TEST_IMAP_USER?.trim() ?? '';
-const password = process.env.MM_TEST_IMAP_PASS ?? '';
-const fallbackHost = process.env.MM_TEST_IMAP_HOST?.trim() ?? '';
+const live = readLiveImapEnv();
+const password = live?.password ?? '';
 const clientVersion = 'integration-test';
 
-describe.skipIf(address === '' || password === '')('imap session (live)', () => {
+describe.skipIf(live === null)('imap session (live)', () => {
   const captured: string[] = [];
   const inspected: string[] = [];
   let settings: ImapSettings;
@@ -39,17 +39,8 @@ describe.skipIf(address === '' || password === '')('imap session (live)', () => 
       });
     }
     // Real DNS only; no HTTP, so the domain is never sent to ISPDB/autoconfig.
-    const result = await discover(address, {
-      ...defaultDiscoveryDeps(5000),
-      fetch: () => Promise.reject(new Error('no HTTP in this test')),
-    });
-    if (result.status === 'found') {
-      settings = result.imap;
-    } else if (fallbackHost !== '') {
-      settings = { host: fallbackHost, port: 993, username: address };
-    } else {
-      throw new Error('Discovery found no IMAP host; set MM_TEST_IMAP_HOST as a fallback');
-    }
+    if (live === null) return;
+    settings = await resolveLiveSettings(live.address, live.fallbackHost);
   });
 
   afterAll(() => {

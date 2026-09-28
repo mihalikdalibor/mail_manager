@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-3 Test ground — M1b-3a generator done 2026-09-24 (C-013, reviewed); next M1b-3b guard + seed/unseed + live test**, then **M1b-4 Logging foundation** (added 2026-09-23), then M1c — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M1b-4 Logging foundation** (added 2026-09-23), then M1c — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -100,7 +100,7 @@ Decisions (2026-09-22): app-level guard is the primary brute-force layer (works 
 - [x] Unit tests: every threshold, window expiry, pair vs IP vs mailbox counting, only credential failures counted, reset on success, permanent tier, event records (no address/password), `guardedOpenSession` with a fake session opener
 - **Acceptance:** policy fully unit-tested with a fake clock; a blocked attempt never reaches the server; messages name the unblock time; no plain address or password in event records; lint, typecheck, tests, build green.
 
-### M1b-3 — Test ground (needs M1b-2a)
+### M1b-3 — Test ground (needs M1b-2a) ✅
 
 Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-test` holds foreign/unexpected mail (never deletes messages); `test:unseed` deletes the whole `mm-test` folder (IMAP DELETE, no EXPUNGE); the integration test runs seed itself (first run uploads ~25 MB, later runs nothing); `mm-test` stays seeded between runs for M3–M5. Split into M1b-3a (generator, offline) → M1b-3b (guard, seed/unseed, live test). Both live in `tests/support/test-ground/` (tsx, no `src/` changes).
 
@@ -112,13 +112,14 @@ Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-
 - **Acceptance:** same bytes on every run; all ranges above hold; manifest matches the generated messages; no network; lint, typecheck, unit tests, build green.
 - Logging: none (test tooling).
 
-#### M1b-3b — Folder guard, seed/unseed, live test (needs M1b-3a)
+#### M1b-3b — Folder guard, seed/unseed, live test (needs M1b-3a) ✅
 
-- [ ] Live-IMAP env helper (address/password from `MM_TEST_IMAP_*`, host via discovery with `MM_TEST_IMAP_HOST` fallback, plain message when unset; reused by `imap-session.test.ts`), one login per run via `guardedOpenSession`
-- [ ] **Folder guard**: resolves the real `mm-test` path once (namespace prefix) and refuses any other path — before any IMAP command — for every folder operation; tests never get the raw client
-- [ ] `npm run test:seed`: create `mm-test` if missing → append only messages whose seed id is missing (flags + internal date) → reset drifted flags → verify; refuses (appends nothing) when the folder holds foreign, duplicate, older-version or changed messages and says to run unseed. `npm run test:unseed`: deletes the `mm-test` folder (guarded). Output: counts only — no password, address, host or server text
-- [ ] Unit tests: guard path resolution + refusals (fake client records zero calls), seed/unseed against a fake client (empty, partial, complete, foreign, duplicate, flag drift)
-- [ ] Integration test on test@example-test-domain.eu (skips without env): seed → second seed appends 0 → server count, sizes, internal dates, flags, Message-IDs match the manifest → guard refuses `INBOX`, `Trash`, `mm-test/x`, `MM-TEST`, `mm-test2`, `*`; no password in captured output
+- [x] Live-IMAP env helper (address/password from `MM_TEST_IMAP_*`, host via discovery with `MM_TEST_IMAP_HOST` fallback, plain message when unset) — env + host discovery only: `imap-session.test.ts` reuses it but keeps calling `openSession` itself. Seed/unseed log in once per run via `guardedOpenSession` (in-memory guard, random target key)
+- [x] **Folder guard**: resolves the real `mm-test` path once (namespace prefix) and refuses any other path — before any IMAP command — for every folder operation; the harness narrows the session's client to a typed folder-operation view internally (runtime `instanceof ImapFlow`, no `src/` change), tests never touch it
+- [x] `npm run test:seed`: create `mm-test` if missing → append only messages whose seed id is missing (flags + internal date) → reset drifted flags → verify; refuses (appends nothing) when the folder holds foreign, duplicate, older-version or changed messages ("changed" = seed id present but size or internal date differs; differing flags are reset, not refused) and says to run unseed; **verify** = exactly 150 messages and every seed id's size, internal date and flags match the manifest, else fail; progress as counts. `npm run test:unseed`: deletes the `mm-test` folder (guarded, no prompt — decided 2026-09-24) and prints how many messages went with it; missing folder → "nothing to delete" (exit 0); always a fresh session (no folder selected). Output: counts only — no password, address, host or server text. Errors: login failure → the app's generic message, guard/seed refusal → plain text, anything else → "Unexpected error (<type>)", missing env → plain message; exit 1
+- [x] Unit tests: guard path resolution + refusals (fake client records zero calls), seed/unseed against a fake client (empty, partial, complete, foreign, duplicate, flag drift)
+- [x] Integration test on test@example-test-domain.eu (skips without env): seed → second seed appends 0 → server count, sizes, internal dates, flags, Message-IDs match the manifest → guard refuses `INBOX`, `Trash`, `mm-test/x`, `MM-TEST`, `mm-test2`, `*`; no password in captured output
+- [x] Docs: `docs/TESTING.md`, `.env.example`, `CLAUDE.md` Commands (`test:seed` / `test:unseed`), the `imap-session.test.ts` comment; test ground is for the Websupport mailbox only (Gmail labels: M3)
 - **Acceptance:** a second seed changes nothing; server state matches the manifest; guard refuses other folders before any IMAP command; unseed leaves no `mm-test` folder; no `src/` change; lint, typecheck, unit + integration tests, build green; leak check clean.
 - Logging: none (seed/unseed are npm scripts, not `mm` commands).
 

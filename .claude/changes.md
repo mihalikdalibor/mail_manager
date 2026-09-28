@@ -595,3 +595,113 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - Unit test file tightened after review beyond the plan's list (see above).
 
 ---
+
+## C-014 — M1b-3b test ground: folder guard, seed/unseed scripts, live test
+
+- **Status:** reviewed (2026-09-28)
+- **Review:** All criteria met. Live criteria judged from code + the recorded runs, not re-run live: the review's one `test:seed` was denied by the permission classifier. Reviewer re-ran the 3 unit files (188/188), the missing-env/unknown-command CLI paths (exit 1, no login), a grep for expunge/close/move/rename/delete calls (none), and a leak check over every changed file (clean, and proven to detect planted values). 3 mutation probes (selected-path re-check, keyword preservation, refuse-before-reset) each failed tests. It also traced imapflow 2.0.5: no implicit CLOSE/EXPUNGE, BODY.PEEK fetch. Full baseline green (1302 tests). Deviations justified. Non-blocking follow-ups: [LOW] `docs/milestones/M1-auth-accounts.md:95` and `docs/TESTING.md:40` still say unsubscribe → DELETE; the code is DELETE → best-effort unsubscribe (`folder.ts:232-235`). [LOW] the NOOP refresh before trusting a cached 0 count (`folder.ts:145`) isn't in the docs. [LOW] `TestFolder.path` is a public `readonly` (TS-only); a `#path` + getter would make it tamper-proof. [LOW] `leak-check.ts:36` silently skips values under 4 chars, so a very short password reports "clean" unchecked. [info] `imap-session.test.ts` now errors instead of falling back to `MM_TEST_IMAP_HOST` when discovery says `blocked` (can't happen for the test provider).
+- **Date:** 2026-09-24
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-24-m1b3b-test-ground-seed.md`, TODO.md → "M1b-3 — Test ground" → "M1b-3b — Folder guard, seed/unseed, live test (needs M1b-3a)"
+- **Base:** 7a5712a715a56cceb21cd39f70d6c5689d788f16. Files already dirty before the run: `TODO.md` (M1b-3b item rewrite from `/next`, confirmed by the user).
+- **Files:**
+  - Created: `tests/support/test-ground/errors.ts`, `folder.ts`, `seed.ts`, `unseed.ts`, `live-env.ts`, `cli.ts`, `leak-check.ts`; `tests/unit/test-ground-folder.test.ts`, `tests/unit/test-ground-seed.test.ts`, `tests/unit/test-ground-cli.test.ts`; `tests/integration/test-ground.test.ts`.
+  - Modified: `tests/integration/imap-session.test.ts` (shared env/discovery helper, comment), `package.json` (`test:seed`, `test:unseed`), `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md` (M1b-3b design + verification), `.env.example`, `CLAUDE.md` (Commands), `README.md` (scripts table).
+- **Requirements (plan acceptance criteria, verbatim):**
+  **Guard**
+  - [ ] `TestFolder` resolves its path once from the server's personal namespace: `prefix + 'mm-test'`, e.g. `mm-test` or `INBOX.mm-test`.
+  - [ ] Every folder operation (`exists`, `create`, `remove`, `messageCount`, `open`) throws `FolderGuardError` for any other path **before any IMAP method call on the client**. That includes `INBOX`, `Trash`, `mm-test/x`, `<prefix>mm-test.x`, `MM-TEST`, `mm-test2`, `*`, `%`, `''`, `' mm-test'`, and plain `mm-test` when the prefix is non-empty.
+    - "Zero calls" means no call to any `FolderClient` method except the two read-only getters `namespacePrefix()` and `selectedPath()`.
+    - Unit tests prove it with a recording fake.
+  - [ ] Operations on an opened folder (fetch, append, set flags) check that the selected folder is still exactly the test folder and that the handle hasn't been released; otherwise they throw. A second `open()` while one is still open is refused, because imapflow's lock would wait forever.
+  - [ ] `remove` refuses while the test folder is selected (imapflow would send `CLOSE`, which expunges). Unseed always uses a fresh session.
+  - [ ] `TestFolder.fromSession(session)` requires `session.client instanceof ImapFlow`, else it throws `TestGroundError`. Tests and scripts only use `TestFolder`. No file under `src/` changes.
+  - [ ] No call anywhere in `tests/support/test-ground/` to `messageDelete`, `mailboxClose`, `messageMove`, `mailboxRename` or `expunge` (checked by grep).
+
+  **Adapter (the `ImapFlow` → `FolderClient` view)**
+  - [ ] Every folder command that imapflow can "succeed" with a falsy result throws `TestGroundError` instead: `mailboxCreate`/`mailboxDelete` return `undefined` when not authenticated, `status` returns `false`, `append` returns `false`, `mailboxUnsubscribe` returns `false`.
+  - [ ] `listPaths()` skips `\Noselect`/`\NonExistent` entries.
+  - [ ] `internalDate` accepts `Date | string`; an unparsable value becomes an invalid Date, which classifies as "changed".
+  - [ ] Flags are normalized to sorted **system flags only** (`\Seen \Flagged \Answered \Draft \Deleted`). `\Recent` and keywords such as Dovecot's `$HasAttachment` are ignored, so server-added keywords never count as drift.
+  - [ ] Unit-tested offline over `Object.create(ImapFlow.prototype)` with stubbed methods, through the exported pure helpers `parseSeedId(buffer)` and `normalizeFlags(iterable)`.
+
+  **Seed**
+  - [ ] **`planSeed` (pure):** server messages are split by their `X-MM-Test-Seed` header (name matched case-insensitively) into expected, missing, flag drift, and unexpected.
+    - Unexpected = foreign (no or unknown seed id), duplicate (a seed id seen again), older version (`v<N>-NNN` with N ≠ `ground.version`), or changed (size or internal date differs).
+    - Drift compares system flags only.
+  - [ ] **`seedTestGround` flow:**
+    1. create `mm-test` if missing;
+    2. open it;
+    3. plan;
+    4. if anything is unexpected, throw `SeedRefusedError` with the four counts; **nothing is appended or changed**;
+    5. reset drift (STORE `FLAGS` set to the manifest flags plus any keywords the server already had);
+    6. append the missing messages in index order, each with its flags and `internalDate`;
+    7. verify.
+
+    It returns `SeedReport` = `{ created, appended, flagsReset, total }`. A second run reports `appended: 0, flagsReset: 0`.
+
+  - [ ] **`verifySeed` (pure):** the count equals `ground.messages.length`, and each seed id appears once with the manifest's size, internal date (ms equal; the server stores whole seconds and the manifest dates are whole seconds) and system flags. Otherwise `SeedVerifyError` with the mismatch count.
+
+  **Unseed**
+  - [ ] A missing folder gives `{ deleted: false }` and "nothing to delete", exit 0.
+  - [ ] Otherwise it reads the message count (STATUS), UNSUBSCRIBEs (guarded; `mailboxCreate` auto-subscribes), DELETEs, then checks `exists()` is false, otherwise `TestGroundError`. It reports the count.
+  - [ ] Never `EXPUNGE`, never a flag change.
+
+  **Scripts** (`npm run test:seed` / `npm run test:unseed` → `tsx tests/support/test-ground/cli.ts seed|unseed`)
+  - [ ] One login per run via `guardedOpenSession` (in-memory `LoginGuard`, `guardTargetKey(undefined)`, `clientIp: 'local'`, a no-op challenge), and `logout()` in `finally`.
+  - [ ] Output is counts only. Progress `Uploading test messages: N/M` every 10 appends and at the end (M = missing count). The final lines use `total`, never a hard-coded 150.
+  - [ ] Top-level `.catch`, plus `process.on('unhandledRejection' | 'uncaughtException')`, all go through `errorText`. Then stdout and stderr are flushed and `process.exit()` runs, as in `src/cli/bin.ts`, so library timers can't keep the process alive.
+  - [ ] **`errorText(err)`:**
+    - `ImapSessionError` → `imapErrorText(reason, { kind: 'this-computer' })`;
+    - `LoginBlockedError` → `loginBlockedText(err)`;
+    - `TestGroundError` subclasses → their fixed message;
+    - an imapflow error with `serverResponseCode === 'OVERQUOTA'` → "The test mailbox is full. Free space in it (e.g. empty Trash), then run npm run test:seed again.";
+    - anything else → `Unexpected error (<name>)` when `err.name` matches `/^[A-Za-z][A-Za-z0-9_]{0,40}$/`, otherwise `Unexpected error`, which also covers thrown non-Errors;
+    - missing env → `MISSING_ENV_TEXT` ("Set MM_TEST_IMAP_USER and MM_TEST_IMAP_PASS in .env.local (see .env.example).").
+
+    All exit 1. No text ever contains the password, address, host or a raw error message; a canary unit test checks this.
+
+  **Env helper**
+  - [ ] `readLiveImapEnv(env?)` returns `LiveImapEnv | null`. Address and fallback host are trimmed; the password is checked for emptiness only and **passed raw, never trimmed**, as today in `imap-session.test.ts:18`. The password is kept out of `inspect`/`JSON`: a non-enumerable property or a getter over a private field, plus `inspect.custom`.
+  - [ ] `resolveLiveSettings(address, fallbackHost)` finds the host through real-DNS discovery (no HTTP), falls back to `MM_TEST_IMAP_HOST`, and otherwise throws a plain `TestGroundError` naming the variable, not a value.
+  - [ ] `tests/integration/imap-session.test.ts` uses both but still calls `openSession` directly. Its behavior is unchanged: the same skip condition, one good login, exactly one wrong-password attempt.
+
+  **Integration test** `tests/integration/test-ground.test.ts` (skips when user or password is unset). One login, then:
+  - [ ] the first seed, then a second seed with `appended 0`, `flagsReset 0`, `total 150`;
+  - [ ] the server facts (count; per seed id: size, internal date, system flags, Message-ID) equal the manifest;
+  - [ ] **live, only read-only operations are tried on refused paths:** `open` and `exists` on `INBOX`, `Trash`, `mm-test/x`, `MM-TEST`, `mm-test2`, `*` reject with `FolderGuardError`, and `folder.selectedPath()` is unchanged. Refusals of `create`/`remove`/`messageCount` are proven offline (unit tests), never attempted live;
+  - [ ] errors thrown in hooks and tests are mapped through `errorText` before they propagate, so vitest never serializes raw imapflow errors carrying server text;
+  - [ ] no password in captured stdout/stderr/console or in `inspect`/`JSON` of the reports.
+
+  **Live checks, run once during implementation** (the exact sequence is under _Verification commands_)
+  - [ ] The first `test:seed` uploads 150.
+  - [ ] `npm run test:integration` passes every suite (presets, discover, supabase-rls, imap-session, test-ground), with exactly one wrong-password attempt in the whole run.
+  - [ ] `test:unseed` deletes 150; a second `test:unseed` says "nothing to delete".
+  - [ ] `test:seed` re-uploads 150; a final `test:seed` appends 0. The mailbox ends seeded.
+  - [ ] The value-blind leak check over all saved logs finds none of: the password, the address, its domain, the resolved IMAP host. Script logs carry the marker `mm-test:`; the integration log carries `test ground (live)` and `imap session (live)`.
+
+  **Docs**
+  - [ ] `docs/TESTING.md`, `.env.example`, `CLAUDE.md` Commands, `README.md` scripts table, the `imap-session.test.ts` comment, and a new `docs/milestones/M1-auth-accounts.md` M1b-3b section. The test ground is for the Websupport mailbox only.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and `npm run format:check` are green.
+
+- **Summary:** Test tooling (no `src/` change) that fills the `mm-test` folder of the dedicated test mailbox with the M1b-3a synthetic messages and deletes it again. `TestFolder` guards every folder operation (only `<prefix>mm-test`, refused before any IMAP call) over a small `FolderClient` adapter that turns imapflow's silent falsy results into errors; seed classifies by `X-MM-Test-Seed`, refuses unexpected mail before writing, resets system flags, appends only missing messages and verifies against the manifest; unseed deletes the folder and re-checks it's gone. `npm run test:seed` / `test:unseed` log in once via `guardedOpenSession` and print counts only with fixed error texts. A live integration test proves idempotency and server = manifest; a value-blind leak checker covers password/address/domain/host.
+- **Grade / mode:** M — solo + test writer. The test writer wrote 179 spec-driven tests in 3 files (178 passed first run; the failure — folded `X-MM-Test-Seed` values not unfolded — was a real parser gap, fixed in the code). 9 more tests added after the independent review.
+- **Verification:**
+  - Baseline: 31 files / 1114 unit tests, all checks green. Now: 34 files / 1302 unit tests; typecheck, lint, build, format:check green; `dist/` has no test tooling; grep for `messageDelete|mailboxClose|messageMove|mailboxRename|expunge` in the tooling → none.
+  - Offline: `MM_TEST_IMAP_USER= npm run test:seed` → missing-env text, exit 1, no login; unknown command → usage, exit 1.
+  - Mutation checks (each reverted): guard blocking only `*` (31 tests fail), remove-while-selected allowed (2), refuse-only-foreign (3), no name allowlist (9), create falsy unchecked (1), password trimmed (2).
+  - Live sequence (each once; real logins from this machine, correct password except the session test's single wrong attempt): `test:seed` → created, appended 150 (44 s, verify passed = server sizes/internal dates/flags match the manifest); `npm run test:integration` → 5 files / 36 tests passed (incl. test ground and imap-session); `test:unseed` → deleted (150), again → nothing to delete; `test:seed` → appended 150, again → appended 0, flags reset 0.
+  - After the review fixes (they changed live code paths), a targeted second round with the correct password only: `tests/integration/test-ground.test.ts` alone → 3/3; `test:unseed` (new delete → unsubscribe order) → deleted (150); `test:seed` → appended 150 (fresh-folder verify); `test:seed` → appended 0. Total today: 12 logins, 1 wrong-password attempt. Mailbox left seeded (150).
+  - Leak check (`tests/support/test-ground/leak-check.ts`) over every saved log → clean; proven to detect planted address, domain, host and base64 password (planted files deleted).
+  - Independent review: 0 high; findings resolved — (1, medium) the host wasn't checked in the integration log → the checker now skips only the presets-suite lines and also checks the fallback host and login username; (2) UNSUBSCRIBE before DELETE could block unseed → DELETE first, unsubscribe best effort, `exists()` re-check decides; (3) `resolveLiveSettings` untestable / `blocked` misreported → optional deps + own message + 5 unit tests; (4) weak tests → drift-before-append ordering, `fromSession` with a real `ImapFlow` prototype, the exact `fetchAll` query asserted; (5) stale `exists` after APPEND → NOOP refresh + test; (6) overlapping `open()` → handle reserved before the await, released handle gets its own message; (7) live guard refusals mapped through `errorText`, length compared as numbers; (8) "older version" → "other version" in the message; (9) Gmail sessions refused (`X-GM-EXT-1`) + test.
+  - Not verified: `openTestSession` and `cli.ts main` have no unit tests (exercised only by the live runs); behaviour on servers other than Websupport; Websupport's PERMANENTFLAGS value (verify passed, so the flags stuck).
+- **Deviations:**
+  - Unseed order is DELETE → best-effort UNSUBSCRIBE (plan: unsubscribe → delete); `FolderClient.unsubscribe` returns a boolean instead of throwing (review finding 2).
+  - `fetchMessages` sends NOOP when the cached count is 0; Gmail sessions refused; `resolveLiveSettings` takes optional deps and explains `blocked` providers (review findings).
+  - New `tests/support/test-ground/leak-check.ts` (the value-blind checker the plan's leak check needed; used by `docs/TESTING.md`).
+  - `parseSeedId` unfolds folded header values (test-writer finding).
+  - The ImapFlow adapter was written in iteration 1 together with `TestFolder`, not stubbed first.
+  - A second, targeted live round after the review fixes (see Verification).
+  - `TODO.md` ticks and the "Current milestone" lines are left to `/review-changes` / `/release`.
+
+---

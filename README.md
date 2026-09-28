@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-blue?style=flat-square" alt="Version 0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-blue?style=flat-square" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.4.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a deterministic synthetic test-mail generator for the integration test ground exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.5.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -108,15 +108,16 @@ Config is read from `.env.local`, then `.env` (real environment variables win). 
 
 ### Development
 
-| Command                                   | What it does                                                             |
-| ----------------------------------------- | ------------------------------------------------------------------------ |
-| `npm run dev -- <args>`                   | Run the CLI from source (tsx)                                            |
-| `npm run build`                           | Compile to `dist/`                                                       |
-| `npm test`                                | Unit tests                                                               |
-| `npm run test:integration`                | Integration tests (skip without `MM_TEST_SUPABASE_*` / `MM_TEST_IMAP_*`) |
-| `npm run db:push` / `npm run db:status`   | Apply / list Supabase migrations                                         |
-| `npm run lint` / `npm run typecheck`      | ESLint / TypeScript checks                                               |
-| `npm run format` / `npm run format:check` | Prettier                                                                 |
+| Command                                     | What it does                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------- |
+| `npm run dev -- <args>`                     | Run the CLI from source (tsx)                                             |
+| `npm run build`                             | Compile to `dist/`                                                        |
+| `npm test`                                  | Unit tests                                                                |
+| `npm run test:integration`                  | Integration tests (skip without `MM_TEST_SUPABASE_*` / `MM_TEST_IMAP_*`)  |
+| `npm run test:seed` / `npm run test:unseed` | Fill / delete the `mm-test` folder of the test mailbox (`MM_TEST_IMAP_*`) |
+| `npm run db:push` / `npm run db:status`     | Apply / list Supabase migrations                                          |
+| `npm run lint` / `npm run typecheck`        | ESLint / TypeScript checks                                                |
+| `npm run format` / `npm run format:check`   | Prettier                                                                  |
 
 ## Tech stack
 

@@ -26,6 +26,7 @@
 - `delete` — with a **mocked session interface**: batching, UIDVALIDITY change aborts, no-UIDPLUS refuses expunge, never calls folder-wide expunge, audit written for ok/partial/failed.
 - `backup` — manifest generation, sha256 verify, incremental skip, filename sanitisation (path traversal in folder names / subjects).
 - `test-ground-generator` — the synthetic test mail (M1b-3a): byte-identical builds + pinned digest, sizes/dates/flags/attachment mixes, raw headers ↔ manifest facts, reserved domains only, diacritics, no network.
+- `test-ground-folder` / `test-ground-seed` / `test-ground-cli` — the test ground (M1b-3b) with fakes, offline: the folder guard refuses every other path before any IMAP call, seed classification/refusal (zero writes)/verify, unseed, the imapflow adapter over a stubbed `ImapFlow.prototype` (falsy results throw), env helper (password raw and hidden), script error texts with canaries.
 
 Design for testability: core modules depend on small interfaces (`ImapSession`, repos, `CredentialProvider`) so unit tests pass fakes.
 
@@ -36,10 +37,13 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 - Tests may only touch folder **`mm-test`** (and its Trash moves). A guard in the test helper refuses any other folder.
 - **Test ground** (`tests/support/test-ground/`, test tooling: typechecked and linted, not built, not collected as tests):
   - M1b-3a — `generator.ts` builds 150 synthetic messages (~26.7 MiB; 1 KiB–4.9 MB each; internal dates 2019–2026; Slovak diacritics; senders on reserved domains only, incl. `spam.test` and the look-alike `spam.test.evil.test`; with/without attachments; seen/flagged mixes) with nodemailer MailComposer (devDependency, no SMTP), byte-identical on every run, plus a manifest of expected facts (`manifest.ts`).
-  - M1b-3b — folder guard, `npm run test:seed` (APPEND with flags + internal dates, only missing messages; refuses when `mm-test` holds foreign or older-version mail) and `npm run test:unseed` (deletes the `mm-test` folder).
+  - M1b-3b — `folder.ts`: **folder guard** `TestFolder` — resolves `<namespace prefix>mm-test` once and refuses any other path before any IMAP call; the only IMAP surface is the small `FolderClient` interface (an adapter over imapflow that turns its silent falsy results into errors; no expunge/close/move/rename exists in it). `npm run test:seed` (`seed.ts`): creates `mm-test` if missing, **refuses without writing anything** when it holds foreign, duplicate, older-version or changed messages (changed = size or internal date differs), resets differing system flags (keywords the server adds, e.g. `$HasAttachment`, are ignored and kept), APPENDs only the missing messages with their flags and internal dates, then verifies count/size/date/flags against the manifest. `npm run test:unseed` (`unseed.ts`): deletes the whole `mm-test` folder (IMAP `DELETE`, no `EXPUNGE`; refuses while the folder is selected), unsubscribes it (best effort), then checks it's gone; a missing folder is "nothing to delete". Both log in **once** per run through `guardedOpenSession` and print counts only; errors are fixed texts (login failures get the app's generic message).
 - **Identity contract:** every seeded message carries `X-MM-Test-Seed: v<SEED_VERSION>-<NNN>` (3-digit index; match the header name case-insensitively, as IMAP does) and `Message-ID: <v<N>-<NNN>@mm-test.invalid>`. The manifest's `size` equals the server's `RFC822.SIZE` (CRLF bytes).
 - **Changing the generator:** any change to the output or facts (pools, sizes, flags, dates, the nodemailer version) fails the pinned digest in `tests/unit/test-ground-generator.test.ts`. Bump `SEED_VERSION`, add a new `PINNED_DIGESTS` entry (never edit an old one), then `npm run test:unseed` + `npm run test:seed`.
-- `mm-test` stays seeded between runs (M3–M5 reuse it); `npm run test:unseed` (M1b-3b) deletes the folder. No cleanup after each run.
+- `mm-test` stays seeded between runs (M3–M5 reuse it); `npm run test:unseed` deletes the folder. No cleanup after each run. The first seed uploads ~28 MB (a few minutes); later seeds upload nothing.
+- **Test ground test** (`tests/integration/test-ground.test.ts`, "test ground (live)", same env as below): one login → seed → a second seed must append 0 and reset 0 → the server holds exactly the manifest (count; per message size, internal date, system flags, Message-ID) → the guard refuses `INBOX`, `Trash`, `mm-test/x`, `MM-TEST`, `mm-test2`, `*` — live only with read-only operations (create/remove refusals are unit-tested, never tried on a real mailbox). Errors are mapped to user-facing text before vitest prints them.
+- **Websupport only.** On Gmail, deleting a folder only removes a label (the mail stays in All Mail), so unseed would not clean up there; the Gmail test account comes with M3.
+- **Live runs: once, never in a loop.** Every command above is a real login from this machine; `npm run test:integration` also makes the session test's one wrong-password attempt.
 - Keep runs small — provider rate limits (Gmail bandwidth/connection limits).
 - **IMAP session test** (`tests/integration/imap-session.test.ts`, needs `MM_TEST_IMAP_USER` + `MM_TEST_IMAP_PASS`; `MM_TEST_IMAP_HOST` only as a fallback when discovery finds nothing): the host comes from discovery (real DNS, no HTTP) → login → features (UIDPLUS, MOVE, QUOTA on Websupport) → logout, then **exactly one** wrong-password attempt → `auth-failed` with the generic message. All stdout/stderr and every inspected session/error is checked for the password.
 - **One wrong attempt per run, no retries.** Providers ban IPs after repeated failures (fail2ban). Never add more wrong-password cases and never enable vitest `retry` in `vitest.integration.config.ts` or that file. Don't run the suite in a loop.
@@ -64,18 +68,13 @@ Target at least: Gmail, one SK/CZ provider (Seznam), one standard Dovecot (later
 
 ## Security tests
 
-- Grep all test output/logs for the test password → must be absent. Leak check without printing the value (run from the repo root; `$SCRATCH` = any temp dir):
+- Grep all test output/logs for the test mailbox's password, address, domain and IMAP host → must be absent. `tests/support/test-ground/leak-check.ts` does it value-blind (prints only `clean` / `LEAK` / `marker missing` per file; the marker proves the run happened). It checks every line except the presets suite's ("built-in presets answer on 993"), which lists every public preset host (which can include the test mailbox's provider). From the repo root, `$SCRATCH` = any temp dir:
 
   ```bash
-  npx vitest run --config vitest.integration.config.ts --reporter=verbose > "$SCRATCH/it.log" 2>&1; echo "exit $?"
-  node --input-type=module -e "
-  import { config } from 'dotenv'; import { readFileSync } from 'node:fs';
-  const e = {}; config({ path: '.env.local', processEnv: e, quiet: true });
-  const u = e.MM_TEST_IMAP_USER ?? '', p = e.MM_TEST_IMAP_PASS ?? '';
-  const log = readFileSync(process.argv[1], 'utf8');
-  if (!log.includes('imap session (live)')) { console.log('IMAP suite did not run'); process.exit(3); }
-  const forms = [p, JSON.stringify(p).slice(1, -1), Buffer.from('\\0' + u + '\\0' + p).toString('base64'), Buffer.from(p).toString('base64')];
-  console.log(p.length < 4 ? 'PASS not set' : forms.some((f) => f.length >= 4 && log.includes(f)) ? 'LEAK' : 'clean');" "$SCRATCH/it.log"
+  npm run test:integration -- --reporter=verbose > "$SCRATCH/it.log" 2>&1; echo "exit $?"
+  npm run test:seed > "$SCRATCH/seed.log" 2>&1; echo "exit $?"
+  npx tsx tests/support/test-ground/leak-check.ts \
+    "$SCRATCH/it.log::imap session (live)" "$SCRATCH/it.log::test ground (live)" "$SCRATCH/seed.log::mm-test:"
   ```
 
 - Unit tests use canary passwords/server texts and assert they never appear in any error message, `String`, `util.inspect`, JSON or CLI text (`tests/unit/imap-*.test.ts`).
