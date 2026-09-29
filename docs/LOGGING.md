@@ -1,6 +1,6 @@
 # Logging
 
-What Mail Manager records, where, for how long, and how it's read. **Status:** design (2026-09-23). Implementation starts in **M1b-4 — Logging foundation** ([milestone](milestones/M1-auth-accounts.md#m1b-4--logging-foundation)); every later milestone adds its own events (see [Event catalog](#event-catalog)).
+What Mail Manager records, where, for how long, and how it's read. **Status:** design (2026-09-23); the log core and run logging are built (**M1b-4a**, 2026-09-28: `src/core/log/`, `src/cli/run.ts`). **M1b-4 — Logging foundation** ([milestone](milestones/M1-auth-accounts.md#m1b-4--logging-foundation)) was split on 2026-09-28 into 4a log core + run logging → 4b domain and security events → 4c `mm logs` → 4d audit trail; every later milestone adds its own events (see [Event catalog](#event-catalog)).
 
 **Goal:** answer the questions we will actually ask — _who logged in, what did this command change, why did it fail, is someone attacking?_ — without creating a new place where passwords, mail content or personal data can leak. "Log everything" is not the goal: more lines mean more noise, more leak surface, more cost (hosted logs are billed per GB) and more GDPR exposure.
 
@@ -14,7 +14,7 @@ What Mail Manager records, where, for how long, and how it's read. **Status:** d
 
 ## Principles
 
-1. **Allowlisted, typed events.** Each event is a TypeScript type with only the fields it may carry, so a password or a subject has no field to land in. This extends the existing `SecurityEvent` (`src/core/security/events.ts`). Core emits events through an `EventLog` interface; the shell decides where they go (file, stdout, table) — core never prints.
+1. **Allowlisted, typed events.** Each event is a TypeScript type with only the fields it may carry, so a password or a subject has no field to land in. The catalog lives in `src/core/log/events.ts` (including the login guard's `login-guard.block`, formerly its own `SecurityEvent` type). Core emits events through an `EventLog` interface; the shell decides where they go (file, stdout, table) — core never prints.
 2. **Never logged, anywhere** — local files included, because users send them to support: see [Never logged](#never-logged).
 3. **IDs instead of names:** Supabase user id, account UUID, preset provider id (`websupport`, `custom`), plan/backup id, typed reason codes, counts, bytes, durations, and an HMAC for login targets.
 4. **Logging never breaks the app.** A failed write is swallowed (the command still works); `mm doctor` reports an unwritable log folder. Every line is under 4 KB (fields are capped), so parallel `O_APPEND` writes from two `mm` runs don't interleave. Lines are built with `JSON.stringify`, which escapes newlines, so input can't forge a second line (log injection).
@@ -39,7 +39,7 @@ In no log, no audit row and no event field — local or cloud:
 - passwords, app passwords, OAuth tokens, Supabase session/refresh tokens, `MM_MASTER_KEY`, any key material;
 - message bodies, subjects, message sender/recipient addresses, attachment names, Message-IDs;
 - the mailbox address, its domain and the IMAP host (they identify a person) — use the account UUID, the provider id and the login-guard HMAC target instead;
-- what the user typed into a **failed** login (people type the password into the address field) — only an HMAC target;
+- what the user typed into a **failed** login (people type the password into the address field) — only an HMAC target, and only when the input is a valid address (otherwise `target: "invalid"`: a hashed password could be guessed offline by anyone who can read both the log and `.env.local`). `mm login` uses its own key (HKDF info `mm-auth-target-v1`), so these hashes never match mailbox targets;
 - raw server replies, raw library error messages, `String(err)` of unknown errors;
 - command-line option **values** (only option names), environment variables, config objects;
 - absolute paths containing the home directory (stack frames are logged relative to the package root).
@@ -75,7 +75,7 @@ Examples (a `mm discover` run; a failed `mm login`):
 
 ```text
 {"ts":"2026-09-23T10:15:02.123Z","event":"command.start","cmd":"discover","opts":[],"ver":"0.3.0","node":"22.13.0","os":"linux","level":"info","run":"5f3a9c1e2b7d4a60","v":1}
-{"ts":"2026-09-23T10:15:03.655Z","event":"discover.finish","outcome":"found","source":"mx","provider":"websupport","level":"info","run":"5f3a9c1e2b7d4a60","v":1}
+{"ts":"2026-09-23T10:15:03.655Z","event":"discover.finish","outcome":"found","source":"preset-mx","provider":"websupport","level":"info","run":"5f3a9c1e2b7d4a60","v":1}
 {"ts":"2026-09-23T10:15:03.660Z","event":"command.finish","cmd":"discover","outcome":"ok","exit":0,"ms":1537,"level":"info","run":"5f3a9c1e2b7d4a60","v":1}
 mm-security {"ts":"2026-09-23T10:20:11.004Z","event":"auth.login-failed","reason":"invalid-credentials","target":"<64 hex>","level":"warn","run":"0c9e2d7a41b3f865","v":1}
 ```
@@ -86,23 +86,24 @@ Kind: **A** = app log, **S** = security log, **Au** = also an audit row (`audit_
 
 ### Foundation (M1b-4)
 
-| Event                   | Kind | Level                     | Fields                                                                                               | OWASP                  | Emitted from |
-| ----------------------- | ---- | ------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------- | ------------ |
-| `command.start`         | A    | info                      | `cmd`, `opts` (option names), `ver`, `node`, `os`                                                    | —                      | M1b-4        |
-| `command.finish`        | A    | info/warn                 | `cmd`, `outcome` (`ok`/`failed`/`interrupted`), `exit`, `ms`                                         | —                      | M1b-4        |
-| `error.unexpected`      | A    | error                     | `errClass`, `code`, `stack` (frames only, relative paths, no message)                                | `sys_crash` (≈)        | M1b-4        |
-| `doctor.check`          | A    | info/warn                 | `check`, `status` (`ok`/`warn`/`fail`)                                                               | —                      | M1b-4        |
-| `discover.finish`       | A    | info                      | `outcome` (found / needs-host / blocked / manual / no-domain / invalid), `source`, `provider`        | —                      | M1b-4        |
-| `audit.write-failed`    | A    | error                     | `action`, `reason` — the action happened but its audit row couldn't be written                       | —                      | M1b-4        |
-| `auth.login`            | S    | info                      | `user`                                                                                               | `authn_login_success`  | M1b-4        |
-| `auth.login-failed`     | S    | warn                      | `reason` (invalid-credentials / unreachable / rate-limited / …), `target` (HMAC of the typed e-mail) | `authn_login_fail`     | M1b-4        |
-| `auth.logout`           | S    | info                      | `user?`, `outcome` (`logged-out` / `not-logged-in`)                                                  | `session_expired`      | M1b-4        |
-| `imap.login`            | S    | info                      | `acct?`, `provider`, `ip`, `target`                                                                  | `authn_login_success`  | M1c          |
-| `imap.login-failed`     | S    | warn                      | `acct?`, `provider`, `reason`, `counted`, `ip`, `target`                                             | `authn_login_fail`     | M1c          |
-| `login-guard.challenge` | S    | warn                      | `ip`, `attempts`, `target`                                                                           | `authn_login_fail_max` | M1c          |
-| `login-guard.block`     | S    | warn (`permanent`: error) | `kind`, `reason`, `ip`, `addr`, `attempts`, `until`, `target` (existing `SecurityEvent`)             | `authn_login_lock`     | M1c          |
+| Event                   | Kind | Level                     | Fields                                                                                                                                                                                                        | OWASP                  | Emitted from |
+| ----------------------- | ---- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------ |
+| `command.start`         | A    | info                      | `cmd`, `opts` (option names), `ver`, `node`, `os`                                                                                                                                                             | —                      | M1b-4a       |
+| `command.finish`        | A    | info/warn                 | `cmd`, `outcome` (`ok`/`failed`/`interrupted`), `exit`, `ms`                                                                                                                                                  | —                      | M1b-4a       |
+| `error.unexpected`      | A    | error                     | `errClass`, `code`, `stack` (frames only, relative paths, no message)                                                                                                                                         | `sys_crash` (≈)        | M1b-4a       |
+| `log.truncated`         | A    | info                      | — (a day file reached its cap: 5 MB app, 150 MB security; nothing more is written to it that day)                                                                                                             | —                      | M1b-4a       |
+| `doctor.check`          | A    | info/warn                 | `check` (fixed check name), `status` (`ok`/`warn`/`fail`) — one per check                                                                                                                                     | —                      | M1b-4b       |
+| `discover.finish`       | A    | info                      | `outcome` (`found`/`needs-host`/`blocked`/`manual`/`invalid`), `source?`, `provider?` (preset id), `domainProblem?`, `choice?` (`picked`/`host-entered`/`manual`/`cancelled`) — never address, domain or host | —                      | M1b-4b       |
+| `audit.write-failed`    | A    | error                     | `action`, `reason` — the action happened but its audit row couldn't be written                                                                                                                                | —                      | M1b-4d       |
+| `auth.login`            | S    | info                      | `user?` (Supabase user id)                                                                                                                                                                                    | `authn_login_success`  | M1b-4b       |
+| `auth.login-failed`     | S    | warn                      | `reason` (`invalid-credentials`/`unreachable`/`unknown`/`unexpected`), `target` (HMAC of the typed e-mail with its own key, or `invalid` when the input isn't an address)                                     | `authn_login_fail`     | M1b-4b       |
+| `auth.logout`           | S    | info                      | `outcome` (`logged-out`/`not-logged-in`) — no user id (no network call)                                                                                                                                       | `session_expired`      | M1b-4b       |
+| `imap.login`            | S    | info                      | `acct?`, `provider`, `ip`, `target`                                                                                                                                                                           | `authn_login_success`  | M1b-4b       |
+| `imap.login-failed`     | S    | warn                      | `acct?`, `provider`, `reason` (`ImapFailureReason` or `blocked`), `counted`, `ip`, `target`                                                                                                                   | `authn_login_fail`     | M1b-4b       |
+| `login-guard.challenge` | S    | warn                      | `ip`, `attempts`, `target`                                                                                                                                                                                    | `authn_login_fail_max` | M1b-4b       |
+| `login-guard.block`     | S    | warn (`permanent`: error) | `kind`, `reason`, `ip`, `addr`, `attempts`, `until`, `target`                                                                                                                                                 | `authn_login_lock`     | M1b-4b       |
 
-The `imap.*` and `login-guard.*` events are built and unit-tested in M1b-4 (`guardedOpenSession` with a fake opener); M1c is the first command that logs in, so it wires them to the file.
+The `imap.*` and `login-guard.*` events are emitted by `LoginGuard` / `guardedOpenSession` since M1b-4b (unit-tested with a fake opener); M1c is the first command that logs in to a mailbox, so it passes a file log and they reach `security-*.log` from then on. Runs that never reach a command — `--help`, `--version`, an unknown command or option, a missing argument — write no lines (commander stops before the `preAction` hook, and a finish is only written after a start).
 
 ### Later milestones (planned — each milestone doc has a "Logging" section)
 
@@ -123,10 +124,11 @@ The `imap.*` and `login-guard.*` events are built and unit-tested in M1b-4 (`gua
 ### Local CLI (M0–M5)
 
 - Folder: `<config dir>/logs/` — `$MM_CONFIG_DIR` → `$XDG_CONFIG_HOME/mail-manager` → `~/.config/mail-manager` (same resolution as `session.json`; tests override one variable). Dir **700**, files **600**.
-- One file per day and kind: `app-2026-09-23.log`, `security-2026-09-23.log`. Each file is capped at **5 MB**; past the cap `debug` lines are dropped first, then one `log.truncated` marker is written and the rest of the day is skipped.
-- **Housekeeping at startup** (the CLI has no daemon): delete `app-*` files older than 30 days and `security-*` files older than 90 days (by the date in the name — no need to read them).
-- Writes are **synchronous** (`appendFileSync`): `src/cli/bin.ts` ends every run with `process.exit()`, which would drop buffered async writes. An `exit` handler records `command.finish` even when a command exits directly; SIGINT (Ctrl+C) → `outcome: interrupted`.
-- Level threshold: `info` by default; `MM_LOG_LEVEL=debug|info|warn|error` (zod-validated in `config.ts`).
+- One file per **UTC** day (the date of the line's `ts`) and kind: `app-2026-09-23.log`, `security-2026-09-23.log`. Caps per file and kind: **5 MB** for `app-*`, **150 MB** for `security-*` (decided 2026-09-28: dropping security lines would hide a login flood exactly when it matters; local logs are per OS user and machine and normal use writes a few lines per login, so only a script loop or a bug gets near it — the cap can be lowered later). From 80 % of the cap `debug` lines are dropped; at the cap one `log.truncated` marker is written (it bypasses the level threshold, takes the file's prefix, and is found again by reading the file's last 4 KB, so two runs don't both write it) and the rest of the day is skipped.
+- The folder is created on the first write (never for `--help`); `chmod` is re-applied (700/600) and symlinks are never followed. A folder that can't be created or written (e.g. `MM_CONFIG_DIR` points at a file) only means no logs — the command's output and exit code don't change.
+- **Housekeeping at startup** (the CLI has no daemon, so on the first event of a run — even when the level filters it out, but only if the folder already exists; it is never created just to prune): delete `app-*` files older than 30 days and `security-*` files older than 90 days (by the date in the name — no need to read them; a file exactly 30 days old stays, future dates and other files are never touched).
+- Writes are **synchronous** (one `writeSync` per line on a file opened with `O_APPEND | O_NOFOLLOW`): `src/cli/bin.ts` ends every run with `process.exit()`, which would drop buffered async writes. An `exit` handler records `command.finish` even when a command exits directly. `interrupted` = exit code 130 (Ctrl+C inside a prompt: inquirer raises `ExitPromptError`, the command exits 130) or a SIGINT signal (Ctrl+C elsewhere: a handler writes the finish line and exits 130). Uncaught exceptions and unhandled rejections print "Unexpected error" (no stack) and log `error.unexpected`.
+- Level threshold: `info` by default; `MM_LOG_LEVEL=debug|info|warn|error` (zod-validated in `config.ts`; an invalid value falls back to `info` and `mm doctor` warns). It applies to the app log only — security lines are always written. There is no `off` (decided 2026-09-28).
 - Volume estimate: a run writes 2–10 lines (≈ 1–3 KB); a 100k-message delete at `debug` adds ~200 batch lines. Well under the caps.
 
 ### Local web UI and worker (M6a, M6b)
@@ -161,7 +163,7 @@ Same folder and files. Fastify's built-in logger (pino) writes `http.request` li
   - Filters: `--since 7d`, `--level warn`, `--security`, `--run <id>`, `--json` (the raw lines, for scripts and support).
   - `mm logs path` prints the folder; `mm logs clear` deletes the local logs after a confirmation (the user's data, the user's machine).
 - **Support:** the user runs `mm logs --json --since 1d` and sends the output. It is safe to share **by construction** ([Never logged](#never-logged)) — no redaction step needed.
-- **`mm doctor`** gets a `logs` check: folder exists and is writable, modes 700/600, total size, oldest file.
+- **`mm doctor`** gets a `logs` check: folder exists and is writable, today's `app-` and `security-` files are writable regular files, modes 700/600, total size, oldest file. At `MM_LOG_LEVEL=warn|error` a missing folder is OK ("no logs yet") only if it could be created — nothing may sit at the log path (not even a dangling symlink) and the nearest existing ancestor must be a writable directory; otherwise it warns, like at `info`.
 - **Operator (local phase):** there is no central view of CLI logs — they stay on each user's computer (sending them would be telemetry and needs consent). Centrally the operator has the Supabase Auth logs and the `audit_log` table.
 
 ## Monitoring and alerting (hosted, M6a/M7)
@@ -203,7 +205,10 @@ Logging for new features must not depend on memory:
 ## Open questions
 
 - Keep Supabase Auth sign-ins in `auth.audit_log_entries` (database copy), and for how long? Proposal: on, deleted after 90 days (IPs) — the user checks the dashboard setting in M1b-4.
-- Should users be able to turn local logging off (`MM_LOG_LEVEL=off`)? Proposal: no for the security log (it protects them), yes for the app log.
+- ~~Cap for `security-*.log`?~~ Decided 2026-09-28: its own 150 MB cap (was 5 MB, shared with the app log); alerting on `log.truncated` in a security file comes with hosting (M6a/M7).
+- **M6a requirement (security audit 2026-09-29):** once a server logs real client IPs, (1) `login-guard.block` lines must never be dropped by a cap (exempt them, or write them to their own small fixed file for fail2ban), and (2) repeated `imap.login-failed` `blocked` lines per (ip, target) and time window must be collapsed into a count — today every refused attempt writes a line (~300 B), so one client hammering its locked pair could fill a capped file and hide later IP blocks. In the CLI this can't matter (bucket `local`, `addr: null`, never matched by fail2ban).
+- **For M1b-4c (`mm logs`):** `parseLogLine` validates only the envelope; printing needs per-event zod schemas and stripping of control/escape characters (terminal injection from an edited log file).
+- ~~Should users be able to turn local logging off (`MM_LOG_LEVEL=off`)?~~ Decided 2026-09-28: no `off` for now; security lines are always written. Revisit if a user asks.
 - M4: if the audit row can't be written after a delete, is a warning enough, or must the user see it before the command ends? Proposal: warn at the end + `audit.write-failed`; the action itself is never rolled back.
 - Hosted tool choice (log service, error tracking, uptime) — at M7, with GDPR (EU region, data-processing agreements).
 

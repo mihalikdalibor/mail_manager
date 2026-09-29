@@ -9,13 +9,12 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import {
   FileSessionStorage,
   MemorySessionStorage,
-  sessionDir,
 } from '../../src/core/db/supabase/session-storage.js';
 import type { SessionStorage } from '../../src/core/db/supabase/session-storage.js';
 
@@ -25,27 +24,6 @@ const posixOnly = process.platform === 'win32' ? it.skip : it;
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
 }
-
-describe('sessionDir', () => {
-  it('prefers MM_CONFIG_DIR', () => {
-    expect(sessionDir({ MM_CONFIG_DIR: '/tmp/mm-a', XDG_CONFIG_HOME: '/tmp/xdg' })).toBe(
-      '/tmp/mm-a',
-    );
-  });
-
-  it('falls back to XDG_CONFIG_HOME/mail-manager', () => {
-    expect(sessionDir({ MM_CONFIG_DIR: '', XDG_CONFIG_HOME: '/tmp/xdg' })).toBe(
-      join('/tmp/xdg', 'mail-manager'),
-    );
-  });
-
-  it('falls back to ~/.config/mail-manager', () => {
-    expect(sessionDir({})).toBe(join(homedir(), '.config', 'mail-manager'));
-    expect(sessionDir({ MM_CONFIG_DIR: '', XDG_CONFIG_HOME: '' })).toBe(
-      join(homedir(), '.config', 'mail-manager'),
-    );
-  });
-});
 
 function contractTests(name: string, make: () => SessionStorage): void {
   describe(`${name} (SessionStorage contract)`, () => {

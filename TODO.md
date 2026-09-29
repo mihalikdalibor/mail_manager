@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-4 Logging foundation** (added 2026-09-23), then M1c — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M1b-4 Logging foundation** (added 2026-09-23; split 2026-09-28 into 4a–4d — 4a log core + run logging done 2026-09-28, C-015 reviewed; 4b domain + security events done 2026-09-29, C-016 reviewed; next 4c `mm logs` or 4d audit trail — both unblocked), then M1c — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -127,16 +127,49 @@ Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-
 
 Decisions (2026-09-23): four kinds of records split by purpose — audit trail (Supabase `audit_log`), security events (`security-*.log`), app log (`app-*.log`), metrics/alerts (hosted only); local files in `<config dir>/logs/`; typed, allowlisted events only; the cloud `audit_log` is created **here** (moved from M4) so M1c's account actions are audited from day one. Settles the M1c "security log file" note (location, events, `mm logs`).
 
-- [ ] **User:** Supabase dashboard → Authentication → Audit Logs: decide "write audit logs to the database" + retention (proposal: on, 90 days — IPs)
-- [ ] `src/core/paths.ts` — `configDir()` moved out of `src/core/db/supabase/session-storage.ts` (`sessionDir`); session storage uses it
-- [ ] `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`; fixed key order), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync `appendFileSync`, dir 700 / files 600, one file per day and kind, 5 MB cap, startup pruning app 30 d / security 90 d, 4 KB line cap, never throws), run context (run id, version), zod schema for reading lines back; `MM_LOG_LEVEL` in `config.ts`
-- [ ] Security events: `SecurityEvent` joins the catalog (new fields only after `target`, fail2ban regex unchanged + test); new `auth.login`, `auth.login-failed` (reason + HMAC of the typed e-mail), `auth.logout`; `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (**all** guard kinds incl. `too-many-attempts`) emitted by `guardedOpenSession` (tested with a fake opener; M1c wires the file)
-- [ ] CLI run logging: `src/cli/bin.ts` + commander `preAction` hook → `command.start` (command path, option **names** only) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit` and Ctrl+C (`interrupted`); `error.unexpected` (class, code, relative stack frames, no message); events for today's commands (`doctor.check`, `discover.finish` with source + provider id and no domain, auth events; keygen start/finish only)
-- [ ] `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language lines in `src/cli/log-text.ts`; interrupted runs marked
-- [ ] `mm doctor` `logs` check (folder writable, 700/600, size, oldest file)
-- [ ] Audit trail: new migration — generic `audit_log` (docs/DATA_MODEL.md), `AuditRepo` interface + Supabase implementation, `audit.write-failed` event; two-user RLS integration test (own rows only, no update/delete)
-- [ ] Tests: canary (no password/address/host/subject in any line), daily files + pruning with a fake clock and temp dir, file modes, two concurrent appenders, write failure doesn't change the command result, catalog ↔ `docs/LOGGING.md`, every registered command logs start + finish, fail2ban regex still matches
-- **Acceptance:** every existing command leaves start + finish lines with one run id; failed `mm login` → `auth.login-failed` with a reason and no e-mail/password; `mm logs` readable, interrupted runs marked; canary clean; 700/600; pruning works; `audit_log` RLS test passes; lint, typecheck, tests, build green.
+Split on 2026-09-28 into M1b-4a → 4b → 4c → 4d (each its own assignment; M1c needs 4a, 4b, 4d). No `MM_LOG_LEVEL=off` for now (decided 2026-09-28): levels `debug|info|warn|error` only; security lines are always written.
+
+#### M1b-4a — Log core + run logging ✅
+
+- [x] `src/core/paths.ts` — `configDir()` moved out of `src/core/db/supabase/session-storage.ts` (`sessionDir`); session storage uses it
+- [x] `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`; fixed key order), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync `O_APPEND` writes, dir 700 / files 600, one file per **UTC** day and kind, 5 MB cap → `debug` dropped first, then one `log.truncated` marker, 4 KB line cap, startup pruning app 30 d / security 90 d by file-name date, never throws), run context (16-hex run id, version), zod schema for reading lines back; `MM_LOG_LEVEL` in `config.ts` (invalid → `info`, reported by doctor)
+- [x] CLI run logging: `src/cli/bin.ts` loads the env files first (failure ignored — logging never breaks a command) so the log folder matches `session.json`; commander `preAction` hook → `command.start` (command path, option **names** given on the command line) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit`; `interrupted` = exit code 130 (inquirer Ctrl+C) or SIGINT (handler writes the finish line, exits 130). `--help`, `--version` and parse errors write nothing (no start → no finish)
+- [x] `error.unexpected` (class, code, relative stack frames, no message) through one shell helper used by `bin.ts` **and** the commands that catch their own errors (`auth`, `discover`)
+- [x] `mm doctor` `logs` check (folder writable, 700/600, total size, oldest file, `MM_LOG_LEVEL` valid)
+- [x] Tests: envelope key order, canary (no password/address/host/subject/option value/home path in any line), UTC daily files + pruning with a fake clock and temp dir, 5 MB cap + `log.truncated`, 4 KB line cap, file modes, two concurrent appenders, write failure doesn't change the command result, every registered command logs start + finish with one run id, interrupted runs, catalog ↔ `docs/LOGGING.md` for the events that exist
+- **Acceptance:** every existing command leaves `command.start` + `command.finish` with one run id in `<config dir>/logs/app-<UTC date>.log`; Ctrl+C → `interrupted`; unexpected errors → `error.unexpected` without message; canary clean; 700/600; pruning and caps work; an unwritable log folder changes no command result; lint, typecheck, tests, build green.
+- Logging: this is the foundation (`command.start`, `command.finish`, `error.unexpected`, `log.truncated`).
+
+#### M1b-4b — Domain + security events (needs 4a) ✅
+
+Decisions (2026-09-28/29): security day files get their own **150 MB** cap (app files keep 5 MB; local logs are per OS user and machine, so the cap can be lowered later); the two 4a review follow-ups are part of 4b; the typed e-mail is only HMAC'd when it is a valid address (a password typed into the e-mail field must not become an offline-guessable hash); built by one implementer (no worktrees — 4a isn't committed yet).
+
+- [x] App events for today's commands, emitted by the CLI shell through `ctx.log` (builders in core): `doctor.check` (`check`, `status`, one per check); `discover.finish` (`outcome` = `found`/`needs-host`/`blocked`/`manual`/`invalid`, optional `source`, `provider` preset id, `domainProblem`, `choice` = `picked`/`host-entered`/`manual`/`cancelled` — never the address, domain or host)
+- [x] Security events for `mm login`/`logout`: `auth.login` (`user` = Supabase user id), `auth.login-failed` (`reason` = `invalid-credentials`/`unreachable`/`unknown`/`unexpected`, `target` = HMAC of the typed e-mail with its own `MM_MASTER_KEY`-derived key — random per run without it — or `invalid` when the input isn't a valid address) only after a password was submitted; `auth.logout` (`outcome` = `logged-out`/`not-logged-in`, no user id — no network call). Written to `security-<UTC date>.log` with the `mm-security` prefix
+- [x] `login-guard.block` joins the catalog: `LoginGuard` emits through `EventLog` (an adapter replaces the `SecurityEventSink`), line = `mm-security {ts, event, kind, reason, ip, addr, attempts, until, target, level, run, v}` — envelope only after `target`, `FAIL2BAN_FAILREGEX` unchanged + test on the rendered line; level `warn` (`permanent`: `error`)
+- [x] `guardedOpenSession` emits `imap.login` (`acct?`, `provider`, `ip`, `target`), `imap.login-failed` (`acct?`, `provider`, `reason`, `counted`, `ip`, `target`) and `login-guard.challenge` (`ip`, `attempts`, `target`); the caller passes `log?`, `provider` (preset id or `custom`) and `acct?`; the guard exposes an attempt's `ip`/`target` and the challenge decision carries `attempts`. Tested with a fake opener; nothing calls it with a file log until M1c
+- [x] Security day files: own 150 MB cap (then one `log.truncated`); app files keep 5 MB
+- [x] 4a follow-ups: pruning runs on the first `emit` even when no line passes the level threshold; doctor at `MM_LOG_LEVEL=warn|error` reports OK "no logs yet" only when the nearest existing parent of the log folder is a writable directory, else warns
+- [x] Tests: canary over every new builder (password, address, domain, host, typed e-mail, subject), catalog ↔ `docs/LOGGING.md` (rows marked `M1b-4b` exist in code), fail2ban regex matches a rendered `login-guard.block` line, every guard kind emitted, CLI wiring (failed `mm login` → one `auth.login-failed`), security cap
+- **Acceptance:** failed `mm login` → `auth.login-failed` with a reason and no e-mail/password; successful → `auth.login` with the user id only; `mm doctor` → one `doctor.check` per check; `mm discover` → one `discover.finish` without address/domain/host; guard events built and tested; fail2ban regex still matches; canary clean; lint, typecheck, tests, build green.
+- Logging: `doctor.check`, `discover.finish`, `auth.login`, `auth.login-failed`, `auth.logout`, `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block`.
+
+#### M1b-4c — `mm logs` (needs 4a, 4b)
+
+- [ ] `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language lines in `src/cli/log-text.ts`; interrupted runs marked; malformed lines skipped and counted, never printed raw
+- **Acceptance:** `mm logs` readable, interrupted runs marked, `--json` lines parse with `jq`; lint, typecheck, tests, build green.
+
+#### M1b-4d — Audit trail (needs 4a; implement after 4b — both edit the event catalog)
+
+Decisions (2026-09-29): live RLS tests insert a few tagged rows per run that stay (append-only; deleting a test user removes them); `mm doctor` checks that `audit_log` exists (to be automated later so users don't get stuck — see Later); Supabase Auth "write audit logs to the database" → **on**, deleted after 90 days (cleanup job later).
+
+- [ ] **User:** Supabase dashboard → Authentication → Audit Logs → turn on "write audit logs to the database"
+- [ ] New migration `audit_log` per docs/DATA_MODEL.md: `user_id` default `auth.uid()` (cascade), `account_id` FK `on delete set null`, `action` check + zod enum (all 10 actions), `details` jsonb ≤ 4 KB (`pg_column_size` check), `result`/`reason`/`run_id`, `created_at` server-set; RLS `select` + `insert` own rows only, insert policy also requires `account_id` null or one of the user's own accounts; privileges reset (no anon, no update/delete/truncate, column-level insert without `id`/`created_at`). Applying it (`npm run db:push`, shared cloud DB) needs the user's go-ahead
+- [ ] `AuditRepo` interface (`src/core/db/repos.ts`) + Supabase implementation (`write`, `listRecent` for tests/`mm logs` later); zod `details` schema for `account.*` (`provider` preset id) — other actions get theirs in their milestones; core `recordAudit(repo, entry, log)` never throws and emits `audit.write-failed` (`action`, `reason` code) on failure; nothing calls it before M1c
+- [ ] `mm doctor` `database` check also probes `audit_log` (present + anon blocked → OK; missing → FAIL "run npm run db:push")
+- [ ] Tests: unit (repo mapping/validation with a fake client, `recordAudit` failure → event, no row data in errors); two-user RLS integration test (own rows only, B can't read A's rows, can't insert with A's `user_id` or A's `account_id`, no update/delete, anon denied, `created_at` not client-settable; rows tagged `reason: 'rls-test'`)
+- **Acceptance:** migration applied; `audit_log` RLS suite passes; doctor detects a missing table; `audit.write-failed` tested; lint, typecheck, tests, build green.
+- Logging: `audit.write-failed`.
 
 ## M1c — Account commands (needs M1a + M1b)
 
@@ -228,6 +261,8 @@ Decisions (2026-09-23): four kinds of records split by purpose — audit trail (
 
 ## Later / ideas
 
+- Database setup without getting stuck (from 2026-09-29): today `mm doctor` only reports a missing table ("run npm run db:push"); automate or guide it (e.g. detect pending migrations and explain the one command, or apply them from a setup step) so non-technical users never hit a missing-table error
+- Auth audit log retention: scheduled cleanup of `auth.audit_log_entries` older than 90 days (decided 2026-09-29; M6/M7 hosting)
 - Local metadata index (SQLite) for instant filtering on huge mailboxes
 - Encrypted backup archives
 - Hosted beta (M7) — after GDPR prerequisites (see docs/SECURITY.md); hosted observability from docs/LOGGING.md: log service (Vercel Log Drain / VPS shipper), error tracking (EU region), uptime, alerting, logs in the GDPR record of processing

@@ -1,6 +1,7 @@
 import type { ImapFailureReason } from '../imap/errors.js';
 import type { AttemptStore } from './attempt-store.js';
-import { hmacTarget, type BlockKind, type SecurityEventSink } from './events.js';
+import { guardBlock, safeEmit, type EventLog } from '../log/index.js';
+import { hmacTarget, type BlockKind } from './events.js';
 import { eventAddress, normalizeIp } from './ip.js';
 
 // Brute-force policy for IMAP logins made on a user's behalf (decided with the user 2026-09-22):
@@ -63,7 +64,7 @@ export interface LoginAttempt {
 
 export type GuardDecision =
   | { kind: 'allow' }
-  | { kind: 'challenge-required' }
+  | { kind: 'challenge-required'; attempts: number }
   | { kind: 'blocked'; block: BlockKind; until: Date | null };
 
 /** Thrown instead of connecting. Carries no address — only what's needed for the message. */
@@ -104,7 +105,7 @@ interface Keys {
 export class LoginGuard {
   private readonly store: AttemptStore;
   private readonly targetKey: Buffer;
-  private readonly sink: SecurityEventSink | undefined;
+  private readonly log: EventLog | undefined;
   private readonly now: () => number;
   private readonly policy: LoginPolicy;
   private readonly pairQueues = new Map<string, Promise<unknown>>();
@@ -115,15 +116,22 @@ export class LoginGuard {
   constructor(opts: {
     store: AttemptStore;
     targetKey: Buffer;
-    sink?: SecurityEventSink;
+    /** Where `login-guard.block` events go (the shell picks the sink). */
+    log?: EventLog;
     now?: () => number;
     policy?: LoginPolicy;
   }) {
     this.store = opts.store;
     this.targetKey = opts.targetKey;
-    this.sink = opts.sink;
+    this.log = opts.log;
     this.now = opts.now ?? Date.now;
     this.policy = opts.policy ?? LOGIN_POLICY;
+  }
+
+  /** Normalised IP bucket and HMAC target of an attempt — what events may carry. */
+  identify(a: LoginAttempt): { ip: string; target: string } {
+    const { ip, target } = this.keys(a);
+    return { ip, target };
   }
 
   /** Store keys: normalised IP + HMAC target only — never a plain host or address. */
@@ -176,12 +184,11 @@ export class LoginGuard {
     const pairFailures = await this.recent(k.pair, p.pairWindowMs, now);
     const pairLockouts = await this.recent(k.pairLockouts, p.pairLockoutChallengeMs, now);
     const mailboxFailures = await this.recent(k.mailbox, p.mailboxWindowMs, now);
-    if (
-      pairFailures.length >= p.pairChallengeAfter ||
-      pairLockouts.length > 0 ||
-      mailboxFailures.length >= p.mailboxChallengeAfter
-    ) {
-      return { kind: 'challenge-required' };
+    if (pairFailures.length >= p.pairChallengeAfter || pairLockouts.length > 0) {
+      return { kind: 'challenge-required', attempts: pairFailures.length };
+    }
+    if (mailboxFailures.length >= p.mailboxChallengeAfter) {
+      return { kind: 'challenge-required', attempts: mailboxFailures.length };
     }
     return { kind: 'allow' };
   }
@@ -222,7 +229,7 @@ export class LoginGuard {
       await this.store.setTimes(k.pair, []);
       const lockouts = await this.recent(k.pairLockouts, p.pairLockoutChallengeMs, now);
       await this.store.setTimes(k.pairLockouts, [...lockouts, now]);
-      this.emit(k, reason, 'too-many-attempts', pairFailures.length, until, now);
+      this.emit(k, reason, 'too-many-attempts', pairFailures.length, until);
 
       const ipLockouts = [...(await this.recent(k.ipLockouts, p.ipLockoutWindowMs, now)), now];
       if (ipLockouts.length >= p.ipLockoutsForBlock) {
@@ -231,11 +238,11 @@ export class LoginGuard {
         await this.store.setTimes(k.ipLockouts, []);
         const ipBlocks = [...(await this.recent(k.ipBlocks, p.ipBlockWindowMs, now)), now];
         await this.store.setTimes(k.ipBlocks, ipBlocks);
-        this.emit(k, reason, 'ip-blocked', ipLockouts.length, blockUntil, now);
+        this.emit(k, reason, 'ip-blocked', ipLockouts.length, blockUntil);
 
         if (ipBlocks.length >= p.ipBlocksForPermanent) {
           await this.store.setFlag(k.ipPermanent, true);
-          this.emit(k, reason, 'permanent', ipBlocks.length, null, now);
+          this.emit(k, reason, 'permanent', ipBlocks.length, null);
         }
       } else {
         await this.store.setTimes(k.ipLockouts, ipLockouts);
@@ -277,18 +284,18 @@ export class LoginGuard {
     kind: BlockKind,
     attempts: number,
     until: number | null,
-    now: number,
   ): void {
-    this.sink?.emit({
-      ts: new Date(now).toISOString(),
-      event: 'login-guard.block',
-      kind,
-      reason,
-      ip: k.ip,
-      addr: k.addr,
-      attempts,
-      until: until === null ? null : new Date(until).toISOString(),
-      target: k.target,
-    });
+    if (this.log === undefined) return;
+    safeEmit(this.log, () =>
+      guardBlock({
+        kind,
+        reason,
+        ip: k.ip,
+        addr: k.addr,
+        attempts,
+        until: until === null ? null : new Date(until).toISOString(),
+        target: k.target,
+      }),
+    );
   }
 }

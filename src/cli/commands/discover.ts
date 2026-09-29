@@ -11,7 +11,10 @@ import {
 } from '../../core/providers/discover.js';
 import { DiscoveryInputError } from '../../core/providers/email.js';
 import type { ImapSettings } from '../../core/providers/settings.js';
+import { discoverFinish, safeEmit, type DiscoverChoice } from '../../core/log/index.js';
+import type { CliContext } from '../index.js';
 import { chooseImapSettings, inquirerPrompts } from '../prompts/imap-settings.js';
+import { reportError } from '../report-error.js';
 
 const TIMEOUT_MS = 5000;
 
@@ -80,12 +83,20 @@ function printTried(tried: Tried[]): void {
   }
 }
 
-/** Tiers 2–3 (provider picker / manual host). Returns the exit code. */
-async function choose(result: DiscoveryResult): Promise<number> {
+/** Exit code plus what the log may know about the run (no address, domain or host). */
+interface Reported {
+  code: number;
+  choice?: DiscoverChoice;
+  /** Preset id picked in the provider list. */
+  provider?: string;
+}
+
+/** Tiers 2–3 (provider picker / manual host). */
+async function choose(result: DiscoveryResult): Promise<Reported> {
   const chosen = await chooseImapSettings(result, inquirerPrompts);
   if (chosen === null) {
     console.log('Cancelled — no settings chosen.');
-    return 1;
+    return { code: 1, choice: 'cancelled' };
   }
   console.log('');
   // For host-entered the provider line was already printed with the discovery result.
@@ -95,10 +106,14 @@ async function choose(result: DiscoveryResult): Promise<number> {
   printSettings(chosen.settings);
   line('Found via', SOURCE_TEXT[chosen.source]);
   printHelp(chosen.provider);
-  return 0;
+  return {
+    code: 0,
+    choice: chosen.source,
+    ...(chosen.provider !== undefined && { provider: chosen.provider.id }),
+  };
 }
 
-async function report(result: DiscoveryResult): Promise<number> {
+async function report(result: DiscoveryResult): Promise<Reported> {
   switch (result.status) {
     case 'found':
       if (result.provider !== undefined) printProvider(result.provider);
@@ -110,14 +125,14 @@ async function report(result: DiscoveryResult): Promise<number> {
       if (result.domainProblem !== undefined) {
         warn(domainProblemText(result.domainProblem, result.email.displayDomain));
       }
-      return 0;
+      return { code: 0 };
     case 'blocked':
       printProvider(result.provider);
       line('Found via', foundVia(result.source, result.via));
       printHelp(result.provider);
       for (const n of result.notices) warn(n);
       warn(`Not supported yet: ${result.reason}`);
-      return 1;
+      return { code: 1 };
     case 'needs-host':
       printProvider(result.provider);
       line('Found via', foundVia(result.source, result.via));
@@ -125,7 +140,7 @@ async function report(result: DiscoveryResult): Promise<number> {
       if (interactive()) return choose(result);
       warn(`The IMAP host is per mailbox: ${result.provider.hostHint ?? 'enter it manually'}`);
       printHelp(result.provider);
-      return 0;
+      return { code: 0 };
     case 'manual':
       if (result.domainProblem !== undefined) {
         console.log(domainProblemText(result.domainProblem, result.email.displayDomain));
@@ -137,13 +152,18 @@ async function report(result: DiscoveryResult): Promise<number> {
         console.log(
           'Run this in a terminal to choose your provider from the list or enter the IMAP host manually.',
         );
-        return 1;
+        return { code: 1 };
       }
       return choose(result);
   }
 }
 
-export function registerDiscover(program: Command): void {
+/** Only DiscoveryInputError messages are ours and value-free; anything else stays generic. */
+function discoverErrorText(err: unknown): string {
+  return err instanceof DiscoveryInputError ? err.message : 'Unexpected error';
+}
+
+export function registerDiscover(program: Command, ctx: CliContext): void {
   program
     .command('discover')
     .description('Find the IMAP settings for an email address (no login, no password)')
@@ -155,14 +175,26 @@ export function registerDiscover(program: Command): void {
           // Progress goes to stderr so stdout stays the result only.
           onProgress: (source) => console.error(`checking ${SOURCE_LABEL[source]}…`),
         });
-        process.exitCode = await report(result);
+        const reported = await report(result);
+        process.exitCode = reported.code;
+        safeEmit(ctx.log, () =>
+          discoverFinish({
+            outcome: result.status,
+            source: 'source' in result ? result.source : undefined,
+            provider: reported.provider ?? ('provider' in result ? result.provider?.id : undefined),
+            domainProblem: result.domainProblem,
+            choice: reported.choice,
+          }),
+        );
       } catch (err) {
         if (err instanceof Error && err.name === 'ExitPromptError') {
           process.exitCode = 130;
           return;
         }
-        // Only DiscoveryInputError messages are ours and value-free; anything else stays generic.
-        console.error(err instanceof DiscoveryInputError ? err.message : 'Unexpected error');
+        if (err instanceof DiscoveryInputError) {
+          safeEmit(ctx.log, () => discoverFinish({ outcome: 'invalid' }));
+        }
+        reportError(err, ctx.log, discoverErrorText);
         process.exitCode = 1;
       }
     });

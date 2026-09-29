@@ -8,9 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { EnvSource } from '../../config.js';
 
 /** Matches supabase-js's `auth.storage` contract (string values). */
 export interface SessionStorage {
@@ -21,14 +19,6 @@ export interface SessionStorage {
   clear(): void;
   /** true when no session data is stored (a missing or corrupt file counts as empty). */
   isEmpty(): boolean;
-}
-
-/** Config dir: MM_CONFIG_DIR → $XDG_CONFIG_HOME/mail-manager → ~/.config/mail-manager. */
-export function sessionDir(env: EnvSource = process.env): string {
-  const explicit = env['MM_CONFIG_DIR']?.trim();
-  if (explicit) return explicit;
-  const xdg = env['XDG_CONFIG_HOME']?.trim();
-  return join(xdg || join(homedir(), '.config'), 'mail-manager');
 }
 
 /**

@@ -23,6 +23,7 @@ vi.mock('../../src/cli/prompts/imap-settings.js', async (importOriginal) => {
 
 const { buildProgram } = await import('../../src/cli/index.js');
 const { SOURCE_LABEL } = await import('../../src/core/providers/discover.js');
+const { MemoryEventLog } = await import('../../src/core/log/index.js');
 
 const EMAIL = 'someone@example-test-domain.eu';
 const email = parseEmail(EMAIL);
@@ -495,5 +496,47 @@ describe('mm discover — review fixes', () => {
     chooseImapSettings.mockResolvedValue(picked);
     await runCli({ ...base, status: 'manual' });
     expect(geoLine()).toBe(false);
+  });
+});
+
+describe('mm discover error logging (M1b-4a)', () => {
+  const CTX = {
+    run: '0123456789abcdef',
+    ver: '0.0.0',
+    now: () => Date.UTC(2026, 8, 23),
+    level: 'debug' as const,
+  };
+
+  async function runLogged(error: Error): Promise<InstanceType<typeof MemoryEventLog>> {
+    discover.mockRejectedValue(error);
+    const log = new MemoryEventLog(CTX);
+    await buildProgram({ exitOverride: true, log }).parseAsync(['discover', EMAIL], {
+      from: 'user',
+    });
+    return log;
+  }
+
+  function unexpected(log: InstanceType<typeof MemoryEventLog>): number {
+    return log.records.filter((r) => r.event === 'error.unexpected').length;
+  }
+
+  it('an unexpected core error → error.unexpected and "Unexpected error"', async () => {
+    const log = await runLogged(new Error(`boom ${EMAIL}`));
+    expect(unexpected(log)).toBe(1);
+    expect(err.join('\n')).toContain('Unexpected error');
+    expect(process.exitCode).toBe(1);
+    expect(all()).not.toContain('boom');
+    for (const line of log.lines) {
+      expect(line).not.toContain('boom');
+      expect(line).not.toContain(EMAIL);
+    }
+  });
+
+  it('a DiscoveryInputError → its message, no error.unexpected', async () => {
+    const log = await runLogged(new DiscoveryInputError('That is not a valid email address.'));
+    expect(unexpected(log)).toBe(0);
+    expect(err.join('\n')).toContain('That is not a valid email address.');
+    expect(err.join('\n')).not.toContain('Unexpected error');
+    expect(process.exitCode).toBe(1);
   });
 });

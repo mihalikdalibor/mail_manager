@@ -16,6 +16,8 @@ export interface DoctorDeps {
   timeoutMs: number;
   /** Current login, if any. May refresh and rewrite the stored session as a side effect. */
   session?: () => Promise<{ email: string } | null>;
+  /** Local log folder check (src/core/log/health.ts); omitted → no `logs` result. */
+  logs?: () => CheckResult;
 }
 
 const MIN_NODE: readonly [number, number, number] = [22, 13, 0];
@@ -261,6 +263,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
       : { name: 'session', status: 'warn', detail: 'skipped: Supabase config invalid' },
   );
 
+  if (deps.logs) results.push(deps.logs());
   return results;
 }
 

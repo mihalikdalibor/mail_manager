@@ -1,12 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { IMAP_FAILURE_REASONS, type ImapFailureReason } from '../../src/core/imap/errors.js';
+import { MemoryEventLog, type EventLog } from '../../src/core/log/index.js';
 import { MemoryAttemptStore } from '../../src/core/security/attempt-store.js';
-import {
-  MemoryEventSink,
-  guardTargetKey,
-  hmacTarget,
-  type SecurityEvent,
-} from '../../src/core/security/events.js';
+import { guardTargetKey, hmacTarget } from '../../src/core/security/events.js';
 import {
   COUNTED_REASONS,
   LOGIN_POLICY,
@@ -27,7 +23,26 @@ const OTHER_IP = '198.51.100.9';
 const HOST = 'imap.example-test-domain.eu';
 
 const ALLOW: GuardDecision = { kind: 'allow' };
-const CHALLENGE: GuardDecision = { kind: 'challenge-required' };
+// Any challenge; the `attempts` count is pinned in its own tests below.
+const CHALLENGE = expect.objectContaining({ kind: 'challenge-required' }) as GuardDecision;
+
+type BlockRecord = Record<string, unknown>;
+
+/** The guard's block events as records, without the envelope's level/run/v. */
+class BlockLog {
+  readonly log: MemoryEventLog;
+
+  constructor(now: () => number) {
+    this.log = new MemoryEventLog({ run: '0123456789abcdef', ver: 't', now, level: 'debug' });
+  }
+
+  get events(): BlockRecord[] {
+    const envelope = new Set(['level', 'run', 'v']);
+    return this.log.records.map((r) =>
+      Object.fromEntries(Object.entries(r).filter(([k]) => !envelope.has(k))),
+    );
+  }
+}
 
 const COUNTED: ImapFailureReason[] = [
   'auth-failed',
@@ -50,19 +65,20 @@ const PERMANENT: GuardDecision = { kind: 'blocked', block: 'permanent', until: n
 
 function setup(policy?: LoginPolicy): {
   store: MemoryAttemptStore;
-  sink: MemoryEventSink;
+  sink: BlockLog;
   targetKey: Buffer;
   clock: { now: number };
   guard: LoginGuard;
 } {
   const store = new MemoryAttemptStore();
-  const sink = new MemoryEventSink();
   const targetKey = guardTargetKey(Buffer.alloc(32, 7));
   const clock = { now: T0 };
+  // Same clock as the guard, so the log stamps block events with the guard's time.
+  const sink = new BlockLog(() => clock.now);
   const guard = new LoginGuard({
     store,
     targetKey,
-    sink,
+    log: sink.log,
     now: () => clock.now,
     ...(policy === undefined ? {} : { policy }),
   });
@@ -82,8 +98,8 @@ async function fail(
 
 const lockOut = (guard: LoginGuard, a: LoginAttempt): Promise<GuardDecision> => fail(guard, a, 5);
 
-function kinds(events: readonly SecurityEvent[]): string[] {
-  return events.map((e) => e.kind);
+function kinds(events: readonly BlockRecord[]): string[] {
+  return events.map((e) => String(e['kind']));
 }
 
 describe('LOGIN_POLICY and COUNTED_REASONS', () => {
@@ -703,5 +719,67 @@ describe('LoginGuard: parallel attempts on different pairs (shared counters)', (
       ),
     );
     expect(await guard.check(mailbox('shared', '198.51.100.200'))).toEqual(CHALLENGE);
+  });
+});
+
+describe('LoginGuard — events and identify (M1b-4b)', () => {
+  it('challenge-required carries the pair failures in the window', async () => {
+    const { guard } = setup();
+    await fail(guard, mailbox('a'), 2);
+    expect(await guard.check(mailbox('a'))).toEqual({ kind: 'challenge-required', attempts: 2 });
+    await fail(guard, mailbox('a'), 2);
+    expect(await guard.check(mailbox('a'))).toEqual({ kind: 'challenge-required', attempts: 4 });
+  });
+
+  it('a lockout history alone → challenge with the (possibly 0) pair count', async () => {
+    const { guard, clock } = setup();
+    await lockOut(guard, mailbox('a'));
+    clock.now = T0 + 15 * MIN; // lock expired, 24 h challenge remains, pair counter was reset
+    expect(await guard.check(mailbox('a'))).toEqual({ kind: 'challenge-required', attempts: 0 });
+  });
+
+  it('mailbox-wide failures alone → challenge with the mailbox count', async () => {
+    const { guard } = setup();
+    for (let i = 0; i < 10; i++) await fail(guard, mailbox('shared', `198.51.100.${i + 1}`), 1);
+    expect(await guard.check(mailbox('shared', '198.51.100.200'))).toEqual({
+      kind: 'challenge-required',
+      attempts: 10,
+    });
+  });
+
+  it('identify() returns the normalised IP bucket and the same HMAC target as the events', async () => {
+    const { guard, sink, targetKey } = setup();
+    const a = { ip: '2001:db8:1:2::5', host: HOST, username: 'x@example-test-domain.eu' };
+    expect(guard.identify(a)).toEqual({
+      ip: '2001:db8:1:2::/64',
+      target: hmacTarget(targetKey, HOST, 'x@example-test-domain.eu'),
+    });
+    await lockOut(guard, a);
+    expect(sink.events[0]?.['ip']).toBe(guard.identify(a).ip);
+    expect(sink.events[0]?.['target']).toBe(guard.identify(a).target);
+  });
+
+  it('block events are security lines with warn level (permanent: error)', async () => {
+    const { guard, sink } = setup();
+    await lockOut(guard, mailbox('a'));
+    expect(sink.log.records[0]?.level).toBe('warn');
+    expect(sink.log.lines[0]?.startsWith('mm-security {')).toBe(true);
+  });
+
+  it('a throwing log never changes decisions or counters', async () => {
+    const broken: EventLog = {
+      emit(): void {
+        throw new Error('log down');
+      },
+    };
+    const clock = { now: T0 };
+    const guard = new LoginGuard({
+      store: new MemoryAttemptStore(),
+      targetKey: guardTargetKey(Buffer.alloc(32, 7)),
+      log: broken,
+      now: () => clock.now,
+    });
+    expect(await lockOut(guard, mailbox('a'))).toEqual(blocked('too-many-attempts', T0 + 15 * MIN));
+    expect(await guard.check(mailbox('a'))).toEqual(blocked('too-many-attempts', T0 + 15 * MIN));
   });
 });

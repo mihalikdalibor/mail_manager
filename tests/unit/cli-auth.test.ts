@@ -46,7 +46,10 @@ vi.mock('../../src/core/db/supabase/index.js', () => ({
       return session.empty;
     }
   },
-  sessionDir: vi.fn(() => '/nonexistent/mm-test-config'),
+}));
+vi.mock('../../src/core/paths.js', () => ({
+  configDir: vi.fn(() => '/nonexistent/mm-test-config'),
+  logDir: vi.fn(() => '/nonexistent/mm-test-config/logs'),
 }));
 vi.mock('@inquirer/prompts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@inquirer/prompts')>();
@@ -54,6 +57,7 @@ vi.mock('@inquirer/prompts', async (importOriginal) => {
 });
 
 const { buildProgram } = await import('../../src/cli/index.js');
+const { MemoryEventLog } = await import('../../src/core/log/index.js');
 
 let out: string[];
 let err: string[];
@@ -309,5 +313,77 @@ describe('review fixes', () => {
     fakeAuth.currentUser.mockResolvedValue({ email: '', userId: 'u1' });
     await runCli('whoami');
     expect(out.join('\n')).toContain('(no email) (u1)');
+  });
+});
+
+describe('error logging (M1b-4a)', () => {
+  const CTX = {
+    run: '0123456789abcdef',
+    ver: '0.0.0',
+    now: () => Date.UTC(2026, 8, 23),
+    level: 'debug' as const,
+  };
+
+  async function runLogged(...args: string[]): Promise<InstanceType<typeof MemoryEventLog>> {
+    const log = new MemoryEventLog(CTX);
+    await buildProgram({ exitOverride: true, log }).parseAsync(args, { from: 'user' });
+    return log;
+  }
+
+  function unexpected(log: InstanceType<typeof MemoryEventLog>): number {
+    return log.records.filter((r) => r.event === 'error.unexpected').length;
+  }
+
+  const coreFailure = (): Error => new Error(`boom ${PASSWORD}`);
+
+  const commands: [string, string[], () => void][] = [
+    [
+      'login',
+      ['login', '--email', 'a@x.sk'],
+      () => {
+        password.mockResolvedValue(PASSWORD);
+        fakeAuth.login.mockRejectedValue(coreFailure());
+      },
+    ],
+    ['logout', ['logout'], () => fakeAuth.logout.mockRejectedValue(coreFailure())],
+    ['whoami', ['whoami'], () => fakeAuth.currentUser.mockRejectedValue(coreFailure())],
+  ];
+
+  it.each(commands)(
+    '%s: an unexpected core error → one error.unexpected, "Unexpected error", exit 1',
+    async (_name, args, arrange) => {
+      arrange();
+      const log = await runLogged(...args);
+      expect(unexpected(log)).toBe(1);
+      expect(err.join('\n')).toContain('Unexpected error');
+      expect(process.exitCode).toBe(1);
+      expect(allOutput()).not.toContain('boom');
+      for (const line of log.lines) {
+        expect(line).not.toContain('boom');
+        expect(line).not.toContain('hunter2');
+      }
+    },
+  );
+
+  const userFacing = (): AuthError => new AuthError('unreachable', 'Supabase unreachable');
+
+  it.each<[string, string[], () => void]>([
+    [
+      'login',
+      ['login', '--email', 'a@x.sk'],
+      () => {
+        password.mockResolvedValue(PASSWORD);
+        fakeAuth.login.mockRejectedValue(userFacing());
+      },
+    ],
+    ['logout', ['logout'], () => fakeAuth.logout.mockRejectedValue(userFacing())],
+    ['whoami', ['whoami'], () => fakeAuth.currentUser.mockRejectedValue(userFacing())],
+  ])('%s: an AuthError → its message, no error.unexpected', async (_name, args, arrange) => {
+    arrange();
+    const log = await runLogged(...args);
+    expect(unexpected(log)).toBe(0);
+    expect(err.join('\n')).toContain('Supabase unreachable');
+    expect(err.join('\n')).not.toContain('Unexpected error');
+    expect(process.exitCode).toBe(1);
   });
 });

@@ -1,8 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import type { CheckResult } from '../../src/core/doctor.js';
+import type { CheckResult, DoctorDeps } from '../../src/core/doctor.js';
 
 // Mock the core so the CLI wiring is tested without env files or network.
-const runDoctor = vi.fn<() => Promise<CheckResult[]>>();
+const runDoctor = vi.fn<(deps: DoctorDeps) => Promise<CheckResult[]>>();
 const loadEnvFiles = vi.fn();
 
 vi.mock('../../src/core/doctor.js', async (importOriginal) => {
@@ -75,5 +78,48 @@ describe('mm doctor (CLI wiring)', () => {
       { name: 'master-key', status: 'warn', detail: '' },
     ]);
     expect(process.exitCode).toBeUndefined();
+  });
+});
+
+describe('mm doctor logs check (M1b-4a)', () => {
+  let tmp: string;
+  const saved = { dir: process.env['MM_CONFIG_DIR'], level: process.env['MM_LOG_LEVEL'] };
+
+  function restore(name: string, value: string | undefined): void {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'mm-clidoctor-'));
+    process.env['MM_CONFIG_DIR'] = tmp;
+    process.env['MM_LOG_LEVEL'] = 'info';
+  });
+
+  afterEach(() => {
+    restore('MM_CONFIG_DIR', saved.dir);
+    restore('MM_LOG_LEVEL', saved.level);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function logsCheck(): () => CheckResult {
+    const deps = runDoctor.mock.calls[0]?.[0];
+    expect(typeof deps?.logs).toBe('function');
+    return deps?.logs ?? (() => ({ name: 'missing', status: 'fail', detail: '' }));
+  }
+
+  it('passes a logs check for <MM_CONFIG_DIR>/logs to runDoctor', async () => {
+    await runCli([{ name: 'node', status: 'ok', detail: 'v22' }]);
+    const logs = logsCheck();
+    const missing = logs();
+    expect(missing.name).toBe('logs');
+    expect(missing.status).toBe('warn');
+    expect(missing.detail).toContain('not being written');
+    expect(missing.detail).not.toContain(tmp);
+
+    mkdirSync(join(tmp, 'logs'), { mode: 0o700 });
+    const present = logs();
+    expect(present.name).toBe('logs');
+    expect(present.status).toBe('ok');
   });
 });

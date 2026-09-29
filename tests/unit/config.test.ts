@@ -4,9 +4,12 @@ import { isAbsolute, join } from 'node:path';
 import { afterEach, describe, it, expect } from 'vitest';
 import {
   ConfigError,
+  LOG_LEVELS,
   getConfig,
   loadEnvFiles,
+  logLevel,
   projectRoot,
+  validateLogLevel,
   validateMasterKeyEnv,
   validateSupabaseEnv,
 } from '../../src/core/config.js';
@@ -330,5 +333,50 @@ describe('projectRoot', () => {
     const root = projectRoot();
     expect(isAbsolute(root)).toBe(true);
     expect(existsSync(join(root, 'package.json'))).toBe(true);
+  });
+});
+
+describe('validateLogLevel', () => {
+  it('lists the four levels in order', () => {
+    expect(LOG_LEVELS).toEqual(['debug', 'info', 'warn', 'error']);
+  });
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['whitespace', '   '],
+  ])('defaults to info when %s', (_label, value) => {
+    expect(validateLogLevel({ MM_LOG_LEVEL: value })).toEqual({ ok: true, value: 'info' });
+  });
+
+  it.each([
+    ['debug', 'debug'],
+    ['info', 'info'],
+    ['warn', 'warn'],
+    ['error', 'error'],
+    [' WARN ', 'warn'],
+    ['Debug', 'debug'],
+  ])('accepts %j as %s (trimmed, case-insensitive)', (raw, level) => {
+    expect(validateLogLevel({ MM_LOG_LEVEL: raw })).toEqual({ ok: true, value: level });
+  });
+
+  it.each(['off', 'verbose', '2', 'warning', 'trace'])('rejects %j naming MM_LOG_LEVEL', (raw) => {
+    const result = validateLogLevel({ MM_LOG_LEVEL: raw });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0]?.variable).toBe('MM_LOG_LEVEL');
+    }
+  });
+});
+
+describe('logLevel', () => {
+  it('returns the configured level', () => {
+    expect(logLevel({ MM_LOG_LEVEL: 'error' })).toBe('error');
+  });
+
+  it('falls back to info when unset or invalid', () => {
+    expect(logLevel({})).toBe('info');
+    expect(logLevel({ MM_LOG_LEVEL: 'off' })).toBe('info');
   });
 });

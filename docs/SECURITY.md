@@ -37,7 +37,7 @@ Mail Manager holds the keys to people's mailboxes and can delete their mail. Two
 - Supabase Auth, email + password (MVP), **invite-only**: public signups disabled in the Supabase dashboard (verified live: `/auth/v1/settings` → `disable_signup: true`), users created there. No `mm signup`. `mm doctor` fails its `signup` check if signups are re-enabled. MFA (TOTP) in beta.
 - Every Supabase request has a timeout (10 s; 5 s inside `mm doctor`) and PostgREST auto-retries are off, so a paused or unreachable project fails fast with "Supabase unreachable" instead of hanging.
 - `mm login` prompts for the password (hidden) and refuses to run without a TTY.
-- CLI stores the Supabase session in `session.json` under `$MM_CONFIG_DIR`, `$XDG_CONFIG_HOME/mail-manager` or `~/.config/mail-manager` — dir 700, file 600, written atomically (tmp file 600 → rename). A corrupt file counts as logged out.
+- CLI stores the Supabase session in `session.json` under `$MM_CONFIG_DIR`, `$XDG_CONFIG_HOME/mail-manager` or `~/.config/mail-manager` — dir 700, file 600, written atomically (tmp file 600 → rename). A corrupt file counts as logged out. The same folder holds the local logs in `logs/` (dir 700, files 600, no symlinks followed; see [LOGGING.md](LOGGING.md)).
 - `mm logout` always deletes the local session, even offline (server-side revocation is best effort). Without a local session (missing or corrupt file) it says "Not logged in" and sends nothing to Supabase.
 - Table privileges: `anon` has none on `mail_accounts`; `authenticated` has no TRUNCATE and can't update `id`/`user_id`/`created_at` (see DATA_MODEL.md).
 - CLI uses the publishable key (formerly "anon") + user JWT → RLS applies. Service-role key never leaves the server.
@@ -74,10 +74,10 @@ From M1c on, every IMAP login the app makes goes through `guardedOpenSession` (`
 - **Known gaps:** a different host name for the same server (an alias/CNAME) gives a different mailbox target, so the pair/mailbox counters start again — the IP tier still applies; the server (M6a) should use the discovered host. In-memory entries are pruned only when their key is used again; the hosted store needs TTLs.
 - **Concurrency:** in-process, attempts for the same pair are serialised (`withPairLock`, not re-entrant) and every counter update runs one at a time, so parallel attempts on different pairs can't skip the IP block or the mailbox challenge. The hosted store (M6a) must make each read-modify-write atomic (transaction / Redis script).
 - **Where it's effective:** the store is in-memory for now. In the CLI the counters live for one `mm` run (M1c's password retries); IP blocks and the permanent tier matter once the server has a persistent store (M6a). Known limit until then: no unblock procedure — a permanently blocked shared/NAT IP needs M6a's support tooling.
-- **Block records:** one `SecurityEvent` per block (pair lock, IP block, permanent) to a `SecurityEventSink`; `LineEventSink` writes one line per event:
+- **Block records:** one `login-guard.block` event per block (pair lock, IP block, permanent), emitted by `LoginGuard` through the `EventLog` (M1b-4b; the CLI writes it to `security-<UTC date>.log`, kept 90 days, from M1c on). The log core renders it with the envelope after `target` (fail2ban's regex anchors on the fields before it):
 
   ```text
-  mm-security {"ts":"2026-09-22T14:17:00.000Z","event":"login-guard.block","kind":"ip-blocked","reason":"auth-failed","ip":"203.0.113.7","addr":"203.0.113.7","attempts":3,"until":"2026-09-23T14:17:00.000Z","target":"<64 hex>"}
+  mm-security {"ts":"2026-09-22T14:17:00.000Z","event":"login-guard.block","kind":"ip-blocked","reason":"auth-failed","ip":"203.0.113.7","addr":"203.0.113.7","attempts":3,"until":"2026-09-23T14:17:00.000Z","target":"<64 hex>","level":"warn","run":"<16 hex>","v":1}
   ```
 
   `ip` is the counting bucket (IPv4, IPv6 /64, `local`, `invalid`); `addr` is one concrete address a firewall can ban, or `null`. fail2ban filter (`FAIL2BAN_FAILREGEX` in `src/core/security/events.ts`; `<ADDR>` needs fail2ban ≥ 0.10) — matches only `ip-blocked` and `permanent`, never a single mailbox lock, and never a line without a bannable `addr`:

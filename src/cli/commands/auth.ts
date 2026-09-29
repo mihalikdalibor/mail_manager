@@ -1,39 +1,55 @@
 import { input, password } from '@inquirer/prompts';
 import type { Command } from 'commander';
 import type { AuthService, LogoutResult } from '../../core/auth.js';
-import { ConfigError, loadEnvFiles } from '../../core/config.js';
-import { errorText } from '../error-text.js';
+import { ConfigError, loadEnvFiles, validateMasterKeyEnv } from '../../core/config.js';
+import { createSupabaseServices, FileSessionStorage } from '../../core/db/supabase/index.js';
+import { configDir } from '../../core/paths.js';
 import {
-  createSupabaseServices,
-  FileSessionStorage,
-  sessionDir,
-} from '../../core/db/supabase/index.js';
+  authFailureReason,
+  authLogin,
+  authLoginFailed,
+  authLogout,
+  safeEmit,
+  type EventLog,
+} from '../../core/log/index.js';
+import { authEmailTarget, authTargetKey } from '../../core/security/events.js';
+import type { CliContext } from '../index.js';
+import { reportError } from '../report-error.js';
 
 function authService(): AuthService {
   loadEnvFiles();
-  return createSupabaseServices(process.env, new FileSessionStorage(sessionDir(process.env))).auth;
+  return createSupabaseServices(process.env, new FileSessionStorage(configDir(process.env))).auth;
 }
 
 /** Last resort for logout when no client can be built (e.g. broken config). */
 function clearLocalSession(): LogoutResult {
-  const storage = new FileSessionStorage(sessionDir(process.env));
+  const storage = new FileSessionStorage(configDir(process.env));
   const hadSession = !storage.isEmpty();
   storage.clear();
   return hadSession ? 'logged-out' : 'not-logged-in';
 }
 
+/**
+ * Log target for the typed e-mail: an HMAC, or `invalid` when it isn't an address. Without a
+ * valid MM_MASTER_KEY the key is random, so targets only match within one run.
+ */
+function loginTarget(email: string): string {
+  const env = validateMasterKeyEnv(process.env);
+  return authEmailTarget(authTargetKey(env.ok ? env.value.masterKey : undefined), email);
+}
+
 /** Ctrl+C in an inquirer prompt → exit 130 quietly; other errors → message + exit 1. */
-function handleError(err: unknown): void {
+function handleError(err: unknown, log: EventLog): void {
   if (err instanceof Error && err.name === 'ExitPromptError') {
     process.exitCode = 130;
     return;
   }
   // Only core errors written for users (AuthError, ConfigError, …) show their message.
-  console.error(errorText(err));
+  reportError(err, log);
   process.exitCode = 1;
 }
 
-export function registerAuth(program: Command): void {
+export function registerAuth(program: Command, ctx: CliContext): void {
   program
     .command('login')
     .description('Log in to Mail Manager (users are created by the admin in Supabase)')
@@ -54,10 +70,18 @@ export function registerAuth(program: Command): void {
         }
         // No mask: nothing is echoed, so the password length isn't revealed either.
         const pass = await password({ message: 'Password:' });
-        const user = await auth.login(email, pass);
+        let user;
+        try {
+          user = await auth.login(email, pass);
+        } catch (err) {
+          // Only a submitted login counts as a failed login (not Ctrl+C or a config problem).
+          safeEmit(ctx.log, () => authLoginFailed(authFailureReason(err), loginTarget(email)));
+          throw err;
+        }
+        safeEmit(ctx.log, () => authLogin(user.userId));
         console.log(`Logged in as ${user.email}`);
       } catch (err) {
-        handleError(err);
+        handleError(err, ctx.log);
       }
     });
 
@@ -74,10 +98,11 @@ export function registerAuth(program: Command): void {
         }
         // Without a usable config there's no server to notify; still delete the local session.
         const result = auth ? await auth.logout() : clearLocalSession();
+        safeEmit(ctx.log, () => authLogout(result));
         // Idempotent: "Not logged in" is not an error (exit 0).
         console.log(result === 'logged-out' ? 'Logged out' : 'Not logged in');
       } catch (err) {
-        handleError(err);
+        handleError(err, ctx.log);
       }
     });
 
@@ -94,7 +119,7 @@ export function registerAuth(program: Command): void {
         }
         console.log(`${user.email || '(no email)'} (${user.userId})`);
       } catch (err) {
-        handleError(err);
+        handleError(err, ctx.log);
       }
     });
 }

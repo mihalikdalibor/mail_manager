@@ -20,6 +20,15 @@ const USER_FACING = [
   RepoError,
 ] as const;
 
+/** true for errors with a text written for users; anything else is unexpected. */
+export function isUserFacing(err: unknown): boolean {
+  return (
+    err instanceof ImapSessionError ||
+    err instanceof LoginBlockedError ||
+    USER_FACING.some((cls) => err instanceof cls)
+  );
+}
+
 /** Text for an error that reached the top level. Anything unknown stays generic. */
 export function errorText(err: unknown): string {
   if (err instanceof ImapSessionError) return imapErrorText(err.reason, { kind: 'this-computer' });

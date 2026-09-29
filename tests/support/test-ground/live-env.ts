@@ -112,5 +112,7 @@ export function openTestSession(settings: ImapSettings, password: string): Promi
     }),
     clientIp: 'local',
     onChallenge: () => Promise.resolve(),
+    // The test ground logs nothing; the preset id isn't threaded through its settings.
+    provider: 'custom',
   });
 }

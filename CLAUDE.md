@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-4 (logging foundation, added 2026-09-23)**, then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012), M1b-3a synthetic mail generator (v0.4.0, C-013) and M1b-3b test ground seed/unseed + live test (v0.5.0, C-014) done and reviewed. `TODO.md` is the source of truth for progress.
+- **Current milestone: M1b-4 (logging foundation, added 2026-09-23; split 2026-09-28 into 4a–4d) — 4a log core + run logging and 4b domain + security events done (v0.6.0, C-015, C-016); next 4d audit trail (planned) or 4c `mm logs`**, then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012), M1b-3a synthetic mail generator (v0.4.0, C-013) and M1b-3b test ground seed/unseed + live test (v0.5.0, C-014) done and reviewed. `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `LOGGING.md` (what is logged, where, retention, event catalog), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules
@@ -54,7 +54,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Logging rules
 
-Design and event catalog: `docs/LOGGING.md` (foundation built in M1b-4).
+Design and event catalog: `docs/LOGGING.md` (log core `src/core/log/`, run logging `src/cli/run.ts`; events emitted through `ctx.log` in commands and `log?` in `LoginGuard`/`guardedOpenSession`).
 
 - Only **typed, allowlisted events** through the core `EventLog` interface — no free-form logging of objects, errors or strings. Core never prints; the shell picks the sink.
 - Never in any log or audit row (local files included): passwords, tokens, keys, message bodies/subjects/addresses, the mailbox address/domain/IMAP host, what was typed into a failed login, raw server/library text, option values, home-directory paths. Use ids instead (user id, account UUID, provider id, plan/backup id, HMAC target, reason codes, counts, bytes).

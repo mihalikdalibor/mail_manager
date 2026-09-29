@@ -63,7 +63,7 @@ Three tiers (user decision 2026-09-22):
 
 - `src/core/security/login-guard.ts` `LoginGuard`: per (IP + mailbox) pair 2 failures → challenge, 5 in 15 min → 15 min lock, challenge for 24 h after a lock; per IP 3 lockouts in 24 h → 24 h block, 3 blocks in 30 days → permanent; per mailbox across IPs 10 in 15 min → challenge only. Only credential failures count. In-memory `AttemptStore` (async interface for the M6a store), per-pair serialisation.
 - `src/core/imap/guarded-session.ts` `guardedOpenSession`: guard → challenge hook → `openSession` once → record; blocked → `LoginBlockedError` without contacting the server.
-- `src/core/security/events.ts`: HMAC targets (HKDF from `MM_MASTER_KEY`), `SecurityEvent` + sinks, `mm-security {json}` line, fail2ban regex (IP-level blocks only). `ip.ts`: IP normalisation (IPv4-mapped, IPv6 /64).
+- `src/core/security/events.ts`: HMAC targets (HKDF from `MM_MASTER_KEY`), block events (since M1b-4b through `EventLog` as `login-guard.block`), `mm-security {json}` line, fail2ban regex (IP-level blocks only). `ip.ts`: IP normalisation (IPv4-mapped, IPv6 /64).
 - CLI texts (`src/cli/login-guard-text.ts`): end time with time zone + next step; permanent → "contact Mail Manager support"; `cliChallenge` = announced 5 s wait. Details: SECURITY.md "Login guard".
 
 ### M1b-3 — Test ground
@@ -112,10 +112,12 @@ Live commands are real logins — each once, in this order, never in a loop:
 
 Decisions (2026-09-23): runs after M1b-3 and before M1c, so every command that manages mailboxes logs from day one; the cloud `audit_log` table is created here (moved from M4). Full design: [LOGGING.md](../LOGGING.md).
 
+Split on 2026-09-28 into **M1b-4a** log core + run logging → **4b** domain and security events → **4c** `mm logs` → **4d** audit trail (each its own assignment; M1c needs 4a, 4b, 4d — see `TODO.md`). Decided the same day: no `MM_LOG_LEVEL=off` (security lines are always written).
+
 - **Goal:** every run leaves a readable, leak-free trace — local app and security logs, a cloud audit trail, and `mm logs` to read them.
 - **Scope:**
   - `src/core/paths.ts` — neutral `configDir()` (moved out of `db/supabase/session-storage.ts`; the session storage uses it).
-  - `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync append, dir 700 / files 600, one file per day and kind, 5 MB cap, startup pruning: app 30 days, security 90 days, 4 KB line cap, never throws), run context, zod schema for reading lines back. `SecurityEvent` joins the catalog; new fields only after `target` (fail2ban regex unchanged).
+  - `src/core/log/` — typed event union + envelope (`ts`, `event`, fields, `level`, `run`, `v`), `EventLog` interface, `MemoryEventLog`, `FileEventLog` (sync append, dir 700 / files 600, one file per UTC day and kind, 5 MB cap (security 150 MB since 4b), startup pruning: app 30 days, security 90 days, 4 KB line cap, never throws), run context, zod schema for reading lines back. `login-guard.block` (formerly `SecurityEvent`) joins the catalog in 4b; new fields only after `target` (fail2ban regex unchanged).
   - Security events: `auth.login`, `auth.login-failed` (reason + HMAC of the typed e-mail), `auth.logout`; `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (all guard events, incl. `too-many-attempts`) built and tested through `guardedOpenSession` with a fake opener — M1c wires them to the file.
   - CLI: run logger in `src/cli/bin.ts` + commander `preAction` hook → `command.start` (command path, option **names**) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit` and Ctrl+C (`interrupted`); `error.unexpected` (class, code, relative stack frames, no message). Events for today's commands: `login`/`logout`/`whoami`, `doctor` (`doctor.check`), `discover` (`discover.finish`: source + provider id, no domain), `keygen` (start/finish only).
   - `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language text in `src/cli/log-text.ts`. `mm doctor` `logs` check. `MM_LOG_LEVEL` in `config.ts`.
@@ -130,11 +132,52 @@ Decisions (2026-09-23): runs after M1b-3 and before M1c, so every command that m
   4. `ls -la` on the log folder → 700 / 600. `mm doctor` → `logs` OK.
   5. `npm run test:integration` with `MM_TEST_SUPABASE_*` → `audit_log` RLS suite passes.
 
+#### M1b-4a — Log core + run logging (implemented)
+
+- **Paths** (`src/core/paths.ts`): `configDir(env)` (moved from `sessionDir`; session storage and the CLI use it) and `logDir(env)` = `<config dir>/logs`.
+- **Log core** (`src/core/log/`): typed event union (`events.ts`: `command.start`, `command.finish`, `error.unexpected`, `log.truncated`; kind and level per event), records with a fixed key order (`record.ts`: `ts`, `event`, fields, `level`, `run`, `v`), capped/allowlisted builders (`builders.ts`), `EventLog` + `NullEventLog` + `MemoryEventLog` + `safeEmit` (`event-log.ts`), `FileEventLog` (`file-event-log.ts`), `parseLogLine` for reading back (`schema.ts`), the doctor check (`health.ts`). `MM_LOG_LEVEL` in `config.ts` (`validateLogLevel`, `logLevel`).
+- **`FileEventLog`:** lazy (no folder until the first write; created one level at a time — Node's recursive `mkdir` hangs under `/proc`), dir 700 / files 600 (re-applied, also for an own 400 file; symlinks never followed — `O_NOFOLLOW` + `lstat`, the folder re-checked on every write; hard-linked or foreign-owned day files refused; the file name's date must be a real `YYYY-MM-DD`), one `O_APPEND` write per line, one file per UTC day and kind, 4 KB line cap, 5 MB file cap (debug dropped from 80 %, then one `log.truncated`), pruning on the first write (app > 30 days, security > 90 days by the name date), never throws (`failures`/`dropped` counters).
+- **`error.unexpected`:** class (allowlisted name), code (`^[A-Z0-9_]{1,40}$` only), up to 10 frames. The header is cut by exact prefix (`Name: message`), so a message line that looks like a frame can't slip through; frames stop at the first non-frame line (e.g. an appended `Caused by: …`); Node's `Name [CODE]: message` header is recognised; function names are kept only for frames in our own code or `node:` internals and only in the shapes V8 prints (else `<fn>` — an overwritten `stack` could put data there), eval frames → `eval`, paths inside the package → relative (`..` escapes → `<external>`), anything else → `<external>`; printable ASCII only; never the message.
+- **CLI** (`src/cli/run.ts`, `bin.ts`): `createRunLog` loads the env files first (so `MM_CONFIG_DIR`/`MM_LOG_LEVEL` from `.env.local` apply), builds the run context (16-hex run id) and the file log (any failure → no logging). `runCli` passes an `onCommandStart` to `buildProgram`, whose root `preAction` hook reports the command path and the **names** of options given on the command line; `command.finish` after the command, from the `exit` handler (direct `process.exit`) and the SIGINT handler (`interrupted`, exit 130); inquirer Ctrl+C (exit 130) is `interrupted` too. Uncaught exceptions/rejections print "Unexpected error" and log `error.unexpected`. `reportError` (`src/cli/report-error.ts`) is used by `runCli`, `auth` and `discover`: same text as before, plus `error.unexpected` for non-user-facing errors. `--help`, `--version`, parse errors: no lines.
+- **Doctor:** `logs` check (last) — folder can't be created/written or today's file not writable (or not a regular file) → warn "logs are not being written"; a missing folder at `MM_LOG_LEVEL=warn|error` is OK ("no logs yet") — since 4b only if it could be created (see the 4b section); wrong modes → warn; invalid `MM_LOG_LEVEL` → warn; otherwise `N files, X KB, oldest <date>`. Never shows the path.
+
+#### Verification (M1b-4a)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`.
+2. `D=$(mktemp -d); MM_CONFIG_DIR=$D npm run dev -- keygen` → `$D/logs` 700, `app-<UTC date>.log` 600 with `command.start` + `command.finish`, one `run`.
+3. `MM_CONFIG_DIR=$(mktemp -d) npm run dev -- --help` (also `--version`, `nosuchcmd`) → no `logs` folder.
+4. `MM_CONFIG_DIR=<a regular file> npm run dev -- keygen` → key printed, exit 0.
+5. `MM_CONFIG_DIR=$D npm run dev -- doctor` → `logs` OK; with `MM_LOG_LEVEL=verbose` → WARN.
+6. Interactive (external terminal): `MM_CONFIG_DIR=$D mm login` → Ctrl+C at the prompt → last line `outcome: "interrupted"`.
+
+#### Logging (M1b-4a)
+
+`command.start`, `command.finish`, `error.unexpected`, `log.truncated` (app log). Canary tests: no password, address, host, subject, option value or home path in any line.
+
+#### M1b-4b — Domain + security events (implemented)
+
+- **Catalog** (`src/core/log/events.ts`): `doctor.check`, `discover.finish` (app); `auth.login`, `auth.login-failed`, `auth.logout`, `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (security → `security-<UTC date>.log`, `mm-security` prefix). Builders in `src/core/log/domain-events.ts` and `guard-events.ts` allowlist every field (preset ids, UUIDs, IP buckets, 64-hex targets, ISO times); shared helpers `cleanProvider` / `uuidOrUndefined` in `builders.ts`.
+- **CLI:** `mm doctor` → one `doctor.check` per check (name + status); `mm discover` → one `discover.finish` (outcome, source, preset id, domain problem, picker choice — never the address/domain/host; `invalid` for bad input; nothing on Ctrl+C); `mm login` → `auth.login` (user id) or one `auth.login-failed` (reason + target) only after a password was submitted; `mm logout` → `auth.logout`.
+- **Typed e-mail target** (`authEmailTarget`, `src/core/security/events.ts`): HMAC with its own key (`authTargetKey`, HKDF info `mm-auth-target-v1`) of the normalised address, or `invalid` when the input isn't an address — a password typed into the e-mail field is never hashed (decided 2026-09-29). Random key per run without a valid `MM_MASTER_KEY`.
+- **Guard:** `LoginGuard` takes `log?: EventLog` (the `SecurityEventSink`/`LineEventSink`/`formatEventLine` are gone), exposes `identify(attempt)` (IP bucket + HMAC target) and puts `attempts` on the challenge decision. `guardedOpenSession` takes `provider` (required), `acct?`, `log?` and emits `login-guard.challenge` before the challenge, `imap.login-failed` (`blocked` without contacting the server; counted/uncounted; `unexpected`) before the guard records a failure, and `imap.login` after success; login behaviour is unchanged. M1c passes a file log.
+- **Caps / follow-ups:** security files have their own 150 MB cap (app 5 MB); pruning runs on the first event even when nothing passes the level; at `MM_LOG_LEVEL=warn|error` doctor says "no logs yet" only when the log folder could be created (nearest existing ancestor is a writable directory), and checks today's security file too.
+
+#### Verification (M1b-4b)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`; `grep -rn "SecurityEventSink\|MemoryEventSink\|LineEventSink\|formatEventLine" src tests` → nothing.
+2. `D=$(mktemp -d); MM_CONFIG_DIR=$D npm run dev -- logout` → `security-<date>.log` (600) with `auth.logout`; `discover not-an-email` → `discover.finish` `invalid`.
+3. `MM_CONFIG_DIR=<a regular file> MM_LOG_LEVEL=warn npm run dev -- doctor` → `logs` WARN (doctor contacts Supabase).
+4. Interactive (external terminal): `mm login` with a wrong password → `auth.login-failed` with a 64-hex target; the password typed into the e-mail prompt → `target: "invalid"`; grep the log folder for the typed address → nothing.
+
+#### Logging (M1b-4b)
+
+`doctor.check`, `discover.finish`, `auth.login`, `auth.login-failed`, `auth.logout`, `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block`. Canary tests cover every builder.
+
 ## M1c — Account commands
 
 - `mm account add [email]` — `discover` → `chooseImapSettings` (picker / manual, from M1b-1) → hints → hidden password → test login (on timeout/refused: GeoIP hint) → encrypt → save.
 - `mm account list` · `test` · `remove` (confirm) · `update-password`.
-- **Logging** ([LOGGING.md](../LOGGING.md)): `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`). No address, host or password in any event.
+- **Logging** ([LOGGING.md](../LOGGING.md)): `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`) — pass the **same** file log to `new LoginGuard({ log })` and `guardedOpenSession({ log })`, or the guard's `login-guard.block` lines are lost. No address, host or password in any event.
 
 ## Out of scope (M1)
 

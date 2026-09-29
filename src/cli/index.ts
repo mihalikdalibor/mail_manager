@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
+import { NullEventLog, type EventLog } from '../core/log/index.js';
 import { registerAuth } from './commands/auth.js';
 import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
@@ -8,9 +9,39 @@ import { registerKeygen } from './commands/keygen.js';
 // Same relative path from src/cli (tsx) and dist/cli (built).
 const pkg = createRequire(import.meta.url)('../../package.json') as { version: string };
 
+export const VERSION = pkg.version;
+
 export interface BuildOptions {
   /** Throw CommanderError instead of calling process.exit (for tests). */
   exitOverride?: boolean;
+  /** Where commands send events (default: nothing is recorded). */
+  log?: EventLog;
+  /** Called before every command's action with its path and the option names given. */
+  onCommandStart?: (cmd: string, opts: string[]) => void;
+}
+
+/** What every command gets from the program. */
+export interface CliContext {
+  log: EventLog;
+}
+
+/** `account add` style path of a command, without the root program name. */
+export function commandPath(command: Command): string {
+  const names: string[] = [];
+  for (let c: Command | null = command; c?.parent; c = c.parent) names.unshift(c.name());
+  return names.join(' ');
+}
+
+/** Names (never values) of the options given on the command line. */
+export function givenOptionNames(command: Command): string[] {
+  const names = new Set<string>();
+  for (const option of command.options) {
+    if (command.getOptionValueSource(option.attributeName()) !== 'cli') continue;
+    // --x and --no-x share one attribute: log the positive name once.
+    const flag = option.long ?? option.short ?? '';
+    names.add(flag.replace(/^--?(no-)?/, ''));
+  }
+  return [...names];
 }
 
 export function buildProgram(options: BuildOptions = {}): Command {
@@ -20,10 +51,23 @@ export function buildProgram(options: BuildOptions = {}): Command {
   program
     .name('mm')
     .description('Mail Manager — manage IMAP mailboxes: insight, filters, safe delete, backup')
-    .version(pkg.version);
-  registerAuth(program);
+    .version(VERSION);
+  const { onCommandStart } = options;
+  // Runs only when a command's action is about to run: --help, --version and parse errors
+  // never reach it, so they leave no log lines.
+  if (onCommandStart) {
+    program.hook('preAction', (_root, actionCommand) => {
+      try {
+        onCommandStart(commandPath(actionCommand), givenOptionNames(actionCommand));
+      } catch {
+        // Logging never stops a command from running.
+      }
+    });
+  }
+  const ctx: CliContext = { log: options.log ?? new NullEventLog() };
+  registerAuth(program, ctx);
   registerKeygen(program);
-  registerDoctor(program);
-  registerDiscover(program);
+  registerDoctor(program, ctx);
+  registerDiscover(program, ctx);
   return program;
 }

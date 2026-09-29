@@ -26,6 +26,6 @@ export function createSupabaseServices(
   };
 }
 
-export { FileSessionStorage, MemorySessionStorage, sessionDir } from './session-storage.js';
+export { FileSessionStorage, MemorySessionStorage } from './session-storage.js';
 export type { SessionStorage } from './session-storage.js';
 export { DEFAULT_TIMEOUT_MS, type ClientOptions } from './client.js';

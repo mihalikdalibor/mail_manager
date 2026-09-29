@@ -705,3 +705,287 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - `TODO.md` ticks and the "Current milestone" lines are left to `/review-changes` / `/release`.
 
 ---
+
+## C-015 — M1b-4a log core + run logging: typed events, FileEventLog, command start/finish, error.unexpected, doctor logs check
+
+- **Status:** reviewed (2026-09-28)
+- **Review:** All acceptance criteria met; deviations justified. Reviewer re-ran all checks (1614 tests) and the 12 targeted test files (354). CLI regression diff of 12 invocations vs a8e9dba: byte-identical except doctor's new `logs` line. Real CLI and edge cases held up: 700/600 modes, no lines for help/parse errors, option-value canary absent, `/proc` exit in 0.47 s, symlinked `logs`, 755/644 repaired. Real-process probes (uncaught, rejection, `process.exit(3)`, forged stacks, double `kill -INT`) held up. Mutation probes: `passesLevel` caught; `fileSize` equivalent. Non-blocking follow-ups: [LOW] `src/core/log/health.ts:30-36` doctor says OK "no logs yet" at `MM_LOG_LEVEL=warn|error` even when the folder can't be created (reproduced with `MM_CONFIG_DIR`=a file) → check that the nearest existing parent is a writable dir; [LOW] pruning runs only in `prepare()` after a line passes the threshold (`file-event-log.ts:107,115,140`), so at `warn`/`error` with only successful runs old app files outlive the 30-day retention → prune independent of the threshold; [LOW] `reportError` decides by `isUserFacing` while `discover` passes its own text (`discover.ts:149-151`, `report-error.ts:17`), so a user-facing non-Discovery error would print "Unexpected error" without `error.unexpected` (unreachable today); [LOW] `TODO.md` M1b-4a line still says `appendFileSync` (code uses `openSync(O_APPEND|O_NOFOLLOW)` + `writeSync`, documented in LOGGING.md).
+- **Date:** 2026-09-28
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-28-m1b4a-log-core-run-logging.md`, TODO.md → "M1b-4 — Logging foundation" → "M1b-4a — Log core + run logging"
+- **Base:** a8e9dba69fc267e1cbe03b1d8375be8d83a1a2de. Files already dirty before the run: `TODO.md` (M1b-4 split into 4a–4d from `/next`, confirmed by the user).
+- **Files:**
+  - Created: `src/core/paths.ts`, `src/core/log/{events,record,builders,event-log,file-event-log,schema,health,index}.ts`, `src/cli/run.ts`, `src/cli/report-error.ts`, `tests/support/log/append-worker.ts`, `tests/unit/{paths,log-record,log-builders,log-file,log-schema,log-health,log-catalog,cli-run-logging,cli-bin-smoke}.test.ts`.
+  - Modified: `src/cli/bin.ts`, `src/cli/index.ts`, `src/cli/error-text.ts`, `src/cli/commands/{auth,discover,doctor}.ts`, `src/core/config.ts`, `src/core/doctor.ts`, `src/core/db/supabase/{index,session-storage}.ts` (`sessionDir` removed → `configDir`), `tests/unit/{cli-auth,cli-discover,cli-doctor,config,session-storage}.test.ts`, `docs/LOGGING.md`, `docs/milestones/M1-auth-accounts.md`, `docs/SECURITY.md`, `docs/TESTING.md`, `README.md`, `.env.example`.
+- **Requirements (plan acceptance criteria, verbatim):**
+
+  **Paths**
+
+  - [ ] `src/core/paths.ts` exports `configDir(env)` (`MM_CONFIG_DIR` → `$XDG_CONFIG_HOME/mail-manager` → `~/.config/mail-manager`, same trimming as today's `sessionDir`) and `logDir(env) = join(configDir(env), 'logs')`. `sessionDir` is removed from `session-storage.ts` and `db/supabase/index.ts`; `src/cli/commands/auth.ts` and `doctor.ts` use `configDir`. Behavior of the session file location is unchanged (existing session-storage tests moved to `paths.test.ts`, still green).
+
+  **Log core (`src/core/log/`)**
+
+  - [ ] Typed event union `LogEvent` with exactly the 4a events: `command.start` (`cmd`, `opts`, `ver`, `node`, `os`), `command.finish` (`cmd`, `outcome` = `ok|failed|interrupted`, `exit`, `ms`), `error.unexpected` (`errClass`, `code?`, `stack`), `log.truncated` (no fields). Each event has a fixed kind (`app` for all four) and a level (`command.finish`: `info` for `ok`, `warn` otherwise; `error.unexpected`: `error`; others `info`). The union and a `KIND`/level map make adding `security` events in 4b a type change only.
+  - [ ] Record = envelope + fields with **fixed key order**: `ts`, `event`, the event's fields in catalog order, then `level`, `run`, `v` (`v: 1`). `ts` = UTC ISO-8601 with ms from an injectable clock. Serialized with `JSON.stringify` (newlines escaped). Security-kind lines (none yet) are prefixed `mm-security `; app lines are plain JSON.
+  - [ ] `RunContext` = `{ run: 16 lowercase hex (randomBytes(8)), ver, now: () => number, level: LogLevel }`.
+  - [ ] `EventLog` interface `emit(event: LogEvent): void`. `MemoryEventLog` keeps records + lines (tests). `NullEventLog` (default for `buildProgram` so existing tests never write files). `FileEventLog`:
+    - dir created `0o700` (recursive, then `chmodSync 0o700`), files created `0o600` and `chmodSync 0o600` once per file per process; POSIX modes only (Windows: skipped);
+    - one file per UTC day and kind: `app-YYYY-MM-DD.log`, `security-YYYY-MM-DD.log`, date from the event's `ts`;
+    - writes with `appendFileSync` (one `write` per line, `\n`-terminated);
+    - level threshold from `RunContext.level` applies to **app** lines only; security lines are always written (decision 2026-09-28);
+    - 4 KB line cap: a line longer than 4,096 bytes (UTF-8, measured after `JSON.stringify`) is not written (builders cap their fields in bytes so this never happens in practice; a test proves the builders' worst case — incl. control characters, which `JSON.stringify` expands 6× — stays under it);
+    - 5 MB cap per file: at ≥ 4 MB (80 %) `debug` lines are dropped; at ≥ 5 MB nothing is written except **one** `log.truncated` marker per file (detected by reading the file's last 4 KB for `"event":"log.truncated"`, so it holds across processes). The marker bypasses the level threshold and carries the prefix of the file it goes into (`mm-security ` in a security file);
+    - the constructor touches **no** filesystem (lazy): the dir is created and pruning runs on the first write, so `--help` never creates a folder;
+    - `chmodSync` only after `lstatSync` shows a real directory / regular file (symlinks are never followed; a symlinked log file is skipped and counted as a failure);
+    - startup pruning once per process on the first write: files matching `^(app|security)-(\d{4}-\d{2}-\d{2})\.log$` are deleted when `todayUTC − nameDate > 30 days` (app) / `> 90 days` (security), in whole days (a file exactly 30 days old stays); future dates and other files are never touched;
+    - **never throws** — every fs error is swallowed (a `failures` counter is exposed for tests);
+    - `emit(event)` resolves kind + level and calls the public `appendRecord(kind, record)`; tests use `appendRecord` directly for the `security` kind and `debug` lines, which no 4a event produces.
+  - [ ] `parseLogLine(line)` (zod) reads a line back: strips an optional `mm-security ` prefix, `JSON.parse` in try/catch, validates the envelope (`ts` ISO, `event` `^[a-z]+(-[a-z]+)*(\.[a-z]+(-[a-z]+)*)+$`, `level` enum, `run` 16 hex, `v` positive int); returns `null` for malformed input, never throws. Used by 4c and by the tests now.
+  - [ ] Builders: `commandStart(cmd, optionNames, runtime)`, `commandFinish(cmd, exitCode, ms)` (outcome: `0 → ok`, `130 → interrupted`, else `failed`), `unexpectedError(err, root)`:
+    - `errClass` = `err.name` if it matches `^[A-Za-z][A-Za-z0-9_]{0,40}$`, else `'Error'` for Errors, `'NonError'` for thrown non-Errors;
+    - `code` only when `err.code` is a string matching `^[A-Z0-9_]{1,40}$` (e.g. `ENOENT`), else omitted;
+    - `stack`: the header is cut by **exact prefix** — only when `err.stack` (a string) starts with `` `${err.name}: ${err.message}` `` (or `err.name` alone for an empty message) is that prefix dropped; otherwise (message changed after construction, non-string stack, a throwing getter) `stack: []`. Reason: a message can itself contain lines that look like `    at …` frames. Each remaining line must match one strict frame regex (`^\s+at (?:(.+?) \()?(.+?)\)?$`); non-matching lines are dropped. The function name becomes `<fn>` unless it matches `^[A-Za-z0-9_$.<>\[\] ]{1,80}$`; eval frames (`eval at …`, which nest a second location) are reduced to `eval`; the location is rewritten: `file://` URLs → path; paths inside the package root (checked with `root + sep`) → relative (`src/cli/bin.ts:12:5`); `node:` locations kept; anything else → `<external>`. Every frame is printable ASCII only (other chars → `?`) and ≤ 200 **bytes**; at most 10 frames. **No** `err.message`, no `String(err)`, no absolute or home path ever.
+    - Line budget in **bytes**: if a finished `error.unexpected` line would exceed 4,096 bytes, frames are dropped from the end until it fits — the event itself is never dropped.
+    - `cmd` ≤ 100 chars, `opts` ≤ 30 names, each ≤ 40 chars, `[a-z0-9-]` only.
+  - [ ] `MM_LOG_LEVEL` in `src/core/config.ts`: `validateLogLevel(env): Validation<LogLevel>` (`debug|info|warn|error`, case-insensitive trimmed; unset → `info`) and `logLevel(env): LogLevel` (invalid → `info`), validated with a zod enum. No `off`. At `warn`/`error`, `command.start` and `ok` finishes are filtered out by design — the "every command logs start + finish" criterion applies at the default `info`.
+
+  **CLI run logging**
+
+  - [ ] `src/cli/run.ts` exports (signatures pinned for the test writer):
+    ```ts
+    interface ProcLike {
+      on(event: 'exit', fn: (code: number) => void): void;
+      on(event: 'SIGINT', fn: () => void): void;
+      on(event: 'uncaughtException' | 'unhandledRejection', fn: (err: unknown) => void): void;
+      exit(code?: number): never;
+      exitCode: number | string | null | undefined;
+    }
+    interface RunCliDeps {
+      argv: string[];
+      build: (o: BuildOptions) => Command; // buildProgram
+      log: EventLog;
+      ctx: RunContext;
+      proc: ProcLike;
+      flush: () => Promise<void>; // stdout + stderr
+      root?: string; // package root for stack frames (default projectRoot())
+    }
+    function runCli(deps: RunCliDeps): Promise<void>;
+    class RunLogger {
+      constructor(log: EventLog, ctx: RunContext);
+      start(cmd: string, opts: string[]): void;
+      finish(exitCode: unknown): void;
+    }
+    function createRunLog(o: {
+      env: EnvSource;
+      loadEnv: () => void;
+      now: () => number;
+      ver: string;
+      makeLog?: (dir: string, ctx: RunContext) => EventLog;
+    }): { log: EventLog; ctx: RunContext };
+    ```
+    `RunLogger.finish` is idempotent (only after a start; only once) and normalizes the exit code (number → itself; numeric string → number; anything else → 0). `createRunLog` runs `loadEnv()` first (errors ignored), then reads `logLevel(env)` and `logDir(env)` and builds the `FileEventLog` (construction errors → `NullEventLog`) — so a `MM_CONFIG_DIR` set only in `.env.local` is honored. `src/cli/bin.ts` = `createRunLog({ env: process.env, loadEnv: loadEnvFiles, now: Date.now, ver })` → `runCli({ …, proc: process })`.
+  - [ ] `runCli` maps a top-level `ExitPromptError` to exit 130 (no `error.unexpected`), and installs `uncaughtException`/`unhandledRejection` handlers that print `Unexpected error`, emit `error.unexpected`, and exit 1 (today Node prints a raw stack there — CLAUDE.md forbids stack traces).
+  - [ ] **Logging never breaks a command:** one `safeEmit(log, build: () => LogEvent)` helper (`src/core/log/event-log.ts`) wraps building **and** emitting in try/catch; every shell caller uses it — `RunLogger.start` (inside `preAction`: a throw there would stop the command), `finish`, `reportError`, and the `exit`/`SIGINT`/`uncaughtException`/`unhandledRejection` handlers. Builders tolerate throwing getters (`name`, `stack`, `code`), non-string stacks and an invalid clock (`ts` falls back to `new Date().toISOString()`).
+  - [ ] `buildProgram({ exitOverride?, log?, onCommandStart? })`: a root `preAction` hook (`program.hook('preAction', (_root, actionCommand) => …)`) calls `onCommandStart` with the command path (names from the action command up to, excluding, the root, space-joined) and the **names** of options whose `getOptionValueSource(opt.attributeName())` is `'cli'` (`opt.long` without `--`; short-only options → the short flag without `-`; `--x`/`--no-x` pairs deduplicated). Option values never reach the logger. Root/global options are not collected (none exist).
+  - [ ] `command.finish` is written: after `parseAsync` resolves or rejects (`exit` = `process.exitCode ?? 0`, or 1 after a top-level error); from a `process.on('exit')` handler when a command calls `process.exit` directly; from a `process.on('SIGINT')` handler (`try { finish(130) } finally { proc.exit(130) }`, once) with `interrupted`. Inquirer Ctrl+C (`ExitPromptError` → exit code 130 in `auth`/`discover`) → `interrupted`.
+  - [ ] `--help`, `--version`, unknown commands/options and missing arguments write **no** lines (commander exits before `preAction`; `finish` is a no-op without a start).
+  - [ ] `src/cli/report-error.ts` `reportError(err, log, text = errorText)`: prints `text(err)` to stderr and, when the error is **not** one of the user-facing classes (`isUserFacing(err)` exported from `error-text.ts`, which also covers `ImapSessionError`/`LoginBlockedError`), emits `error.unexpected`. Used by `runCli` (top-level catch), `auth.ts` `handleError`, and `discover.ts`'s catch, which passes its own text function so its output stays byte-identical (`DiscoveryInputError` → its message, else `Unexpected error`). `ExitPromptError` stays exit 130 with no `error.unexpected`.
+  - [ ] The register functions receive a `CliContext { log: EventLog }` from `buildProgram` (default `NullEventLog`); no module-level singletons.
+
+  **Doctor**
+
+  - [ ] `runDoctor` gains an optional `logs?: () => CheckResult` dep; core `checkLogs(dir, env, deps?)` in `src/core/log/health.ts`:
+    - folder missing, not a directory, not writable (`accessSync W_OK`), or today's app file not writable (e.g. root-owned after `sudo mm`) → `warn` "logs are not being written — the log folder can't be created or written" (doctor's own `command.start` would have created the folder, so missing = broken; logging is optional, the app works);
+    - POSIX: dir mode ≠ 700 or any log file mode ≠ 600 → `warn` naming the mode, never the path;
+    - `MM_LOG_LEVEL` invalid → `warn` "MM_LOG_LEVEL must be debug, info, warn or error (using info)";
+    - otherwise `ok` with `N files, X KB, oldest YYYY-MM-DD`. The detail never contains the folder path (home directory).
+    - The CLI doctor wires `logs: () => checkLogs(logDir(process.env), process.env)`. Without the dep no `logs` result is added, so the existing `tests/unit/doctor.test.ts` name-list (line ~130) and `toHaveLength(7)` (line ~239) assertions stay valid; new tests cover 8 results with the dep.
+
+  **Docs**
+
+  - [ ] `docs/LOGGING.md`: status line (4a built), `log.truncated` row in the Foundation table, "Emitted from" column split into `M1b-4a` / `M1b-4b` / `M1b-4d` / `M1c`, UTC day files, `interrupted` definition (exit 130 or SIGINT), no-output runs (`--help`/`--version`/parse errors), the resolved open question (no `off`), 80 % debug drop rule.
+  - [ ] `docs/milestones/M1-auth-accounts.md` M1b-4 section: the 2026-09-28 split (4a–4d) + a "M1b-4a (implemented)" design + verification + **Logging** section; `.env.example` `MM_LOG_LEVEL` (commented, optional); `README.md` env table: new `MM_LOG_LEVEL` row, `MM_CONFIG_DIR` row says "login session and logs"; `docs/TESTING.md` a line on the log tests if it lists test areas; `docs/SECURITY.md` (the config dir now also holds `logs/`, 700/600). `CLAUDE.md` "Current state" and the `TODO.md` 4a ticks are left to `/review-changes` / `/release` as usual.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check` green.
+
+- **Summary:** Local logging foundation. `src/core/log/` holds the typed event catalog (`command.start`, `command.finish`, `error.unexpected`, `log.truncated`), fixed-key-order JSON Lines records, capped/allowlisted builders (stack frames without message, names only for in-package frames), `MemoryEventLog`/`NullEventLog`/`safeEmit`, a hardened `FileEventLog` (UTC day files, 700/600, caps, pruning, no symlinks/hard links, never throws), `parseLogLine` and the doctor `logs` check. `src/cli/run.ts` wraps every `mm` run: env loaded first, `preAction` → `command.start` (option names only), `command.finish` on normal end / `process.exit` / SIGINT / crash; `reportError` adds `error.unexpected` for non-user-facing errors. CLI output and exit codes unchanged.
+- **Grade / mode:** M — solo + test writer (L-level file count and security surface, no disjoint slices). The test writer wrote 9 new test files + extensions from the spec and pinned signatures only (302 tests in round 1, 45 more after the reviews); 2 test failures were real implementation issues (empty-message stack header under Vitest's `prepareStackTrace`; `parseLogLine` length rule) and were fixed in the code.
+- **Verification:**
+  - Baseline: 34 files / 1302 unit tests, typecheck/lint/build/format green. Now: 43 files / 1614 tests; typecheck, lint, build, format:check green, no warnings.
+  - Real CLI (tsx and built `dist/cli/bin.js`, temp `MM_CONFIG_DIR`): `keygen` → `logs` 700, `app-<UTC date>.log` 600, start + finish with one run id; `--help`, `--version`, `nosuchcmd` → no folder; `MM_CONFIG_DIR` = a regular file → key printed, exit 0; `MM_CONFIG_DIR=/proc/self/nope` → exits in 0.5 s (was an infinite loop before the audit fix); `discover not-an-email` → `failed`/1, no `error.unexpected`; `login --email <canary>` (no TTY) → `opts: ["email"]`, canary absent; `doctor` → `logs` OK, `MM_LOG_LEVEL=verbose` → WARN.
+  - Real process (`runCli` with the real `process`, scratch script): `kill -INT` → exit 130, one `interrupted` finish; uncaught exception and unhandled rejection → "Unexpected error" only, `error.unexpected` without message, `failed`/1.
+  - Scratch probes after the hardening: hard-linked day file refused (outside file unchanged), `ts: '../../../x'` refused, untrusted frame names → `<fn>`, `..` paths → `<external>`.
+  - Mutation checks (each reverted): no exact-prefix header cut (2 tests fail), option values instead of names (2), no file chmod (1), pruning off-by-one (1), unfiltered function names (8), auth/discover logging into a no-op log (3 / 1), doctor `logs` dep dropped (1), no hard-link check (1). One equivalent mutant: removing the SIGINT handler's explicit `finish` changes nothing (the `exit` handler writes the same line).
+  - Leak grep: the only `err.message` read in the new code is `builders.ts` header matching (never written).
+  - Independent review: regression diff of 15 CLI invocations vs a8e9dba byte-identical (except the new doctor `logs` line). Findings resolved: (M) doctor false warning at `warn`/`error` → "no logs yet" OK; (M) no command-level wiring tests → added for auth/discover/doctor/`onCommandStart`; (L) shortened-message and appended-cause stack text → frames stop at the first non-frame line + V8-shape names; (L) doctor vs file log on non-regular/400 day files → both handled; (L) `preAction` outside try → wrapped; (L) docs `appendFileSync` wording; (L) weak smoke assertion, missing symlink-dir and security-marker tests → added. Kept as deviations: keygen/doctor without `CliContext`, upper-case option names.
+  - Security audit (`security-auditor`, offline): verdict safe; 17 black-box CLI leak cases, PTY Ctrl+C, hostile errors/Proxies, hostile log lines, symlink/FIFO/ENOSPC/umask cases held up. Findings resolved: (L1) `/proc` recursive-mkdir hang → one-level-at-a-time creation; (L2) untrusted frame names + `..` traversal → names only for trusted locations, `resolve` + `relative` check; (L3) `appendRecord` date → validated; (L4) hard links / dir swap / foreign owner → `fstat` `nlink`/`uid`, dir re-checked per write. (L5) 5 MB cap on security logs → recorded as an open question for M1b-4b in `docs/LOGGING.md`.
+  - Not verified: Windows (modes skipped by design); Ctrl+C at an inquirer prompt was not run by me (no TTY here) — the security auditor exercised it on a real PTY (exit 130, `interrupted`); a user can re-check with `MM_CONFIG_DIR=$D mm login` + Ctrl+C in an external terminal. No live IMAP/Supabase run (none needed: no login path changed).
+- **Deviations:**
+  - `registerKeygen`/`registerDoctor` take no `CliContext` (no events until 4b; an unused parameter fails lint).
+  - Option names allow upper case (commander short flags); `--no-x` logged as `x`.
+  - Extra stack-header forms accepted (empty message `Name: `, `Error:`/constructor name, Node `Name [CODE]: message`) — safe since the message must match exactly.
+  - Hardening beyond the plan from the reviews (see Verification); `runCli` maps `CommanderError` (only with `exitOverride`) to its exit code.
+  - Doctor: missing folder at `warn`/`error` is OK; non-regular day file → warn.
+  - `parseLogLine` caps the JSON part at 4,096 bytes.
+  - Manual checks used `node` instead of `jq` (not installed).
+  - `TODO.md` ticks and the "Current milestone" lines are left to `/review-changes` / `/release`.
+
+---
+
+## C-016 — M1b-4b domain + security events: doctor/discover/auth events, guard events via EventLog, 150 MB security cap
+
+- **Status:** reviewed (2026-09-29)
+- **Review:** All acceptance criteria met (docs partially — LOW drift below); deviations justified. Reviewer re-ran all checks (2097 tests) and the 13 targeted test files (619). CLI before/after (pre-4b snapshot vs current, offline, no env): 11 commands byte-identical. Real log lines checked for `logout` (security file 600, `auth.logout`), `discover not-an-email` (`invalid` only, no input), and `doctor` (8 `doctor.check`, name+status). Doctor quiet-level edge cases held up (file/read-only/dangling-symlink ancestor → WARN; fresh deep/symlinked path → OK `no logs yet`), as did prune at `error`. A real guard flow (IPv4/IPv6/local, all kinds): fail2ban port matches only IP-level blocks, 0 leaks in 372 lines. Guard policy identical to the snapshot over 200 mixed attempts; 4 mutants killed. Non-blocking follow-ups: [LOW] `docs/LOGGING.md:78` example uses `"source":"mx"` (real value `preset-mx`); [LOW] `docs/LOGGING.md:94` `log.truncated` row still says "5 MB cap" (security 150 MB) — plus stale 4a design lines in `docs/milestones/M1-auth-accounts.md` ~120/139/142; [LOW] `docs/TESTING.md:31` omits `log-enum-allowlist.test.ts`; [info] a local failure after Supabase accepted the password logs `auth.login-failed` `unexpected` (per plan, could be misread as a credential attempt).
+- **Date:** 2026-09-29
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-29-m1b4b-domain-security-events.md`, TODO.md → "M1b-4 — Logging foundation" → "M1b-4b — Domain + security events (needs 4a)"
+- **Base:** a8e9dba69fc267e1cbe03b1d8375be8d83a1a2de (HEAD without 4a). Files already dirty before the run: all of M1b-4a (C-015, reviewed, uncommitted) — `src/core/log/**`, `src/core/paths.ts`, `src/cli/{run,report-error,bin,index,error-text}.ts`, `src/cli/commands/{auth,discover,doctor}.ts`, `src/core/{config,doctor}.ts`, `src/core/db/supabase/{index,session-storage}.ts`, the 4a tests, docs; plus `TODO.md` and `.claude/changes.md` (review/`/next` edits). A pre-4b snapshot of `src/` was kept in the session scratchpad for the before/after diff.
+- **Files (this run):**
+  - Created: `src/core/log/domain-events.ts`, `src/core/log/guard-events.ts`; tests `tests/unit/{log-domain-events,log-guard-events,log-events-canary,log-enum-allowlist,auth-target,guard-events-flow,cli-events,log-caps-followups}.test.ts`.
+  - Modified: `src/core/log/{events,builders,file-event-log,health,index}.ts`, `src/core/security/{events,login-guard}.ts` (sink types + `formatEventLine` removed; `authTargetKey`/`authEmailTarget`; `identify`, challenge `attempts`, `log?`), `src/core/imap/guarded-session.ts`, `src/cli/commands/{auth,discover,doctor}.ts`, `src/cli/index.ts`, `tests/support/test-ground/live-env.ts`; tests `tests/unit/{log-record,log-catalog,log-file,login-guard,guarded-session,security-events}.test.ts`; docs `docs/LOGGING.md`, `docs/SECURITY.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`.
+- **Requirements (plan acceptance criteria, verbatim):**
+
+  **Event catalog in code**
+
+  - [ ] `src/core/log/events.ts`: `LogEvent` gains exactly these 9 events. Fields are listed in `EVENT_FIELDS` order; `?` means optional.
+    - `doctor.check` (`check`, `status`)
+    - `discover.finish` (`outcome`, `source?`, `provider?`, `domainProblem?`, `choice?`)
+    - `auth.login` (`user?`)
+    - `auth.login-failed` (`reason`, `target`)
+    - `auth.logout` (`outcome`)
+    - `imap.login` (`acct?`, `provider`, `ip`, `target`)
+    - `imap.login-failed` (`acct?`, `provider`, `reason`, `counted`, `ip`, `target`)
+    - `login-guard.challenge` (`ip`, `attempts`, `target`)
+    - `login-guard.block` (`kind`, `reason`, `ip`, `addr`, `attempts`, `until`, `target`)
+  - [ ] `EVENT_KIND`: `doctor.check` and `discover.finish` are `app`; the other seven are `security`.
+  - [ ] `eventLevel`:
+    - `doctor.check`: `ok` → info, `warn`/`fail` → warn.
+    - `discover.finish`, `auth.login`, `auth.logout` and `imap.login`: info.
+    - `auth.login-failed`, `imap.login-failed` and `login-guard.challenge`: warn.
+    - `login-guard.block`: warn, except `permanent` → error.
+  - [ ] Field types:
+    - `status`: `CheckStatus`.
+    - `discover.finish.outcome`: `'found'|'needs-host'|'blocked'|'manual'|'invalid'`.
+    - `source`: `DiscoverySource`. `domainProblem`: `DomainProblem`.
+    - `choice`: `'picked'|'host-entered'|'manual'|'cancelled'`.
+    - `auth.login-failed.reason`: `'invalid-credentials'|'unreachable'|'unknown'|'unexpected'`.
+    - `imap.login-failed.reason`: `ImapFailureReason | 'blocked'`.
+    - `kind`: `BlockKind`. `addr` and `until`: `string | null`. `counted`: `boolean`.
+    - Type-only imports are used.
+  - [ ] A rendered `login-guard.block` line (`renderEvent`):
+    - has the keys `ts, event, kind, reason, ip, addr, attempts, until, target, level, run, v` and the `mm-security ` prefix;
+    - matches the unchanged `FAIL2BAN_FAILREGEX` for `ip-blocked` and `permanent` when an address is present;
+    - does not match `too-many-attempts`, and does not match when `addr` is null.
+  - [ ] `tests/unit/log-record.test.ts`: the old assertions "exactly the four foundation events" and "all foundation events are app events" (around lines 62–66 and 75–77) are replaced by assertions over the full set.
+  - [ ] `tests/unit/log-catalog.test.ts`: every catalog row whose "Emitted from" is `M1b-4a` **or** `M1b-4b` exists in `LOG_EVENT_NAMES`.
+
+  **Builders (core)**
+
+  - [ ] Shared helpers go in `src/core/log/builders.ts` so the event modules never clash under the `export *` barrel:
+    - `cleanProvider(id)`: matches `^[a-z0-9-]{1,40}$`, otherwise `undefined`.
+    - `uuidOrUndefined(value)`: a real 8-4-4-4-12 hex UUID, lowercased, otherwise `undefined`.
+  - [ ] `src/core/log/domain-events.ts` (new): `doctorCheck`, `discoverFinish`, `authLogin`, `authLoginFailed`, `authLogout`, and `authFailureReason(err)`.
+    - `check` must match `^[a-z0-9-]{1,40}$`, otherwise it becomes `other`.
+    - `provider` goes through `cleanProvider`; if that returns `undefined` the field is omitted.
+    - `user` goes through `uuidOrUndefined`; if that returns `undefined` the field is omitted.
+    - `authFailureReason`: `AuthError` code `invalid_credentials` → `invalid-credentials`, `unreachable` → `unreachable`, `unknown` → `unknown`; anything else → `unexpected`.
+  - [ ] `src/core/log/guard-events.ts` (new): `imapLogin`, `imapLoginFailed`, `guardChallenge`, `guardBlock`.
+    - `provider` goes through `cleanProvider`; if it returns `undefined` the value is `custom`.
+    - `acct` goes through `uuidOrUndefined`; if that returns `undefined` the field is omitted.
+  - [ ] `src/core/security/events.ts`:
+    - New `authTargetKey(masterKey)`: HKDF-SHA256 with info `mm-auth-target-v1`, 32 bytes; random when there is no key.
+    - New `authEmailTarget(key, input)`: returns `'invalid'` unless `parseEmail(input)` accepts the input; otherwise `HMAC-SHA256(key, normalised address)` as 64 hex characters. The normalised address is trimmed, lowercased and IDN → ASCII, the same as `parseEmail`.
+  - [ ] Both new modules are exported from `src/core/log/index.ts`, and there are no name collisions.
+
+  **CLI (shell)**
+
+  - [ ] `src/cli/commands/auth.ts`, `login`:
+    - Emits `auth.login` (user id only) after `auth.login()` succeeds.
+    - Emits exactly one `auth.login-failed` when `auth.login()` throws.
+    - Target key: `authTargetKey(masterKey)`, where `masterKey` comes from `validateMasterKeyEnv(process.env)` if it is `ok`, otherwise `undefined`. The key is derived **inside** the `safeEmit` closure, so it can never change login output.
+    - No auth event when the command stops before the password is submitted: no TTY, empty e-mail, Ctrl+C at a prompt, or a `ConfigError` from `authService()`.
+  - [ ] `auth.ts`, `logout` and `whoami`: `logout` emits `auth.logout` with its result; `whoami` emits nothing.
+  - [ ] Output and exit codes of `login`, `logout` and `whoami` are byte-identical to before.
+  - [ ] `src/cli/commands/doctor.ts`:
+    - `registerDoctor(program, ctx)`.
+    - After `runDoctor` it emits one `doctor.check` per result, in order, the `logs` check included.
+    - `src/cli/index.ts` passes `ctx`.
+  - [ ] `src/cli/commands/discover.ts`: exactly one `discover.finish` per completed run.
+    - `outcome` = `result.status`.
+    - `source` for found, needs-host and blocked.
+    - `provider` = the preset id: `'provider' in result ? result.provider?.id : undefined`, or the picked `chosen.provider?.id`.
+    - `domainProblem` when set.
+    - `choice` when the picker ran; `cancelled` when it returned null. The internal return type of `report()`/`choose()` carries `code`, `choice?` and `provider?`.
+    - A `DiscoveryInputError` → `outcome: 'invalid'` only.
+    - No `discover.finish` on Ctrl+C (ExitPromptError) or on unexpected errors.
+    - Never the address, domain, host or username. Output and exit codes unchanged.
+
+  **Log file + doctor (4a follow-ups, cap)**
+
+  - [ ] `src/core/log/file-event-log.ts`:
+    - The option `maxSecurityFileBytes` defaults to 150 MiB. The cap, the 80 % debug drop and the marker are applied per kind, with that kind's cap.
+    - Pruning runs once on the first `emit`/`appendRecord`, even if the level filters the line out, but only when the folder already exists as a real directory (`lstat`). The folder is never created just to prune.
+  - [ ] `src/core/log/health.ts`, when the log folder is missing at `MM_LOG_LEVEL=warn|error`:
+    - Walk up at most 64 levels to the nearest existing ancestor. Use `stat` for ancestors, which follows symlinks such as macOS `/tmp` or a symlinked home; the log folder itself keeps `lstat`.
+    - If that ancestor is a directory with `W_OK|X_OK` → OK "no logs yet". Security lines at info are always written, so the text no longer claims "writes only warnings and errors".
+    - Otherwise → warn "logs are not being written …".
+  - [ ] `health.ts`, writability: check both `app-<today>.log` and `security-<today>.log`. A non-regular or unwritable file → warn.
+
+  **Guard + guardedOpenSession**
+
+  - [ ] `src/core/security/login-guard.ts`, construction and block events:
+    - The constructor takes `log?: EventLog` instead of `sink?`.
+    - Block events go out as `safeEmit(log, () => guardBlock(...))`, with no `ts`: the log's clock stamps it.
+    - Fields, emission points and all three kinds are unchanged, and so are policy and counters.
+  - [ ] `login-guard.ts`, challenge decision: `GuardDecision`'s challenge variant is `{ kind: 'challenge-required'; attempts: number }`.
+    - `attempts` = the pair's failures in the window.
+    - If mailbox-wide failures triggered the challenge, it is the mailbox count.
+    - With only a lockout history, it is the pair count (may be 0).
+  - [ ] `login-guard.ts`, `identify`: new public `identify(a): { ip; target }`, with the same normalisation and HMAC as the store keys.
+  - [ ] `src/core/security/events.ts`: `SecurityEvent`, `SecurityEventSink`, `MemoryEventSink`, `LineEventSink` and `formatEventLine` are removed. `grep -rn "SecurityEventSink\|MemoryEventSink\|LineEventSink\|formatEventLine" src tests` is empty.
+  - [ ] `src/core/imap/guarded-session.ts`, options:
+    - Adds `log?: EventLog` (default `NullEventLog`), `provider: string` and `acct?: string`.
+    - `log`, `provider` and `acct` are destructured **before** the `...sessionOptions` spread, so they never reach `open()`.
+  - [ ] `guarded-session.ts`, emission on each path:
+    - `challenge-required` → `login-guard.challenge`, then `onChallenge`.
+    - `blocked` at check → `imap.login-failed` (`reason: 'blocked'`, `counted: false`), then `LoginBlockedError`. No `open`, no new block event.
+    - `ImapSessionError` from `open` → `imap.login-failed` (`reason = err.reason`, `counted = COUNTED_REASONS.has(reason)`) **before** `recordFailure`.
+    - Any other error from `open` → `imap.login-failed` (`reason: 'unexpected'`, `counted: false`).
+    - Success → `imap.login` after `recordSuccess`.
+    - `recordSuccess` throws → logout as today, no `imap.login`.
+    - `guard.check`, `onChallenge` or `recordFailure` throws → no event beyond what was already emitted. The error propagates unchanged; this is documented and tested.
+    - All emission goes through `safeEmit`. Behaviour is otherwise unchanged: one `open`, the same errors, the same guard calls.
+  - [ ] `tests/support/test-ground/live-env.ts`: passes the constant `provider: 'custom'` and no log. The seed/unseed scripts are unchanged.
+
+  **Docs + checks**
+
+  - [ ] `docs/LOGGING.md`:
+    - The catalog rows for the 9 events are updated: real fields; `imap.*`/`login-guard.*` "Emitted from" `M1b-4b`, wired to a file in M1c.
+    - The stale "(existing `SecurityEvent`)" mentions are gone.
+    - The per-kind caps: 5 MB app, 150 MB security, with the per-user explanation.
+    - The resolved open question on the security cap.
+    - The pruning and doctor follow-ups.
+    - The `auth.login-failed` target rule: valid address → HMAC, otherwise `invalid`.
+  - [ ] `docs/SECURITY.md` (the section around lines 77–80): describes `EventLog` and the rendered line with the envelope, instead of the removed sinks. It adds that `security-*.log` exists locally, kept 90 days.
+  - [ ] `docs/milestones/M1-auth-accounts.md`: line ~66 no longer mentions the sinks; a new "M1b-4b (implemented)" section covers design, verification and Logging.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and `npm run format:check` pass.
+
+- **Summary:** The catalog gains 9 events. `mm doctor` writes one `doctor.check` per check, and `mm discover` one `discover.finish` (outcome/source/preset id/domain problem/choice, never address/domain/host). `mm login`/`logout` write `auth.*` security lines — the typed e-mail only as an HMAC with its own HKDF key and only when it is a valid address (else `invalid`). `LoginGuard` emits `login-guard.block` through `EventLog` (old sinks removed, fail2ban line format/regex unchanged), exposes `identify()` and challenge `attempts`; `guardedOpenSession` emits `imap.login`/`imap.login-failed`/`login-guard.challenge` without changing login behavior. Every builder allowlists every field at runtime. Security files get a 150 MB cap; pruning and the doctor quiet-level check were fixed (4a follow-ups).
+- **Grade / mode:** L (auth/security code) — solo + test writer (user downgraded from sliced: 4a uncommitted, no worktrees). The test writer wrote 8 new test files (293 + 159 tests) from spec + pinned interfaces; two of its first-round failures were real bugs, fixed in code (`authFailureReason` returned undefined for a forged code; guard builders passed ip/target/addr/until through unchecked).
+- **Verification:**
+  - Baseline: 43 files / 1614 tests, all checks green. Now: 51 files / 2097 tests; typecheck, lint, build, format:check green. `grep -rn "SecurityEventSink\|MemoryEventSink\|LineEventSink\|formatEventLine" src tests` → empty.
+  - CLI regression (pre-4b snapshot vs current, offline, no env, temp `MM_CONFIG_DIR`): `login` (no TTY), `login --email x@y.eu`, `logout`, `whoami`, `discover not-an-email`, `discover` (no arg), `--help`, `doctor`, unknown command → stdout/stderr/exit byte-identical (run twice, after the last fix too).
+  - Real CLI: `logout` → `security-<date>.log` 600 with `mm-security {"event":"auth.logout","outcome":"not-logged-in",…}`; `discover not-an-email` → `discover.finish` `invalid`; doctor at `MM_LOG_LEVEL=warn` with `MM_CONFIG_DIR`=a file → WARN, fresh deep path → OK `no logs yet`.
+  - Mutation checks (each reverted): typed e-mail hashed regardless (17 fail), no `imap.login-failed` (24), challenge after `onChallenge` (4), no prune when filtered (2), discover `choice` dropped (6), doctor skips ancestor walk (3), no `auth.login-failed` (7), `oneOf` passthrough (64), `creatable` ignores the log path (9), doctor without `safeEmit` (1), security default = app cap (1).
+  - Independent review: 0 CRITICAL/HIGH/MEDIUM; 72 mutants of its own, survivors fixed by new tests. Findings resolved: dangling-symlink doctor false OK (fixed with the audit's L2); CLI throwing-log tests, 150 MiB default and exact `no logs yet` text tests added; LOGGING.md doctor text; throw behavior documented; M1c same-log note; TESTING.md entries. Informational: password-shaped input with `@` and a dotted domain is still hashed (per the user's rule — only valid addresses).
+  - Security audit (`security-auditor`): safe to merge; leaks, guard integrity (6 sink variants → identical store state), fail2ban forging (0 matches), files/prune/symlinks, availability all held. Fixed: L1 runtime enum allowlists, L2 doctor vs writer on dangling symlinks/loops. L3 (block lines dropped at the cap / unbounded `blocked` lines once a server logs real IPs) → documented as an M6a requirement in LOGGING.md.
+  - **Out-of-scope finding for the user:** `secrets-scan` flags commit `0ed2604` (2026-09-22, public on origin) — a `.test.users.cred` value and the test-mailbox domain in `.claude/changes.md`/`TODO.md`/milestone doc; `accepted-history.txt` records no rotation.
+  - Not verified: live `mm login` (success path and real Supabase failure) — only via a pty against an unreachable URL (reviewer); `guardedOpenSession` with a file log in a real command (M1c); Windows; the real fail2ban binary (regex port only).
+- **Deviations:**
+  - Execution downgraded from sliced to solo + test writer (user decision; 4a not committed).
+  - Guard builders also allowlist `ip`/`target`/`addr`/`until`; runtime enum allowlists in every builder (audit L1).
+  - `authFailureReason` default branch; doctor `creatable()` judged like the writer (audit L2).
+  - Existing tests migrated: `CHALLENGE` uses `objectContaining`; lock test expects the challenge first; 4a security-marker test uses `maxSecurityFileBytes`.
+  - LOGGING.md gains the M6a requirement (audit L3); future-dated files are still not pruned (informational).
+  - `TODO.md` ticks and "Current milestone" lines are left to `/review-changes` / `/release`.
+
+---

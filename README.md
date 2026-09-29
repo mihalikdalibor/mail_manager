@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.0-blue?style=flat-square" alt="Version 0.5.0">
+  <img src="https://img.shields.io/badge/version-0.6.0-blue?style=flat-square" alt="Version 0.6.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.5.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist; mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.6.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist, plus local leak-free logging (every command leaves app log lines in `<config dir>/logs/`; logins and the login guard write security lines — see [docs/LOGGING.md](docs/LOGGING.md)); mailbox commands (`mm account …`) come next. See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -102,7 +102,8 @@ Config is read from `.env.local`, then `.env` (real environment variables win). 
 | `SUPABASE_PUBLISHABLE_KEY`      | yes      | Publishable key (formerly "anon"); safe because every table has RLS                                 |
 | `MM_MASTER_KEY`                 | yes      | 32 random bytes, base64 — from `mm keygen`; encrypts mailbox passwords                              |
 | `MM_MASTER_KEY_VERSION`         | no       | Key version, bump when rotating (default `1`)                                                       |
-| `MM_CONFIG_DIR`                 | no       | Where the login session is stored (default `~/.config/mail-manager`)                                |
+| `MM_CONFIG_DIR`                 | no       | Where the login session and local logs (`logs/`) are stored (default `~/.config/mail-manager`)      |
+| `MM_LOG_LEVEL`                  | no       | App log level: `debug`, `info` (default), `warn` or `error`; security lines are always written      |
 | `MM_TEST_SUPABASE_A_*` / `_B_*` | tests    | Two test users for the RLS integration suite                                                        |
 | `MM_TEST_IMAP_*`                | tests    | Throwaway IMAP mailbox for integration tests (`MM_TEST_IMAP_USER` alone enables the discovery test) |
 

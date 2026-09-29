@@ -155,3 +155,26 @@ export function getConfig(env: EnvSource = process.env): AppConfig {
     masterKeyVersion: masterKey.value.masterKeyVersion,
   };
 }
+
+export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+const logLevelSchema = z.enum(LOG_LEVELS);
+
+/** MM_LOG_LEVEL: debug | info | warn | error (case-insensitive); unset → info. No "off". */
+export function validateLogLevel(env: EnvSource): Validation<LogLevel> {
+  const raw = read(env, 'MM_LOG_LEVEL');
+  if (raw === undefined) return { ok: true, value: 'info' };
+  const parsed = logLevelSchema.safeParse(raw.toLowerCase());
+  if (parsed.success) return { ok: true, value: parsed.data };
+  return {
+    ok: false,
+    issues: [{ variable: 'MM_LOG_LEVEL', problem: 'must be debug, info, warn or error' }],
+  };
+}
+
+/** The log level to use: an invalid value falls back to info (logging never breaks a command). */
+export function logLevel(env: EnvSource): LogLevel {
+  const result = validateLogLevel(env);
+  return result.ok ? result.value : 'info';
+}
