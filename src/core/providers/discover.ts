@@ -1,7 +1,7 @@
 import { Resolver } from 'node:dns/promises';
 import { parseAutoconfigXml, type AutoconfigResult } from './autoconfig.js';
 import { normalizeHost, parseEmail, type ParsedEmail } from './email.js';
-import { findByDomain, findByMxHost, type Preset } from './presets.js';
+import { findByDomain, findByMxHost, PRESETS, type Preset } from './presets.js';
 import { settingsFromPreset, type ImapSettings } from './settings.js';
 
 export interface DiscoveryDeps {
@@ -63,6 +63,11 @@ export type DiscoveryResult =
       provider?: ProviderInfo;
       imap: ImapSettings;
       altHosts: string[];
+      /**
+       * Set only for a DNS SRV result whose host is neither under the email's domain nor a
+       * preset host: SRV records are unsigned, so someone on the network could have faked it.
+       */
+      offDomain?: true;
     })
   | (ResultBase & {
       status: 'needs-host';
@@ -245,6 +250,16 @@ function fromSettings(
   return { ...base, status: 'found', source, via, imap, altHosts: [] };
 }
 
+/** True when `host` is `domain` or a subdomain of it (label boundary: `evilexample.eu` is not). */
+function isUnderDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+/** A host that a built-in preset names (its IMAP host or an alternative one). */
+function isPresetHost(host: string): boolean {
+  return PRESETS.some((p) => p.imap?.host === host || p.altHosts.includes(host));
+}
+
 export const SOURCE_LABEL: Record<DiscoverySource, string> = {
   'preset-domain': 'built-in preset (email domain)',
   'preset-mx': 'built-in preset (MX record)',
@@ -370,7 +385,12 @@ async function trySrv(
     return null;
   }
   base.notices.push('The username is a guess (full email address); SRV records do not specify it.');
-  return fromSettings('srv', name, { host, port: 993, username: email.address }, base);
+  const result = fromSettings('srv', name, { host, port: 993, username: email.address }, base);
+  // `host` and `email.domain` are already lowercase ASCII without a trailing dot.
+  if (result.status === 'found' && !isUnderDomain(host, email.domain) && !isPresetHost(host)) {
+    result.offDomain = true;
+  }
+  return result;
 }
 
 /**

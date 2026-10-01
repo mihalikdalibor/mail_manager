@@ -681,6 +681,45 @@ describe('review follow-ups (M1b-4c)', () => {
   });
 });
 
+describe('interrupted: false (M1c-2)', () => {
+  it('collects no markers, so the cap counts records only', async () => {
+    for (let i = 0; i < 6; i++) {
+      emit(`${i}`.repeat(16), NOW - HOUR + i * 1000, start());
+    }
+    emit(RUN_A, NOW - 10 * 60_000, start());
+    emit(RUN_A, NOW - 10 * 60_000 + 1000, finish());
+    const r = await read({ maxRecords: 4, interrupted: false });
+    expect(r.interrupted).toEqual([]);
+    expect(r.records).toHaveLength(4);
+    expect(r.records.map((rec) => `${rec.run.slice(0, 1)}:${rec.event}`)).toEqual([
+      '4:command.start',
+      '5:command.start',
+      'a:command.start',
+      'a:command.finish',
+    ]);
+    // 8 records - 4 kept; no markers counted.
+    expect(r.omitted).toBe(4);
+  });
+
+  it('true and the default still collect markers', async () => {
+    emit(RUN_A, NOW - HOUR, start());
+    expect((await read({ interrupted: true })).interrupted.map((m) => m.run)).toEqual([RUN_A]);
+    expect((await read()).interrupted.map((m) => m.run)).toEqual([RUN_A]);
+  });
+
+  it('records and runs are the same with and without markers', async () => {
+    emit(RUN_A, NOW - HOUR, start());
+    emit(RUN_B, NOW - 30 * 60_000, start('doctor'));
+    emit(RUN_B, NOW - 30 * 60_000 + 1000, finish('doctor'));
+    const off = await read({ interrupted: false });
+    const on = await read();
+    expect(off.records).toEqual(on.records);
+    expect([...off.runs.keys()]).toEqual([...on.runs.keys()]);
+    expect(off.interrupted).toEqual([]);
+    expect(on.interrupted).toHaveLength(1);
+  });
+});
+
 describe('security audit follow-ups (M1b-4c)', () => {
   it('a sparse day file far over the writer cap is skipped without reading it', async () => {
     emit(RUN_A, NOW - HOUR, start());

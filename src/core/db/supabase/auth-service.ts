@@ -45,6 +45,8 @@ export function isUnreachable(err: unknown): boolean {
 /**
  * Caps a whole auth operation. Per-request timeouts aren't enough: auth-js retries a
  * token refresh with backoff for ~30 s, and every call first waits for that refresh.
+ * The deadline only stops *waiting*: it doesn't cancel the underlying auth-js call, which
+ * keeps running until `runCli`'s final `proc.exit()` ends the process.
  */
 function withDeadline<T>(operation: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {

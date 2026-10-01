@@ -239,6 +239,24 @@ Split on 2026-09-30 into **M1c-1** (all account commands) → **M1c-2** (hardeni
 
 `account.add`, `account.test`, `account.password-update`, `account.remove` (app log; `acct`, `provider`, `outcome`, `reason` on failure) — catalog table "Account commands (M1c-1)". `imap.login`, `imap.login-failed`, `login-guard.*` now reach `security-*.log`. `mm account add` emits `account.add`, not `discover.finish`. Canary tests cover the new builder and the account core (no password, address or host in any line or audit row).
 
+### M1c-2 — Hardening follow-ups (implemented)
+
+- **Database** (migration `20261001150806_hardening.sql`, [DATA_MODEL.md](../DATA_MODEL.md)): `mail_accounts` host lowercased + named checks (host lowercase, length limits, provider format), column-level INSERT (no `created_at`/`updated_at`/`capabilities`/`last_checked_at` from the client), UPDATE revoked on `email`/`host`/`port`/`username` (changing the server = remove + add); `audit_log` checks (`folder` without `@`, `details` a JSON object) and `service_role` loses DELETE. `SupabaseAuditRepo.listRecent` breaks `created_at` ties by `id desc`.
+- **Run/exit:** `runCli` takes `streams` (stdout/stderr) and handles their 'error' once: EPIPE / `ERR_STREAM_DESTROYED` ignored, anything else exits 1 quietly — `mm keygen | true` is no crash. `withDeadline` documents that the deadline only stops waiting.
+- **`mm login`** with a stored session refuses ("You're already logged in — run `mm logout` first, then `mm login`.", exit 1, nothing sent), so the old session goes through `mm logout` first (which revokes its refresh token on the server when the server can be reached — offline it only clears the local file, and the token then lives until it expires; follow-up).
+- **`mm logs`:** `--json` caps records only; the "older lines" hint drops flags already given; "No matching log lines" when a filter is active; `log.truncated` takes the triggering record's `ts`; the command column fits the longest command.
+- **Accounts:** DNS SRV results outside the email's domain (and not a preset host) get a warning and "Use these settings?" defaults to no; `parseEmail` also limits the punycode address to 254; `update-password` refusing an unreadable secret logs `account.password-update` failed (`secret-unreadable`) from core (`assertSecretReadable`); the duplicate text mentions remove + add; audit rows of an existing account carry `details.account` (UUID).
+
+#### Verification (M1c-2)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`.
+2. Offline CLI: `bash -c 'mm keygen | true; echo "exit ${PIPESTATUS[0]}"'` → exit 0, no "Unexpected error"; with a non-empty `session.json`, `mm login` → "already logged in", exit 1; `mm logs --since 5m --level error` → "No matching log lines …".
+3. `npm run db:push` + `npm run db:status` (after the user's go-ahead), then the RLS suite once and `accounts-live.test.ts` once.
+
+#### Logging (M1c-2)
+
+No new events. `account.password-update` failed (`secret-unreadable`) is now emitted from core for the `update-password` refusal; `details.account` added to account audit rows ([LOGGING.md](../LOGGING.md#account-commands-m1c-1)).
+
 ## Out of scope (M1)
 
 OAuth2 (M6), STARTTLS/143, any mailbox reading beyond login + capabilities, key rotation tooling, MFA, self-service signup / password reset.

@@ -1,8 +1,9 @@
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Command } from 'commander';
+import { CommanderError, type Command } from 'commander';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { isUserFacing } from '../../src/cli/error-text.js';
 import { buildProgram } from '../../src/cli/index.js';
@@ -142,7 +143,13 @@ function dummyArgs(cmd: Command): string[] {
 
 async function run(
   argv: string[],
-  options: { build?: (o: BuildOptions) => Command; log?: EventLog; proc?: FakeProc } = {},
+  options: {
+    build?: (o: BuildOptions) => Command;
+    log?: EventLog;
+    proc?: FakeProc;
+    flush?: () => Promise<void>;
+    streams?: NodeJS.EventEmitter[];
+  } = {},
 ): Promise<{ log: EventLog; proc: FakeProc }> {
   const log = options.log ?? new MemoryEventLog(CTX);
   const proc = options.proc ?? new FakeProc();
@@ -152,7 +159,8 @@ async function run(
     log,
     ctx: CTX,
     proc,
-    flush: () => Promise.resolve(),
+    flush: options.flush ?? (() => Promise.resolve()),
+    ...(options.streams ? { streams: options.streams } : {}),
     root: REPO_ROOT,
   });
   return { log, proc };
@@ -456,6 +464,250 @@ describe('runCli: process-level handlers', () => {
       expect(finishes(log)).toHaveLength(1);
     },
   );
+});
+
+describe('runCli: flush and exit order', () => {
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it.each<[string, string[], () => (o: BuildOptions) => Command, boolean]>([
+    ['success', ['keygen'], () => stubbed(), true],
+    [
+      'a thrown error',
+      ['keygen'],
+      () =>
+        stubbed(() => {
+          throw new Error('boom');
+        }),
+      true,
+    ],
+    [
+      'a CommanderError from a command',
+      ['keygen'],
+      () =>
+        stubbed(() => {
+          throw new CommanderError(2, 'mm.test', 'commander said no');
+        }),
+      true,
+    ],
+    // Commander's own exits (here an unknown command) log no start, so no finish either.
+    ['a CommanderError from parsing', ['nosuchcmd'], () => stubbed(), false],
+  ])(
+    '%s: finish is logged, then flush runs once, then exit',
+    async (_label, argv, build, finish) => {
+      const order: string[] = [];
+      const log = new MemoryEventLog(CTX);
+      const proc = new FakeProc();
+      const realExit = proc.exit.bind(proc);
+      proc.exit = (code?: number): never => {
+        order.push('exit');
+        return realExit(code);
+      };
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const flush = vi.fn(async () => {
+        order.push(`flush:start finish-logged=${String(finishes(log).length === 1)}`);
+        await gate;
+        order.push('flush:end');
+      });
+
+      const done = run(argv, { log, proc, build: build(), flush });
+      await settle();
+      // flush has begun (after command.finish was written) and exit has not been called.
+      expect(order).toEqual([`flush:start finish-logged=${String(finish)}`]);
+      expect(proc.exits).toEqual([]);
+
+      release();
+      await done;
+      expect(order).toEqual([`flush:start finish-logged=${String(finish)}`, 'flush:end', 'exit']);
+      expect(flush).toHaveBeenCalledTimes(1);
+      expect(proc.exits).toHaveLength(1);
+      // The exit handler after proc.exit() must not add a second finish.
+      expect(finishes(log)).toHaveLength(finish ? 1 : 0);
+    },
+  );
+});
+
+describe('runCli: errors on the output streams', () => {
+  function streamError(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`write ${code}`), { code });
+  }
+
+  function twoStreams(): [EventEmitter, EventEmitter] {
+    return [new EventEmitter(), new EventEmitter()];
+  }
+
+  it('attaches exactly one error listener per stream', async () => {
+    const streams = twoStreams();
+    await run(['keygen'], { streams });
+    for (const s of streams) expect(s.listenerCount('error')).toBe(1);
+  });
+
+  it('attaches the listeners before the command runs', async () => {
+    const streams = twoStreams();
+    let seen = -1;
+    await run(['keygen'], {
+      streams,
+      build: stubbed(() => {
+        seen = streams[0]?.listenerCount('error') ?? -1;
+      }),
+    });
+    expect(seen).toBe(1);
+  });
+
+  it.each(['EPIPE', 'ERR_STREAM_DESTROYED'])(
+    '%s during a command: exit code unchanged, no output, no error.unexpected',
+    async (code) => {
+      const streams = twoStreams();
+      const proc = new FakeProc();
+      const { log } = await run(['keygen'], {
+        proc,
+        streams,
+        build: stubbed(() => {
+          process.exitCode = 3;
+          streams[0]?.emit('error', streamError(code));
+          streams[1]?.emit('error', streamError(code));
+        }),
+      });
+      expect(process.exitCode).toBe(3);
+      expect(out).toEqual({ stdout: '', stderr: '' });
+      expect(eventNames(log)).toEqual(['command.start', 'command.finish']);
+      expect(finishes(log)[0]).toMatchObject({ outcome: 'failed', exit: 3 });
+      expect(proc.exits).toEqual([undefined]);
+    },
+  );
+
+  it('EPIPE keeps exit code 0 for a successful command', async () => {
+    const streams = twoStreams();
+    const { log } = await run(['keygen'], {
+      streams,
+      build: stubbed(() => {
+        streams[0]?.emit('error', streamError('EPIPE'));
+      }),
+    });
+    expect(process.exitCode).toBeUndefined();
+    expect(finishes(log)[0]).toMatchObject({ outcome: 'ok', exit: 0 });
+    expect(eventNames(log)).not.toContain('error.unexpected');
+  });
+
+  it('EPIPE then more errors and writes: no second crash', async () => {
+    const streams = twoStreams();
+    const proc = new FakeProc();
+    const { log } = await run(['keygen'], {
+      proc,
+      streams,
+      build: stubbed(() => {
+        for (let i = 0; i < 3; i++) streams[0]?.emit('error', streamError('EPIPE'));
+        streams[0]?.emit('error', streamError('ERR_STREAM_DESTROYED'));
+        console.log('still printing');
+      }),
+    });
+    // Even after the run is over: late errors are ignored too.
+    streams[0]?.emit('error', streamError('EPIPE'));
+    streams[1]?.emit('error', streamError('ERR_STREAM_DESTROYED'));
+    expect(out.stderr).not.toContain('Unexpected error');
+    expect(eventNames(log)).not.toContain('error.unexpected');
+    expect(proc.exits).toEqual([undefined]);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('another stream error (EIO) → exit code 1, quietly, no error.unexpected', async () => {
+    const streams = twoStreams();
+    const proc = new FakeProc();
+    const { log } = await run(['keygen'], {
+      proc,
+      streams,
+      build: stubbed(() => {
+        streams[0]?.emit('error', streamError('EIO'));
+      }),
+    });
+    expect(process.exitCode).toBe(1);
+    expect(out).toEqual({ stdout: '', stderr: '' });
+    expect(eventNames(log)).toEqual(['command.start', 'command.finish']);
+    expect(finishes(log)[0]).toMatchObject({ outcome: 'failed', exit: 1 });
+    expect(proc.exits).toEqual([undefined]);
+  });
+
+  it('a non-error value on a stream is treated like any other error (exit 1)', async () => {
+    const streams = twoStreams();
+    await run(['keygen'], {
+      streams,
+      build: stubbed(() => {
+        streams[1]?.emit('error', undefined);
+      }),
+    });
+    expect(process.exitCode).toBe(1);
+    expect(out.stderr).not.toContain('Unexpected error');
+  });
+
+  it('EIO does not lower a non-zero exit code the command already set', async () => {
+    const streams = twoStreams();
+    await run(['keygen'], {
+      streams,
+      build: stubbed(() => {
+        process.exitCode = 2;
+        streams[1]?.emit('error', streamError('EIO'));
+      }),
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('EIO is not undone by the command setting exit code 0 afterwards (log and exit agree on 1)', async () => {
+    const streams = twoStreams();
+    const { log } = await run(['keygen'], {
+      streams,
+      build: stubbed(() => {
+        streams[1]?.emit('error', streamError('EIO'));
+        process.exitCode = 0; // e.g. `mm discover` reports its own code after a network wait
+      }),
+    });
+    expect(process.exitCode).toBe(1);
+    expect(finishes(log)[0]).toMatchObject({ outcome: 'failed', exit: 1 });
+  });
+
+  it('EIO during the final flush still makes the exit code 1', async () => {
+    const streams = twoStreams();
+    await run(['keygen'], {
+      streams,
+      flush: () => {
+        streams[0]?.emit('error', streamError('EIO'));
+        return Promise.resolve();
+      },
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('EIO after command.finish was logged still makes the exit code 1 (log keeps the old code)', async () => {
+    const streams = twoStreams();
+    const { log } = await run(['keygen'], { streams });
+    expect(finishes(log)[0]).toMatchObject({ exit: 0 });
+    streams[0]?.emit('error', streamError('EIO'));
+    expect(process.exitCode).toBe(1);
+    expect(finishes(log)).toHaveLength(1);
+    expect(finishes(log)[0]).toMatchObject({ exit: 0 });
+  });
+
+  it('a crash with a broken stderr still logs error.unexpected and exits 1', async () => {
+    const streams = twoStreams();
+    const proc = new FakeProc();
+    vi.spyOn(console, 'error').mockImplementation(() => {
+      throw streamError('EPIPE');
+    });
+    const { log } = await run(['keygen'], {
+      proc,
+      streams,
+      build: stubbed(() => {
+        proc.fire('uncaughtException', new Error(`kaboom ${PASSWORD}`));
+        // The write that failed reports its EPIPE asynchronously: swallowed, no second crash.
+        streams[1]?.emit('error', streamError('EPIPE'));
+      }),
+    });
+    expect(eventNames(log)).toContain('error.unexpected');
+    expect(eventNames(log).filter((n) => n === 'error.unexpected')).toHaveLength(1);
+    expect(proc.exits[0]).toBe(1);
+    for (const line of mem(log).lines) expect(line).not.toContain('kaboom');
+  });
 });
 
 describe('runCli: a broken log never changes the command', () => {

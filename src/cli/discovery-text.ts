@@ -1,11 +1,13 @@
 import {
   SOURCE_LABEL,
+  type DiscoveryResult,
   type DiscoverySource,
   type DomainProblem,
   type ProviderInfo,
   type Tried,
 } from '../core/providers/discover.js';
 import type { ImapSettings } from '../core/providers/settings.js';
+import { sanitize } from './log-text.js';
 
 // How discovery results are printed — shared by `mm discover` and `mm account add`.
 
@@ -28,6 +30,16 @@ export function domainProblemText(problem: DomainProblem, domain: string): strin
     case 'dns-unreachable':
       return `Could not reach DNS to look up "${domain}". Check your internet connection and try again.`;
   }
+}
+
+/**
+ * Warning for a DNS SRV result that points outside the email's domain (and is no preset host):
+ * SRV records are unsigned, so someone on the network could have faked one. Host and domain
+ * come from DNS and the typed address, so they go through `sanitize`.
+ */
+export function offDomainWarning(result: DiscoveryResult): string | undefined {
+  if (result.status !== 'found' || result.offDomain !== true) return undefined;
+  return `Warning: this server is not under ${sanitize(result.email.displayDomain)} and comes from an unsigned DNS record, which someone on your network could fake. Only continue if you know your provider uses ${sanitize(result.imap.host)}.`;
 }
 
 export function line(label: string, value: string): void {

@@ -1,3 +1,4 @@
+import { domainToASCII } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   DiscoveryInputError,
@@ -122,6 +123,41 @@ describe('parseEmail', () => {
     expect(parseEmail(ok).address).toBe(ok);
     const tooLong = `a${ok}`;
     expect(() => parseEmail(tooLong)).toThrow(DiscoveryInputError);
+  });
+
+  describe('stored ASCII address length', () => {
+    // Three 30-char Unicode labels: 95 chars typed, 113 as punycode (xn--…).
+    const label = '\u00fc'.repeat(30);
+    const domain = `${label}.${label}.${label}.eu`;
+    const ascii = domainToASCII(domain);
+
+    it('rejects an address that is ≤ 254 typed but > 254 once the domain is punycode', () => {
+      const typed = `${'a'.repeat(254 - domain.length - 1)}@${domain}`;
+      expect(typed).toHaveLength(254);
+      expect(typed.length - domain.length + ascii.length).toBeGreaterThan(254);
+      expect(() => parseEmail(typed)).toThrow(DiscoveryInputError);
+      expect(() => parseEmail(typed)).toThrow('Email address is too long');
+    });
+
+    it('accepts an address whose punycode form is exactly 254', () => {
+      const local = 'a'.repeat(254 - ascii.length - 1);
+      const parsed = parseEmail(`${local}@${domain}`);
+      expect(parsed.address).toHaveLength(254);
+      expect(parsed.address).toBe(`${local}@${ascii}`);
+    });
+
+    it('rejects one character over', () => {
+      const local = 'a'.repeat(254 - ascii.length);
+      expect(() => parseEmail(`${local}@${domain}`)).toThrow('Email address is too long');
+    });
+
+    it('measures the lowercased address: "İ" lowercases to two characters', () => {
+      // accountToInsertRow lowercases the address, so this one is 255 characters when stored.
+      const address = `${'a'.repeat(248)}İ@e.io`;
+      expect(address).toHaveLength(254);
+      expect(address.toLowerCase()).toHaveLength(255);
+      expect(() => parseEmail(address)).toThrow('Email address is too long');
+    });
   });
 
   it.each([

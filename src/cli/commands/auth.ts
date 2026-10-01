@@ -55,12 +55,21 @@ export function registerAuth(program: Command, ctx: CliContext): void {
     .description('Log in to Mail Manager (users are created by the admin in Supabase)')
     .option('--email <email>', 'account email (prompted when omitted)')
     .action(async (opts: { email?: string }) => {
-      if (!process.stdin.isTTY) {
-        console.error('login needs an interactive terminal (password prompt)');
-        process.exitCode = 1;
-        return;
-      }
       try {
+        // A stored session is never replaced silently: `mm logout` revokes its refresh token
+        // first. No network, prompt or event. `{}` and an unreadable file count as empty (as in
+        // logout): login then overwrites a file that holds no usable token.
+        loadEnvFiles();
+        if (!new FileSessionStorage(configDir(process.env)).isEmpty()) {
+          console.error("You're already logged in — run `mm logout` first, then `mm login`.");
+          process.exitCode = 1;
+          return;
+        }
+        if (!process.stdin.isTTY) {
+          console.error('login needs an interactive terminal (password prompt)');
+          process.exitCode = 1;
+          return;
+        }
         const auth = authService();
         const email = (opts.email ?? (await input({ message: 'Email:' }))).trim();
         if (email === '') {

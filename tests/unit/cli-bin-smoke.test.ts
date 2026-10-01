@@ -1,5 +1,14 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +40,60 @@ function mm(args: string[], configDir = tmp) {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+interface Spawned {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+}
+
+/**
+ * Async run of bin.ts with its stdout (and optionally stderr) pipe destroyed on our side right
+ * after the spawn: tsx start-up takes hundreds of ms, so the child's first write hits EPIPE.
+ * Not `sh -c '… | true'`: /bin/sh has no pipefail, so the status would be `true`'s.
+ * Waits for 'close' (all stdio ended); a hard timeout kills a hung child and fails the test.
+ */
+function mmWithClosedPipes(args: string[], closed: ('stdout' | 'stderr')[]): Promise<Spawned> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli/bin.ts', ...args], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MM_CONFIG_DIR: tmp, MM_LOG_LEVEL: 'info' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    // Our end of the pipe may report errors itself once destroyed; they are irrelevant here.
+    child.stdout.on('error', () => undefined);
+    child.stderr.on('error', () => undefined);
+    for (const name of closed) child[name].destroy();
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('child did not exit within 30 s'));
+    }, 30_000);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stderr });
+    });
+  });
+}
+
+/** Lines of today's (or, across midnight UTC, yesterday's) app log in the temp config dir. */
+function logLines(before: string): string[] {
+  const file = [before, today()]
+    .map((d) => join(tmp, 'logs', `app-${d}.log`))
+    .find((f) => existsSync(f));
+  expect(file).toBeDefined();
+  return readFileSync(file ?? '', 'utf8')
+    .split('\n')
+    .filter((l) => l !== '');
 }
 
 describe('src/cli/bin.ts', () => {
@@ -92,4 +155,48 @@ describe('src/cli/bin.ts', () => {
     expect(r.stderr).not.toContain('Unexpected error');
     expect(readFileSync(file, 'utf8')).toBe('x');
   }, 60_000);
+
+  describe('a closed output pipe ends the command quietly', () => {
+    it.each<[string, ('stdout' | 'stderr')[]]>([
+      ['stdout closed (mm keygen | true)', ['stdout']],
+      ['stdout and stderr closed', ['stdout', 'stderr']],
+    ])(
+      'keygen with %s: real exit 0, nothing unexpected',
+      async (_label, closed) => {
+        const before = today();
+        const r = await mmWithClosedPipes(['keygen'], closed);
+        expect(r.signal).toBeNull();
+        expect(r.code).toBe(0);
+        expect(r.stderr).not.toContain('Unexpected error');
+
+        const records = logLines(before).map((l) => parseLogLine(l)?.record);
+        expect(records.map((rec) => rec?.event)).toEqual(['command.start', 'command.finish']);
+        expect(records[1]).toMatchObject({ cmd: 'keygen', outcome: 'ok', exit: 0 });
+      },
+      60_000,
+    );
+
+    it('keygen > file: the file holds exactly one key line', () => {
+      const file = join(tmp, 'key.txt');
+      const fd = openSync(file, 'w');
+      try {
+        const r = spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/bin.ts', 'keygen'], {
+          cwd: REPO_ROOT,
+          env: { ...process.env, MM_CONFIG_DIR: tmp, MM_LOG_LEVEL: 'info' },
+          stdio: ['ignore', fd, 'pipe'],
+          encoding: 'utf8',
+          timeout: 30_000,
+        });
+        expect(r.status).toBe(0);
+        expect(r.stderr).not.toContain('Unexpected error');
+      } finally {
+        closeSync(fd);
+      }
+      const text = readFileSync(file, 'utf8');
+      expect(text.endsWith('\n')).toBe(true);
+      const lines = text.split('\n').filter((l) => l !== '');
+      expect(lines).toHaveLength(1);
+      expect(validateMasterKey(lines[0] ?? '').ok).toBe(true);
+    }, 60_000);
+  });
 });

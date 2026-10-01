@@ -232,6 +232,22 @@ describe('audit entry validation', () => {
         },
       );
 
+      it('accepts the account UUID next to the provider', () => {
+        expect(valid(entry({ action, details: { provider: 'gmail', account: ACCOUNT_ID } }))).toBe(
+          true,
+        );
+      });
+
+      it.each<[string, unknown]>([
+        ['a non-uuid account', { provider: 'gmail', account: 'not-a-uuid' }],
+        ['an email as account', { provider: 'gmail', account: 'canary@secret-domain.example' }],
+        ['a numeric account', { provider: 'gmail', account: 1 }],
+        ['an account without a provider', { account: ACCOUNT_ID }],
+        ['an extra key next to the account', { provider: 'gmail', account: ACCOUNT_ID, host: 'x' }],
+      ])('rejects %s', (_label, details) => {
+        expect(valid(entry({ action, details }))).toBe(false);
+      });
+
       it.each([['a'.repeat(40)], ['custom'], ['x1-2']])('accepts provider %j', (provider) => {
         expect(valid(entry({ action, details: { provider } }))).toBe(true);
       });

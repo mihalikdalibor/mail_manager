@@ -30,7 +30,7 @@ export function serverLabel(account: MailAccount): string {
 
 /**
  * Text for an error from an account command. `account` is the mailbox the command works on,
- * when known (for the update-password hint).
+ * when known (it feeds the `mm account remove <id>` hint of `secret-unreadable`).
  */
 export function accountErrorText(err: unknown, account?: MailAccount): string {
   if (!(err instanceof AccountError)) return errorText(err);
@@ -38,9 +38,9 @@ export function accountErrorText(err: unknown, account?: MailAccount): string {
   switch (err.code) {
     case 'duplicate':
       if (err.accountId === undefined) {
-        return 'This mailbox is already saved. Find its id with `mm account list`; to change its password run `mm account update-password <id>`.';
+        return "This mailbox is already saved. Find its id with `mm account list`; to change its password run `mm account update-password <id>`. If its saved password can't be decrypted any more, run `mm account remove <id>` and add it again.";
       }
-      return `This mailbox is already saved (id ${idOf(err.accountId)}). To change its password run \`mm account update-password ${idOf(err.accountId)}\`.`;
+      return `This mailbox is already saved (id ${idOf(err.accountId)}). To change its password run \`mm account update-password ${idOf(err.accountId)}\`. If its saved password can't be decrypted any more, run \`mm account remove ${idOf(err.accountId)}\` and add it again.`;
     case 'not-found':
       return 'That mailbox is no longer saved — see `mm account list`.';
     case 'secret-unreadable':

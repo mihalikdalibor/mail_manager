@@ -1348,3 +1348,187 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - New core exports `storedSecretReadable`, `knownProvider`; `settingsOf` also refuses a stored username with control characters.
   - `VERSION` moved to `src/cli/version.ts` (shared by the program and the IMAP client info).
   - TODO.md ticks and CLAUDE.md "Current state" are left to `/review-changes` / `/release`.
+
+## C-020 — M1c-2 hardening: DB migration (applied), run/exit + login, `mm logs`, accounts
+
+- **Status:** reviewed (2026-10-01)
+- **Review:** All criteria in slices A–D and the integration docs are met (4 parallel reviewers). The reviewers re-ran 3298/3298 unit tests plus typecheck, lint, build and format:check, and re-ran the PGlite offline check of all 3 migrations: every new rule gives its code and constraint name, the init migration grants UPDATE only on named columns so the column revoke takes effect, an upsert that sets host is refused (42501), the uppercase seed row was lowercased, and the user-delete cascade still works. Mutation probes ran on the marker ts, the `--json` cap and `securityOnly`. Base 9666035 `keygen | true` → exit 1 + `error.unexpected`; current → exit 0. Real CLI: the login refusal with a session file, `{}`/corrupt file proceeds, `logs` width/hint/empty texts, the >5000 `--json` cap. Off-domain SRV checked with fake resolvers (case, trailing dot, label boundary, IDN, preset). Live suites not re-run (rationed). Non-blocking follow-ups (LOW): (1) the log says `ok, exit 0` while the real exit is 1 when a stream error arrives on nextTick after the command returns (`mm keygen >/dev/full`, reproduced) — `await setImmediate` before finish in `src/cli/run.ts` + a nextTick-based test; (2) a stdout write failure (disk full) exits 1 silently — decide whether stderr should say something; (3) no test catches the command width being measured on raw `cmd` instead of `sanitize(cmd)` (`log-text.ts` `commandWidth`; `CMD_RE` limits the impact); (4) the `log.truncated` ts sentence sits in the "Closed pipe / exit" bullet of LOGGING.md, it belongs with the writer cap; (5) RLS suite: no host-at-253 accepted case, the label regression sets the same label it already has, no live upsert-of-host case; TESTING.md still says ~4 leftover rows per run (now ~7); (6) `accounts-live.test.ts:155` `toEqual` with `added?.id` would pass with no `account` key if `added` were undefined; (7) an IDN warning mixes the Unicode domain with a punycode host.
+- **Date:** 2026-10-01
+- **Type:** feature (`/implement`)
+- **Source:** `.claude/plans/2026-10-01-m1c2-hardening.md` — TODO.md "M1c-2 — Hardening follow-ups"
+- **Base:** `9666035aa1bccf3e64afd5adfb14d1687838df7b`; files already dirty before the run: `TODO.md` (the decisions note; untouched by this run)
+- **Files:**
+  - `README.md`
+  - `docs/DATA_MODEL.md`
+  - `docs/LOGGING.md`
+  - `docs/PROVIDERS.md`
+  - `docs/SECURITY.md`
+  - `docs/TESTING.md`
+  - `docs/milestones/M1-auth-accounts.md`
+  - `docs/milestones/M4-safe-delete.md`
+  - `src/cli/account-text.ts`
+  - `src/cli/bin.ts`
+  - `src/cli/commands/account.ts`
+  - `src/cli/commands/auth.ts`
+  - `src/cli/commands/discover.ts`
+  - `src/cli/commands/logs.ts`
+  - `src/cli/discovery-text.ts`
+  - `src/cli/log-text.ts`
+  - `src/cli/run.ts`
+  - `src/core/accounts.ts`
+  - `src/core/audit.ts`
+  - `src/core/db/supabase/audit-repo.ts`
+  - `src/core/db/supabase/auth-service.ts`
+  - `src/core/log/file-event-log.ts`
+  - `src/core/log/reader.ts`
+  - `src/core/providers/discover.ts`
+  - `src/core/providers/email.ts`
+  - `tests/integration/accounts-live.test.ts`
+  - `tests/integration/supabase-rls.test.ts`
+  - `tests/unit/accounts.test.ts`
+  - `tests/unit/audit-repo.test.ts`
+  - `tests/unit/audit.test.ts`
+  - `tests/unit/cli-account.test.ts`
+  - `tests/unit/cli-auth.test.ts`
+  - `tests/unit/cli-bin-smoke.test.ts`
+  - `tests/unit/cli-discover.test.ts`
+  - `tests/unit/cli-logs.test.ts`
+  - `tests/unit/cli-run-logging.test.ts`
+  - `tests/unit/discover.test.ts`
+  - `tests/unit/email.test.ts`
+  - `tests/unit/log-file.test.ts`
+  - `tests/unit/log-reader.test.ts`
+  - `tests/unit/log-text.test.ts`
+  - `supabase/migrations/20261001150806_hardening.sql`
+  - `tests/unit/m1c2-spec.test.ts`
+  - docs: `docs/DATA_MODEL.md`, `docs/SECURITY.md`, `docs/LOGGING.md`, `docs/PROVIDERS.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`, `docs/milestones/M4-safe-delete.md`, `README.md` (included in the list above where tracked)
+- **Requirements:** the plan's acceptance criteria, verbatim:
+
+  ### Slice A — Database
+  - [ ] **New migration** `supabase/migrations/<UTC timestamp>_hardening.sql`. Create it with `npx supabase migration new hardening` or by hand with a 14-digit timestamp. Never edit the two applied migrations.
+  - [ ] **`mail_accounts` data and checks:**
+    - `update public.mail_accounts set host = lower(host) where host <> lower(host);` runs first. AAD v2 binds `lower(host)`, so existing secrets still decrypt.
+    - Then the constraints:
+      - `host = lower(host)`;
+      - `length(email) <= 254`, `length(host) <= 253`, `length(username) <= 320`;
+      - `label is null or length(label) <= 100`;
+      - `provider ~ '^[a-z0-9-]{1,40}$'`.
+    - Each constraint is named, e.g. `mail_accounts_host_lower`.
+  - [ ] **`mail_accounts` grants:**
+    - `revoke insert on public.mail_accounts from authenticated;`, then a column-level `grant insert (id, user_id, label, email, provider, host, port, username, auth_type, secret_ciphertext, secret_iv, secret_tag, key_version)`. These are exactly the columns `accountToInsertRow` sends (`src/core/db/supabase/accounts-repo.ts:95-108`).
+    - So `created_at`, `updated_at`, `capabilities` and `last_checked_at` can't be sent on insert (42501).
+    - `user_id` stays insertable: the app sends it, and the RLS insert policy already forces it to `auth.uid()`.
+    - `revoke update (email, host, port, username) on public.mail_accounts from authenticated;`. The remaining UPDATE columns: `label, provider, auth_type, secret_ciphertext, secret_iv, secret_tag, key_version, capabilities, last_checked_at`.
+  - [ ] **`audit_log`:**
+    - named checks `folder is null or folder !~ '@'` and `details is null or jsonb_typeof(details) = 'object'`;
+    - `revoke delete on public.audit_log from service_role;`.
+  - [ ] **A failing push is never worked around.** If the migration fails on existing rows (a length limit, or two rows that differ only in host case), stop and report to the user. Atomicity of `db:push` is assumed, not verified: the offline PGlite run is the real guard, and after a failed push `npm run db:status` must show the migration as not applied.
+  - [ ] **`SupabaseAuditRepo.listRecent`** (`src/core/db/supabase/audit-repo.ts:99`) orders by `created_at desc`, then `id desc`. A unit test in `tests/unit/audit-repo.test.ts` asserts both order calls; the fake's `argsOf('order')` expects exactly one call (`audit-repo.test.ts:75`, used at `:258`), so that test is rewritten with `calls.filter((c) => c.method === 'order')`.
+  - [ ] **RLS suite** (`tests/integration/supabase-rls.test.ts`) gets new tests, each asserting the exact code:
+    - an uppercase host on insert → 23514;
+    - an over-long email, host, username or label → 23514 each;
+    - a bad provider → 23514;
+    - inserting `created_at`, `updated_at`, `capabilities` or `last_checked_at` → 42501;
+    - updating `email`, `host`, `port` or `username` → 42501, row unchanged;
+    - updating `label` and the secret columns still works (regression);
+    - audit `folder` with `@` → 23514;
+    - audit `details` as an array or scalar → 23514.
+
+    Every bad row is inserted with the raw client (`rawClient`/`createSupabase` as the suite does), all other fields valid (lowercase email — `accountToInsertRow` would lowercase the host, so the repo can't be used), and each 23514 test also asserts the constraint name in `error.message` (e.g. `mail_accounts_host_lower`), since all checks share 23514. The same in the offline PGlite run.
+
+    The `service_role` DELETE revoke can't be tested with the client (no service key in the CLI). Verify it offline (below) and in `docs/DATA_MODEL.md`.
+
+  - [ ] **Offline check before the push** (scratchpad only, nothing committed; as M1b-4d did): run both applied migrations plus the new one on PGlite (`npx -y` / a temp `npm i @electric-sql/pglite` in the scratchpad), with Supabase-like roles. Check each new rule's code, the `lower(host)` update on a seeded uppercase row, and that the user-delete cascade still works without `service_role` DELETE.
+
+  ### Slice B — Run/exit and login
+  - [ ] **Closed pipe, handled once in `runCli`.** `RunCliDeps` gains `streams?: NodeJS.EventEmitter[]` (`src/cli/run.ts`); `bin.ts` passes `[process.stdout, process.stderr]`.
+    - `runCli` attaches one `'error'` listener per stream before parsing.
+    - `EPIPE` → ignored: the exit code stays as the command set it, no output, no `error.unexpected`.
+    - `ERR_STREAM_DESTROYED` is treated like EPIPE (it only follows an earlier break).
+    - Any other stream error → `proc.exitCode = 1` if it isn't already non-zero; nothing printed, since the stream is broken. One that arrives after `command.finish` was logged can make the real exit 1 while the log says the earlier code — accepted and noted in a comment (the log can't be rewritten).
+    - `mm keygen | true` → exit 0, no "Unexpected error", no `error.unexpected` line; the log keeps `command.start` + `command.finish`.
+    - The guard in `src/cli/commands/logs.ts` stays (it also skips further writes after a break); slice C updates its comment to say `runCli` now covers every command.
+  - [ ] **Exit/flush unit tests** in `tests/unit/cli-run-logging.test.ts`. On success, on a thrown error and on a `CommanderError`:
+    - `flush` is awaited before `proc.exit` (a deferred promise: `exit` isn't called until `flush` resolves);
+    - `command.finish` is written before `flush`;
+    - `flush` runs once.
+  - [ ] **Smoke tests** in `tests/unit/cli-bin-smoke.test.ts`:
+    - Closed stdout: `spawn(process.execPath, ['--import', 'tsx', 'src/cli/bin.ts', 'keygen'], { stdio: ['ignore', 'pipe', 'pipe'] })` and destroy `child.stdout` at once (tsx start-up takes hundreds of ms, so the write surely hits EPIPE) → the real exit code is 0, stderr has no "Unexpected error", the temp log has start + finish with exit 0 and no `error.unexpected`. (Not `sh -c '… | true'`: `/bin/sh` is dash — no pipefail — and `$?`/`status` would be `true`'s.) A second case destroys `child.stderr` too.
+    - `keygen > file` → the file holds exactly one key line.
+  - [ ] **Deadline comment.** `withDeadline` (`src/core/db/supabase/auth-service.ts:49`) explains that the deadline only stops waiting: the underlying auth-js call keeps running until `runCli`'s final `proc.exit()`.
+  - [ ] **`mm login` with a session present** (`src/cli/commands/auth.ts`):
+    - Inside the action's `try` (today the TTY check sits before it, `auth.ts:57-62`; move it in), after `loadEnvFiles()` and before the TTY check, so a `ConfigError` still reaches `handleError`: if `new FileSessionStorage(configDir(process.env)).isEmpty()` is false → stderr "You're already logged in — run `mm logout` first, then `mm login`.", exit 1.
+    - No network, no prompt, no `auth.login`/`auth.login-failed` event. `isEmpty()` treats `{}` and an unreadable/corrupt file as empty (as `logout` does), so login proceeds then and overwrites it — such a file holds no usable refresh token.
+    - A config error still gets its existing text.
+    - Tests in `tests/unit/cli-auth.test.ts`:
+      - refused with a session, and the auth service is never built or called;
+      - unchanged login without a session;
+      - refused without a TTY too: the session message wins over the TTY one.
+
+  ### Slice C — `mm logs`
+  - [ ] **`--json` cap without markers.** `ReadLogsOptions` (`reader.ts:33`) gains `interrupted?: boolean` (default true) in `src/core/log/reader.ts`. With `false`, no interrupted markers are collected, so `capCombined` caps records only. `mm logs --json` passes `interrupted: false` (`src/cli/commands/logs.ts:109`). With 5,000+ records and an interrupted run, `--json` prints exactly 5,000 records.
+  - [ ] **Omitted hint.** `reportFooters` (`src/cli/log-text.ts:262`) says "N older lines not shown — narrow with --since, --level, --security or --run". It drops the flags already given (`--run` when `opts.run` is set, `--security` when security-only).
+    - `ReportOptions` gains `securityOnly?` and `level?`, passed by `logs.ts`.
+    - `--level` stays in the list unless it is already `error`.
+  - [ ] **Empty message.** With any filter active (`--level warn`/`error`, `--security`, or `--run` together with `--since`; `--level debug`/`info` show more or the default, so they don't count), the empty message is "No matching log lines in the last <window>." Without filters it stays "No log lines in the last <window>.", and `--run` alone keeps "No log lines for run <id>.".
+  - [ ] **Truncated marker timestamp.** `writeTruncatedMarker(file, kind, ts)` (`src/core/log/file-event-log.ts:214`) writes the marker with the triggering record's `ts`, not a fresh `ctx.now()`.
+    - A test with a fake clock that crosses UTC midnight between record and marker shows: the marker's `ts` date equals its file's date, and the reader accepts it (no false "interrupted").
+  - [ ] **Command column.** `formatReport` computes the width as the longest command among the lines it prints (at least 12, at most 32; longer names are not padded) and passes it to `timelineLine`/`interruptedLine` (optional `width` parameter, default `CMD_WIDTH`). Width is measured on `sanitize(cmd)`, and padding happens after sanitizing (today both lines pad the raw `cmd`, `log-text.ts:238-248`).
+    - With an `account update-password` line, all event texts start at the same column.
+  - [ ] **`logs.ts` guard comment** (`src/cli/commands/logs.ts:76-80`): `runCli` now ignores EPIPE for every command; this guard remains because it also stops further writes after a break.
+  - [ ] **Docs:** the LOGGING.md "Reading the logs" section reflects all of the above (written at integration).
+
+  ### Slice D — Accounts
+  - [ ] **Off-domain SRV flag (core).** `DiscoveryResult` `found` gains `offDomain?: true` (`src/core/providers/discover.ts`). It is set only when `source === 'srv'` and the host is **neither** equal to or under the email's ASCII domain (label boundary, as the MX suffix match) **nor** the IMAP host (`imap?.host`; per-mailbox presets have none) or an alt host of any preset (`PRESETS`).
+    - Tests in `tests/unit/discover.test.ts`:
+      - an off-domain SRV host → flag set;
+      - `imap.<domain>` → no flag;
+      - `<x>.sub.<domain>` → no flag;
+      - `evil<domain>` (no dot boundary) → flag set;
+      - a preset host → no flag;
+      - ISPDB/autoconfig results → never flagged.
+  - [ ] **Warning in print.** There is no shared found-result printer: `report()` (`src/cli/commands/discover.ts:66-79`) and `settle()` (`src/cli/commands/account.ts:218-231`) each print it. Add `offDomainWarning(result): string | undefined` to `src/cli/discovery-text.ts` and `warn()` it from **both**. For `offDomain` the text is: "Warning: this server is not under <domain> and comes from an unsigned DNS record, which someone on your network could fake. Only continue if you know your provider uses <host>." Host and domain (`result.email.displayDomain`, as the other messages use) go through `sanitize`. `mm discover` shows it too.
+    - `tests/unit/cli-discover.test.ts` gets one new test; existing expectations stay unchanged.
+  - [ ] **ASCII address length** (`parseEmail`, `src/core/providers/email.ts:78-81`): the 254 check covers the typed input, but the stored address uses the punycode domain, which can be longer → a successful login then fails the new DB limit (23514 → "Database error"). Also reject when the final `address` exceeds 254, with the existing "Email address is too long" text, before any lookup or login. Test in `email.test.ts` with a long Unicode domain.
+  - [ ] **Confirm default.** In `mm account add` (`src/cli/commands/account.ts:228`), `confirm({ message: 'Use these settings?', default: result.offDomain !== true })`. A CLI test shows the default is `false` for a flagged result.
+  - [ ] **Refusal event from core.** `src/core/accounts.ts` gains `assertSecretReadable(deps: { credentials; log }, account)`. When the secret is unreadable it emits `account.password-update` failed (`secret-unreadable`, `acct`, `provider`) and throws `AccountError('secret-unreadable')`.
+    - The CLI calls it instead of the inline `storedSecretReadable` check (`account.ts:375-377`).
+    - `updatePassword`'s own decrypt check stays as the safety net. Its catch-all emit is not duplicated: the CLI path throws before `updatePassword` runs.
+    - No audit row (failed password updates aren't audited, as in M1c-1).
+    - Tests: the event exists, with no `open` call (core and CLI).
+  - [ ] **Duplicate text** (`src/cli/account-text.ts:41,43`) adds: "If its saved password can't be decrypted any more, run `mm account remove <id>` and add it again."
+  - [ ] **Stale comment** at `account-text.ts:31-34`: `account` feeds the remove hint.
+  - [ ] **`details.account`:**
+    - `accountDetails` (`src/core/audit.ts:39`) becomes `{ provider, account?: uuid }` (strict).
+    - `addAccount` ok, `updatePassword` ok and `removeAccount` pass `account: <id>`. Failed add rows keep `{ provider }` only (no account exists).
+    - Tests in `audit.test.ts` (a uuid is accepted, a non-uuid or extra key rejected) and `accounts.test.ts` (exact details on each row).
+    - `tests/integration/accounts-live.test.ts` expects `{ provider: 'custom', account: <id> }` on its 3 rows; its test title "provider only" (`:142`) and the comment at `:155` are updated.
+  - [ ] **Docs:** DATA_MODEL (account rows and details), PROVIDERS.md (SRV warning), LOGGING.md if the event table mentions the refusal.
+
+  ### Integration (main agent)
+  - [ ] **Docs:**
+    - `docs/DATA_MODEL.md`: constraints, grants, the `service_role` follow-up resolved, `details.account`.
+    - `docs/SECURITY.md`:
+      - line 29: a stolen session can **no longer** update host/port/username (column grant), and AAD v2 still covers inserted rows;
+      - the per-milestone checklist.
+    - `docs/LOGGING.md`; `docs/PROVIDERS.md`; `docs/TESTING.md` (RLS suite list, bin smoke).
+    - `docs/milestones/M1-auth-accounts.md`: "M1c-2 (implemented)" with Verification and Logging.
+    - `README.md` only if a command's described behaviour changed (`mm login`).
+  - [ ] **Checks:**
+    - lint, typecheck, test, build and format:check green;
+    - `npm run db:push` after the user's go-ahead, then `npm run db:status`;
+    - the RLS suite **once** after the push, and `accounts-live.test.ts` **once**.
+  - [ ] CLAUDE.md "Current state" and the TODO ticks are left to `/review-changes` / `/release`.
+
+- **Summary:** one new migration (lowercase host, named length/provider checks, column-level INSERT on `mail_accounts`, UPDATE revoked on email/host/port/username, `audit_log` folder/details checks, `service_role` loses DELETE); `runCli` handles stream errors once (EPIPE ignored, anything else exits 1, applied again before finish and exit); `mm login` refuses with a stored session; `mm logs` fixes (JSON cap without markers, hint, empty message, marker `ts`, command width); off-domain SRV warning + default-no confirm, punycode/lowercase address length, `assertSecretReadable` event from core, `details.account` on account audit rows.
+- **Grade / mode:** L — sliced (4 coder subagents in worktrees A DB / B run+login / C logs / D accounts, integrated by the main agent in order A→B→C→D, then a spec-only test writer → `tests/unit/m1c2-spec.test.ts`, an independent review and the `security-auditor`)
+- **Verification:**
+  - Baseline (before edits): typecheck, lint, 3122 tests, build, format:check all green. Now: typecheck, lint, build and format:check green; 63 files / 3298 tests green.
+  - **Offline PGlite** (scratchpad, nothing committed; roles `anon`/`authenticated`/`service_role`, `auth.uid()` stub), re-run by the main agent against the final migration: every new rule gives its code (23514 + constraint name for the six `mail_accounts` checks, `audit_log_folder_no_at`, `audit_log_details_object`; 42501 for INSERT of `created_at`/`updated_at`/`capabilities`/`last_checked_at` and UPDATE of email/host/port/username with the row unchanged; `service_role` DELETE on `audit_log` 42501); the seeded uppercase host became lowercase; label/secret/capabilities updates still work; the user-delete cascade still works; a host-case duplicate, an over-long label and a bad provider each make the migration fail with nothing applied (PGlite is atomic; not verified for the Supabase CLI).
+  - **Mutation probes** (each caught by the unit suite, files restored): EPIPE listener removed (16 failed), login refusal skipped (5), marker uses `now()` (3), SRV label boundary dropped (4), `details.account` missing on remove (3), `İ` lowercase length check (1); offline migration mutants — host check dropped → "uppercase host" accepted (caught), UPDATE on host re-granted → host update succeeds (caught). Slice coders also ran their own mutations (midnight marker, `--json` cap, confirm default, address-length check, refusal event, `settle()` warning).
+  - **Offline CLI** (built `bin.js`, temp `MM_CONFIG_DIR`, no TTY): `keygen | true` → exit 0 (PIPESTATUS), no "Unexpected error", log has start + finish; `login` with a non-empty `session.json` → "You're already logged in — run `mm logout` first, then `mm login`.", exit 1; with `{}` → proceeds to the TTY message; `logs --since 5m --level error` → "No matching log lines in the last 5 min."; `logs --json | head -1` exit 0.
+  - **Live, once:** `npm run db:push` applied `20261001150806_hardening.sql` (user go-ahead given in the session); `npm run db:status` shows local = remote for all three; RLS suite 40/40; `accounts-live.test.ts` 3/3.
+  - **Independent review:** 0 HIGH, 1 MEDIUM, 5 LOW. Fixed: RLS "at the limits" test leaked a row per run (now deleted by id); `İ` lowercases to two characters so the address length is measured lowercased (+ test); duplicated SECURITY.md sentence. Not changed: explicit `begin`/`commit` in the migration (CLI batching unverified; the push applied cleanly), `--run X --level error` message (the plan's literal wording, pinned by a test), the spec test overlapping the per-module tests (rubric asks for it).
+  - **Security audit** (`security-auditor`): 0 CRITICAL/HIGH/MEDIUM, 4 LOW + 2 info. Fixed: L3 — a stream error's exit 1 could be overwritten by a later `exitCode = 0` (flag applied before the finish line and before exit; 2 tests). Doc-only: L1 wording ("always revoked" corrected), L4 + info → M4 requirements in SECURITY.md and the M4 milestone doc, two migration comments reworded. **Open follow-ups for the user:** L1 `mm logout` offline clears the local session but doesn't revoke the server token and still prints "Logged out"; L2 `mm login` treats a corrupt/unreadable/non-JSON session file as empty and overwrites it (the plan decided this, like `logout`; the auditor suggests failing closed); a relative `MM_CONFIG_DIR`/`XDG_CONFIG_HOME` depends on the current directory (pre-existing). Suggested extra RLS cases for later: PostgREST upsert of `host` (expect 42501), delete + re-insert keeping the id.
+  - **Not verified:** the Supabase CLI's transaction wrapping of a failed migration (the push succeeded, so the failure path was never exercised on the cloud); `service_role` DELETE revoke on the real project (no service key in the CLI; offline only); real `mm login` with a real session in a terminal (unit tests + offline CLI with a fake session file only).
+- **Deviations:** none from the plan's scope, except: extra RLS tests (limit values accepted, valid control insert, `details` object/null accepted); `crash()` wraps its `console.error` so a broken stderr can't skip the `error.unexpected` line; the stream-failure flag (security L3) and `parseEmail` lowercased length (review #2) were added after the review/audit; docs also touched `M4-safe-delete.md` (audit follow-ups). TODO.md ticks and CLAUDE.md "Current state" are left to `/review-changes` / `/release`.

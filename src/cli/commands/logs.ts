@@ -74,9 +74,9 @@ const broken = new Set<NodeJS.WriteStream>();
 const guarded = new Set<NodeJS.WriteStream>();
 
 /**
- * `mm logs | head` (or `2>&1 | head`) closes the pipe early: that's not an error. Without a
- * listener the EPIPE would reach the crash handler ("Unexpected error"). Other write errors
- * → exit 1, quietly.
+ * `mm logs | head` (or `2>&1 | head`) closes the pipe early: that's not an error. `runCli`
+ * now ignores EPIPE for every command; this guard stays because it also stops further writes
+ * after a break (`broken`). Other write errors → exit 1, quietly.
  */
 function guard(stream: NodeJS.WriteStream): void {
   if (guarded.has(stream)) return;
@@ -110,6 +110,8 @@ async function showLogs(opts: LogsOptions, ctx: CliContext): Promise<void> {
     now,
     ...parsed,
     ...(opts.security === true && { securityOnly: true }),
+    // --json prints records only, so interrupted markers must not use up its cap.
+    ...(opts.json === true && { interrupted: false }),
     ...(ctx.run !== undefined && { ownRun: ctx.run }),
   });
   const problem = FOLDER_PROBLEM[result.folder];
@@ -118,7 +120,7 @@ async function showLogs(opts: LogsOptions, ctx: CliContext): Promise<void> {
     fail(problem);
     return;
   }
-  const report = { now, ...parsed };
+  const report = { now, ...parsed, ...(opts.security === true && { securityOnly: true }) };
   if (opts.json === true) {
     // Validated records re-serialized — never the raw lines. Footers stay off stdout.
     writeLines(

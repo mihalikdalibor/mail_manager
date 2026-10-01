@@ -24,6 +24,7 @@ import {
   RETENTION_DAYS,
   nameDateMs,
   parseLogLine,
+  readLogs,
   toRecord,
 } from '../../src/core/log/index.js';
 import type { LogLevel } from '../../src/core/config.js';
@@ -275,6 +276,43 @@ describe('FileEventLog: size cap', () => {
     quiet.emit(UNEXPECTED);
     expect(lines(appFile)).toHaveLength(n + 1);
     expect(events(appFile).at(-1)).toBe('log.truncated');
+  });
+
+  it('the marker takes the triggering record ts: across UTC midnight it stays in its own day', async () => {
+    const lastMs = Date.UTC(2026, 8, 23, 23, 59, 59, 999);
+    const afterMidnight = Date.UTC(2026, 8, 24, 0, 0, 0, 1);
+    let clock = lastMs;
+    const log = new FileEventLog(
+      dir,
+      ctx('debug', () => clock),
+      { maxFileBytes: MAX },
+    );
+    fillTo(log, MAX);
+    expect(events(appFile)).not.toContain('log.truncated');
+
+    // The record is built at 23:59:59.999; the clock passes midnight before the marker is written.
+    const record = toRecord(
+      FAILED,
+      ctx('debug', () => lastMs),
+    );
+    clock = afterMidnight;
+    log.appendRecord('app', record);
+
+    const marker = lines(appFile).at(-1) ?? '';
+    const parsed = parseLogLine(marker);
+    expect(parsed?.record.event).toBe('log.truncated');
+    expect(parsed?.record.ts).toBe(record.ts);
+    expect(parsed?.record.ts.slice(0, 10)).toBe(TODAY);
+    // Nothing leaked into the next day's file.
+    expect(existsSync(join(dir, 'app-2026-09-24.log'))).toBe(false);
+
+    // The reader accepts it: no skipped line, and the day counts as truncated, so the run
+    // that never got its finish isn't falsely reported as interrupted.
+    const read = await readLogs(dir, { now: afterMidnight + 60_000, sinceMs: 2 * DAY_MS });
+    expect(read.unreadable).toBe(0);
+    expect(read.unknown).toBe(0);
+    expect(read.records.at(-1)?.event).toBe('log.truncated');
+    expect(read.interrupted).toEqual([]);
   });
 
   it('drops a single line over 4096 bytes and counts it', () => {

@@ -43,6 +43,11 @@ export interface ReadLogsOptions {
   ownRun?: string;
   /** Keep only the newest N matching records (default 5,000). */
   maxRecords?: number;
+  /**
+   * Collect interrupted-run markers (default true). With false none are collected, so the
+   * `maxRecords` cap counts records only (`mm logs --json` prints records, never markers).
+   */
+  interrupted?: boolean;
 }
 
 export interface RunInfo {
@@ -305,7 +310,11 @@ export async function readLogs(dir: string, opts: ReadLogsOptions): Promise<Read
   }
 
   for (const info of runs.values()) info.truncatedDay = truncatedDays.has(dayOf(info.lastTs));
-  const showInterrupted = !opts.securityOnly && threshold <= LEVEL_ORDER.warn && !result.runsCapped;
+  const showInterrupted =
+    opts.interrupted !== false &&
+    !opts.securityOnly &&
+    threshold <= LEVEL_ORDER.warn &&
+    !result.runsCapped;
   if (showInterrupted) {
     for (const [run, info] of runs) {
       if (!info.started || info.finished || info.truncatedDay) continue;

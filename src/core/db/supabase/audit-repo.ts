@@ -96,7 +96,9 @@ export class SupabaseAuditRepo implements AuditRepo {
     const { data, error } = await this.client
       .from(TABLE)
       .select(COLUMNS)
+      // id breaks ties between rows with the same timestamp, so the order is stable.
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(clampLimit(limit));
     if (error) throw toRepoError(error);
     if (data !== null && !Array.isArray(data)) {

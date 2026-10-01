@@ -20,6 +20,7 @@ void runCli({
   log,
   ctx,
   proc: process,
+  streams: [process.stdout, process.stderr],
   flush: async () => {
     await flush(process.stdout);
     await flush(process.stderr);

@@ -35,10 +35,15 @@ function isStorableFolder(folder: string): boolean {
   );
 }
 
-/** Per-action `details`. Actions without a schema yet (later milestones) take none. */
+/**
+ * Per-action `details`. Actions without a schema yet (later milestones) take none.
+ * `account` is the mailbox UUID (an id, never the address): it keeps the history linked after
+ * a remove, when the row's `account_id` is null. Failed adds have no account yet.
+ */
 const accountDetails = z
   .strictObject({
     provider: z.string().refine((p) => cleanProvider(p) !== undefined, 'invalid provider'),
+    account: z.uuid().optional(),
   })
   .optional();
 

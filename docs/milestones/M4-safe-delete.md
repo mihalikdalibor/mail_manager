@@ -32,6 +32,7 @@ Undo beyond Trash; scheduled cleanups (M6).
 
 ## Risks & open questions
 
+- **From the M1c-2 security audit** ([SECURITY.md](../SECURITY.md#credential-encryption)): the AAD doesn't bind `email`, `provider` or `capabilities` — confirmations must name the mailbox by `username@host`, capabilities must come from the live server response, and the `@` check on folder names must be unicode-aware (NFKC + wider DB regex).
 - Order M4/M5: ship expunge only after backup exists? (Proposal: yes — M4 = trash only + expunge behind flag after M5.)
 - Very large plans (100k UIDs): compress UID ranges (`1:500,742,...`) in plan files.
 - Concurrent changes by other clients between plan and execute: UIDs are stable within a UIDVALIDITY; already-gone UIDs are skipped silently and reported.

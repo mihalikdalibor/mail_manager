@@ -1,3 +1,4 @@
+import { domainToASCII } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import {
   ISPDB_URL,
@@ -547,6 +548,82 @@ describe('discover: autoconfig', () => {
     const r = await discover(EMAIL, f.deps);
     expect(r.tried.filter((t) => t.source === 'autoconfig')).toHaveLength(1);
     expect(tried(r, 'autoconfig')?.outcome).toBe('insecure-only');
+  });
+});
+
+describe('discover: SRV off-domain flag', () => {
+  async function srvResult(
+    host: string,
+    email = EMAIL,
+  ): Promise<DiscoveryResult & { status: 'found' }> {
+    const r = await discover(
+      email,
+      fake({ srv: [{ name: host, port: 993, priority: 0, weight: 0 }] }).deps,
+    );
+    if (r.status !== 'found') throw new Error(`expected found, got ${r.status}`);
+    return r;
+  }
+
+  it('flags a host outside the email domain', async () => {
+    const r = await srvResult('imap.attacker-example.com');
+    expect(r.source).toBe('srv');
+    expect(r.offDomain).toBe(true);
+    expect(r.imap.host).toBe('imap.attacker-example.com');
+  });
+
+  it.each([
+    ['imap.<domain>', `imap.${DOMAIN}`],
+    ['<x>.sub.<domain>', `mail.sub.${DOMAIN}`],
+    ['the domain itself', DOMAIN],
+    ['an upper-case host', `IMAP.${DOMAIN.toUpperCase()}`],
+    ['a host with a trailing dot', `imap.${DOMAIN}.`],
+  ])('does not flag %s', async (_label, host) => {
+    const r = await srvResult(host);
+    expect(r.source).toBe('srv');
+    expect(r.offDomain).toBeUndefined();
+    expect('offDomain' in r).toBe(false);
+  });
+
+  it.each([
+    ['evil<domain> (no dot boundary)', `evil${DOMAIN}`],
+    ['<domain>.attacker', `${DOMAIN}.attacker-example.com`],
+    ['a parent of the domain', 'test-domain.eu'],
+  ])('flags %s', async (_label, host) => {
+    expect((await srvResult(host)).offDomain).toBe(true);
+  });
+
+  it('does not flag a preset IMAP host or alt host', async () => {
+    const withAlt = presetBy((p) => p.altHosts.length > 0 && p.imap !== undefined);
+    const imapHost = withAlt.imap?.host ?? '';
+    expect(imapHost).not.toBe('');
+    expect((await srvResult(imapHost)).offDomain).toBeUndefined();
+    expect((await srvResult(withAlt.altHosts[0] ?? '')).offDomain).toBeUndefined();
+  });
+
+  it('compares an IDN domain in ASCII', async () => {
+    const idn = 'b\u00fccher-beispiel.eu';
+    const ascii = domainToASCII(idn);
+    expect(ascii).toMatch(/^xn--/);
+    const email = `someone@${idn}`;
+    expect((await srvResult(`imap.${ascii}`, email)).offDomain).toBeUndefined();
+    expect((await srvResult(`imap.${ascii}`.toUpperCase(), email)).offDomain).toBeUndefined();
+    expect((await srvResult('imap.attacker-example.com', email)).offDomain).toBe(true);
+    expect((await srvResult(`evil${ascii}`, email)).offDomain).toBe(true);
+  });
+
+  it('never flags ISPDB or autoconfig results, however far off the host is', async () => {
+    const off = xml({ host: 'imap.attacker-example.com' });
+    const viaIspdb = await discover(EMAIL, fake({ routes: { [ISPDB]: ok(off) } }).deps);
+    expect(viaIspdb.status === 'found' && viaIspdb.source).toBe('ispdb');
+    expect('offDomain' in viaIspdb).toBe(false);
+    const viaAutoconfig = await discover(EMAIL, fake({ routes: { [AC1]: ok(off) } }).deps);
+    expect(viaAutoconfig.status === 'found' && viaAutoconfig.source).toBe('autoconfig');
+    expect('offDomain' in viaAutoconfig).toBe(false);
+  });
+
+  it('never flags a preset-domain or MX preset result', async () => {
+    const gmail = await discover('someone@gmail.com', fake().deps);
+    expect('offDomain' in gmail).toBe(false);
   });
 });
 

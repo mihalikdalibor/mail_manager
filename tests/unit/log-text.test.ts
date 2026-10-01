@@ -548,8 +548,14 @@ describe('formatReport', () => {
       [{ unreadable: 3 }, '3 unreadable lines skipped'],
       [{ unknown: 1 }, '1 unknown event skipped (newer Mail Manager?)'],
       [{ unknown: 2 }, '2 unknown events skipped (newer Mail Manager?)'],
-      [{ omitted: 1 }, '1 older line not shown — narrow with --since or --run'],
-      [{ omitted: 5 }, '5 older lines not shown — narrow with --since or --run'],
+      [
+        { omitted: 1 },
+        '1 older line not shown — narrow with --since, --level, --security or --run',
+      ],
+      [
+        { omitted: 5 },
+        '5 older lines not shown — narrow with --since, --level, --security or --run',
+      ],
       [{ skippedFiles: 1 }, '1 log file skipped (not a regular file, not readable or too large)'],
       [{ skippedFiles: 2 }, '2 log files skipped (not a regular file, not readable or too large)'],
     ])('%j → %s', (extra, text) => {
@@ -557,6 +563,21 @@ describe('formatReport', () => {
       expect(reportFooters(r, base)).toEqual([text]);
       const lines = formatReport(r, base);
       expect(lines).toEqual([timelineLine(one(), 'keygen', BRATISLAVA), text]);
+    });
+
+    it.each<[Partial<ReportOptions>, string]>([
+      [{ run: RUN }, '--since, --level or --security'],
+      [{ securityOnly: true }, '--since, --level or --run'],
+      [{ level: 'error' }, '--since, --security or --run'],
+      [{ level: 'warn' }, '--since, --level, --security or --run'],
+      [{ level: 'debug' }, '--since, --level, --security or --run'],
+      [{ run: RUN, securityOnly: true }, '--since or --level'],
+      [{ run: RUN, securityOnly: true, level: 'error' }, '--since'],
+    ])('omitted hint drops the flags already given: %j', (opts, flags) => {
+      const r = result([one()], { omitted: 2 });
+      expect(reportFooters(r, { ...base, ...opts })).toEqual([
+        `2 older lines not shown — narrow with ${flags}`,
+      ]);
     });
 
     it('none when all counts are 0', () => {
@@ -568,7 +589,7 @@ describe('formatReport', () => {
       const footers = [
         '2 unreadable lines skipped',
         '1 unknown event skipped (newer Mail Manager?)',
-        '4 older lines not shown — narrow with --since or --run',
+        '4 older lines not shown — narrow with --since, --level, --security or --run',
         '3 log files skipped (not a regular file, not readable or too large)',
       ];
       expect(reportFooters(r, base)).toEqual(footers);
@@ -590,12 +611,106 @@ describe('formatReport', () => {
       expect(formatReport(result([]), { ...base, ...opts })).toEqual([text]);
     });
 
+    it.each<[Partial<ReportOptions>, string]>([
+      [{ level: 'warn' }, 'No matching log lines in the last 24 h.'],
+      [{ level: 'error', sinceMs: 30 * 60_000 }, 'No matching log lines in the last 30 min.'],
+      [{ securityOnly: true }, 'No matching log lines in the last 24 h.'],
+      [
+        { securityOnly: true, sinceMs: 7 * 24 * 3_600_000 },
+        'No matching log lines in the last 7 days.',
+      ],
+      [{ run: RUN, sinceMs: 3_600_000 }, 'No matching log lines in the last 1 h.'],
+      // debug/info are not filters; --run alone keeps its own wording.
+      [{ level: 'debug' }, 'No log lines in the last 24 h.'],
+      [{ level: 'info' }, 'No log lines in the last 24 h.'],
+      [{ run: RUN, level: 'info' }, `No log lines for run ${RUN}.`],
+      [{ run: RUN, level: 'error' }, `No log lines for run ${RUN}.`],
+    ])('filters %j → %s', (opts, text) => {
+      expect(formatReport(result([]), { ...base, ...opts })).toEqual([text]);
+    });
+
     it('footers still follow', () => {
       expect(formatReport(result([], { unreadable: 2, skippedFiles: 1 }), base)).toEqual([
         'No log lines in the last 24 h.',
         '2 unreadable lines skipped',
         '1 log file skipped (not a regular file, not readable or too large)',
       ]);
+    });
+  });
+
+  describe('command column width', () => {
+    const at = (cmd: string, offset: number, run: string): LogRecord =>
+      rec(commandStart(cmd, [], RT), NOW - offset, run);
+    /** Column where the event text starts: after the time and the padded command. */
+    const textColumn = (line: string, text: string): number => line.indexOf(text);
+
+    it('grows to the longest command so every event text starts at the same column', () => {
+      const long = at('account update-password', 3_000_000, OTHER_RUN);
+      const short = rec(authLogout('logged-out'), NOW - 2_000_000, RUN);
+      const r = result([long, short], {
+        runs: new Map([
+          [OTHER_RUN, runInfo('account update-password', long.ts)],
+          [RUN, runInfo('keygen', short.ts)],
+        ]),
+        interrupted: [
+          { run: 'abababababababab', cmd: 'login', ts: new Date(NOW - 1_000_000).toISOString() },
+        ],
+      });
+      const lines = formatReport(r, base).filter((l) => TIME_RE.test(l));
+      expect(lines).toHaveLength(3);
+      const columns = [
+        textColumn(lines[0] ?? '', 'started'),
+        textColumn(lines[1] ?? '', 'Mail Manager logout'),
+        textColumn(lines[2] ?? '', 'interrupted or still running'),
+      ];
+      expect(columns).toEqual([10 + 23 + 2, 10 + 23 + 2, 10 + 23 + 2]);
+    });
+
+    it('stays 12 wide when all commands are short', () => {
+      const a = at('keygen', 3_000_000, OTHER_RUN);
+      const lines = formatReport(result([a]), base);
+      expect(lines).toEqual([`${lines[0]?.slice(0, 8)}  ${'keygen'.padEnd(12)}  started`]);
+    });
+
+    it('measures only the lines printed (a long command outside the result does not widen)', () => {
+      const a = at('keygen', 3_000_000, OTHER_RUN);
+      const r = result([a], {
+        runs: new Map([['abababababababab', runInfo('account update-password', a.ts)]]),
+      });
+      expect(textColumn(formatReport(r, base)[0] ?? '', 'started')).toBe(10 + 12 + 2);
+    });
+
+    it('caps the alignment at 32; the full sanitized name is still printed', () => {
+      const hostile = `evil\u001b[2J${'x'.repeat(1000)}`;
+      const sanitized = `evil[2J${'x'.repeat(1000)}`;
+      // A tampered log can hold any cmd the validator lets through: set it on the record.
+      const bad = { ...at('keygen', 3_000_000, OTHER_RUN), cmd: hostile } as LogRecord;
+      const good = rec(authLogout('logged-out'), NOW - 2_000_000, RUN);
+      const r = result([bad, good], {
+        runs: new Map([[RUN, runInfo('keygen', good.ts)]]),
+      });
+      const [first, second] = formatReport(r, base);
+      expect(first).toContain(`  ${sanitized}  started`);
+      expect(first).not.toContain('\u001b');
+      // The short command is padded to 32 only, not to the hostile name's length.
+      expect(second).toBe(`${second?.slice(0, 8)}  ${'keygen'.padEnd(32)}  ${eventText(good)}`);
+    });
+
+    it('pads after sanitizing: invisible characters in a command do not shift the column', () => {
+      const sneaky = at('key\u200bgen', 3_000_000, OTHER_RUN);
+      const plain = rec(authLogout('logged-out'), NOW - 2_000_000, RUN);
+      const r = result([sneaky, plain], { runs: new Map([[RUN, runInfo('keygen', plain.ts)]]) });
+      const [a, b] = formatReport(r, base);
+      expect(textColumn(a ?? '', 'started')).toBe(textColumn(b ?? '', 'Mail Manager logout'));
+      expect(a).toContain(`${'keygen'.padEnd(12)}  started`);
+    });
+
+    it('timelineLine and the default width stay 12', () => {
+      const a = at('keygen', 3_000_000, OTHER_RUN);
+      expect(timelineLine(a, 'keygen', BRATISLAVA)).toContain(`${'keygen'.padEnd(12)}  started`);
+      expect(timelineLine(a, 'keygen', BRATISLAVA, 20)).toContain(
+        `${'keygen'.padEnd(20)}  started`,
+      );
     });
   });
 

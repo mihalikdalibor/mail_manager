@@ -12,6 +12,7 @@ import {
   domainProblemText,
   foundVia,
   line,
+  offDomainWarning,
   printHelp,
   printProvider,
   printSettings,
@@ -66,7 +67,8 @@ async function choose(result: DiscoveryResult): Promise<Reported> {
 
 async function report(result: DiscoveryResult): Promise<Reported> {
   switch (result.status) {
-    case 'found':
+    case 'found': {
+      const offDomain = offDomainWarning(result);
       if (result.provider !== undefined) printProvider(result.provider);
       printSettings(result.imap);
       line('Found via', foundVia(result.source, result.via));
@@ -76,7 +78,9 @@ async function report(result: DiscoveryResult): Promise<Reported> {
       if (result.domainProblem !== undefined) {
         warn(domainProblemText(result.domainProblem, result.email.displayDomain));
       }
+      if (offDomain !== undefined) warn(offDomain);
       return { code: 0 };
+    }
     case 'blocked':
       printProvider(result.provider);
       line('Found via', foundVia(result.source, result.via));

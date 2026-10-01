@@ -5,6 +5,7 @@ import {
   accountFailureReason,
   addAccount,
   assertNotDuplicate,
+  assertSecretReadable,
   checkLogin,
   createLocalGuard,
   parseAccountRef,
@@ -423,8 +424,9 @@ describe('assertNotDuplicate', () => {
       action: 'account.add',
       result: 'failed',
       reason: 'duplicate',
-      details: { provider: 'websupport' },
     });
+    // A failed add has no account yet: provider only, no `account` key.
+    expect(h.audit.entries[0]?.details).toStrictEqual({ provider: 'websupport' });
     expect(h.audit.entries[0]?.accountId).toBeUndefined();
   });
 
@@ -478,7 +480,7 @@ describe('addAccount', () => {
       {
         accountId: ACCOUNT_ID,
         action: 'account.add',
-        details: { provider: 'websupport' },
+        details: { provider: 'websupport', account: ACCOUNT_ID },
         result: 'ok',
         runId: RUN_ID,
       },
@@ -518,7 +520,7 @@ describe('addAccount', () => {
     expect(h.audit.entries[0]).toEqual({
       accountId: ACCOUNT_ID,
       action: 'account.add',
-      details: { provider: 'websupport' },
+      details: { provider: 'websupport', account: ACCOUNT_ID },
       result: 'ok',
     });
     expect(h.audit.entries[0]?.runId).toBeUndefined();
@@ -527,7 +529,7 @@ describe('addAccount', () => {
   it('an odd provider is recorded as custom (audit details and event)', async () => {
     const h = setup();
     await addAccount(h.deps, addInput({ provider: 'Bad Provider!' }));
-    expect(h.audit.entries[0]?.details).toEqual({ provider: 'custom' });
+    expect(h.audit.entries[0]?.details).toEqual({ provider: 'custom', account: ACCOUNT_ID });
     expect(accountRecords(h.log)[0]).toMatchObject({ provider: 'custom', outcome: 'ok' });
   });
 
@@ -588,8 +590,9 @@ describe('addAccount', () => {
       action: 'account.add',
       result: 'failed',
       reason: 'duplicate',
-      details: { provider: 'websupport' },
     });
+    // A failed add has no account yet: provider only, no `account` key.
+    expect(h.audit.entries[0]?.details).toStrictEqual({ provider: 'websupport' });
     expect(h.audit.entries[0]?.accountId).toBeUndefined();
   });
 
@@ -624,8 +627,9 @@ describe('addAccount', () => {
       action: 'account.add',
       result: 'failed',
       reason: 'auth-failed',
-      details: { provider: 'websupport' },
     });
+    // A failed add has no account yet: provider only, no `account` key.
+    expect(h.audit.entries[0]?.details).toStrictEqual({ provider: 'websupport' });
     expect(h.audit.entries[0]?.accountId).toBeUndefined();
   });
 
@@ -971,7 +975,7 @@ describe('updatePassword', () => {
       {
         accountId: ACCOUNT_ID,
         action: 'account.password-update',
-        details: { provider: 'websupport' },
+        details: { provider: 'websupport', account: ACCOUNT_ID },
         result: 'ok',
         runId: RUN_ID,
       },
@@ -1034,10 +1038,11 @@ describe('removeAccount', () => {
     expect(repo.remove).toHaveBeenCalledWith(ACCOUNT_ID);
     expect(repo.rows.size).toBe(0);
     expect(audit.entries).toHaveLength(1);
-    expect(audit.entries[0]).toMatchObject({
-      action: 'account.remove',
-      details: { provider: 'websupport' },
-      result: 'ok',
+    expect(audit.entries[0]).toMatchObject({ action: 'account.remove', result: 'ok' });
+    // `account_id` is null after the delete; the UUID stays in `details.account`.
+    expect(audit.entries[0]?.details).toStrictEqual({
+      provider: 'websupport',
+      account: ACCOUNT_ID,
     });
     expect(audit.entries[0]?.accountId).toBeUndefined();
     expect(accountRecords(log).map(stripEnvelope)).toEqual([
@@ -1149,6 +1154,57 @@ describe('review and security-audit follow-ups (M1c-1)', () => {
       false,
     );
     expect(storedSecretReadable(newProvider(), account)).toBe(false);
+  });
+
+  it('assertSecretReadable: silent for an intact row; no event, no audit, no login', () => {
+    const credentials = newProvider();
+    const account = storedAccount(credentials);
+    const h = setup({ credentials, accounts: [account] });
+    expect(() => assertSecretReadable(h.deps, account)).not.toThrow();
+    expect(accountRecords(h.log)).toEqual([]);
+    expect(h.audit.entries).toEqual([]);
+    expect(h.open).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a changed host', (a: MailAccount) => ({ ...a, host: 'imap.attacker.example' })],
+    ['a changed username', (a: MailAccount) => ({ ...a, username: 'x@example.invalid' })],
+  ])(
+    'assertSecretReadable: %s → failed account.password-update event, AccountError, nothing else',
+    (_label, change) => {
+      const credentials = newProvider();
+      const account = change(storedAccount(credentials));
+      const h = setup({ credentials, accounts: [account] });
+      let thrown: unknown;
+      try {
+        assertSecretReadable(h.deps, account);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({ name: 'AccountError', code: 'secret-unreadable' });
+      expect(accountRecords(h.log).map(stripEnvelope)).toEqual([
+        {
+          event: 'account.password-update',
+          acct: ACCOUNT_ID,
+          provider: 'websupport',
+          outcome: 'failed',
+          reason: 'secret-unreadable',
+          level: 'warn',
+        },
+      ]);
+      expect(h.audit.entries).toEqual([]); // failed password updates aren't audited
+      expect(h.open).not.toHaveBeenCalled();
+      const text = JSON.stringify(h.log.records);
+      expect(text).not.toContain('attacker');
+      expect(text).not.toContain(EMAIL);
+    },
+  );
+
+  it('assertSecretReadable: a secret under another key is refused with the event', () => {
+    const account = storedAccount(newProvider());
+    const h = setup({ credentials: newProvider(), accounts: [account] });
+    expect(() => assertSecretReadable(h.deps, account)).toThrow(AccountError);
+    expect(accountRecords(h.log)).toHaveLength(1);
   });
 
   it('knownProvider: preset ids pass, anything else is custom', () => {

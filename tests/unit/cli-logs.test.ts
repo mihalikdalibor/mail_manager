@@ -343,6 +343,71 @@ describe('mm logs --json', () => {
   });
 });
 
+describe('output cap and interrupted markers (M1c-2)', () => {
+  /** 5,100 doctor lines of one finished run plus one run that never finished (the newest). */
+  function seedOverCap(): void {
+    mkdirSync(dir, { mode: 0o700 });
+    const lines = [rawLine(RUN_A, NOW - 2 * HOUR, start('doctor'))];
+    for (let i = 0; i < 5100; i++) {
+      lines.push(rawLine(RUN_A, NOW - HOUR + i, doctorCheck('node', 'ok')));
+    }
+    lines.push(rawLine(RUN_A, NOW - HOUR + 6000, finish('doctor')));
+    lines.push(rawLine(RUN_B, NOW - 60_000, start('login')));
+    appendFileSync(join(dir, `app-${TODAY}.log`), `${lines.join('\n')}\n`);
+  }
+
+  it('--json prints exactly 5,000 records: interrupted markers do not use up the cap', async () => {
+    seedOverCap();
+    await mm('logs', '--json');
+    expectOk();
+    const records = jsonLines();
+    expect(records).toHaveLength(5000);
+    expect(records.at(-1)).toMatchObject({ run: RUN_B, event: 'command.start' });
+    expect(out.stdout).not.toContain('interrupted or still running');
+    expect(out.stderr).toContain('older lines not shown');
+  });
+
+  it('plain output still merges the marker into the same 5,000-line cap', async () => {
+    seedOverCap();
+    await mm('logs');
+    expectOk();
+    const lines = out.stdout.split('\n').filter((l) => /^\d{2}:\d{2}:\d{2} {2}/.test(l));
+    expect(lines).toHaveLength(5000);
+    expect(lines.at(-1)).toContain('interrupted or still running');
+    expect(out.stdout).toContain('older lines not shown');
+  });
+
+  it('the omitted hint drops --run and --security when they were given', async () => {
+    seedOverCap();
+    await mm('logs', '--run', RUN_A);
+    expect(out.stdout).toContain(
+      'older lines not shown — narrow with --since, --level or --security',
+    );
+    out.stdout = '';
+    await mm('logs', '--json', '--run', RUN_A);
+    expect(out.stderr).toContain('narrow with --since, --level or --security');
+    expect(out.stderr).not.toContain('--run');
+  });
+});
+
+describe('empty message with filters (M1c-2)', () => {
+  it.each<[string[], string]>([
+    [['--level', 'warn'], 'No matching log lines in the last 24 h.'],
+    [['--level', 'error'], 'No matching log lines in the last 24 h.'],
+    [['--security'], 'No matching log lines in the last 24 h.'],
+    [['--security', '--since', '30m'], 'No matching log lines in the last 30 min.'],
+    [['--run', 'dddddddddddddddd', '--since', '2h'], 'No matching log lines in the last 2 h.'],
+    [['--level', 'info'], 'No log lines in the last 24 h.'],
+    [['--level', 'debug'], 'No log lines in the last 24 h.'],
+    [['--run', 'dddddddddddddddd'], 'No log lines for run dddddddddddddddd.'],
+  ])('mm logs %j → %s', async (args, text) => {
+    emit(RUN_A, NOW - 2 * DAY, start());
+    await mm('logs', ...args);
+    expectOk();
+    expect(out.stdout.trim()).toBe(text);
+  });
+});
+
 describe('tampered lines are never printed', () => {
   function tamper(): void {
     const record = JSON.parse(rawLine(RUN_A, NOW - 3 * HOUR + 20, finish())) as Record<

@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1c Account commands** — M1c-1 account commands done 2026-10-01 (v0.7.0, C-019, reviewed); next M1c-2 hardening follow-ups — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M2 Mailbox insight (not started — needs the user's go-ahead)** — M1c account commands done: M1c-1 account commands 2026-10-01 (v0.7.0, C-019, reviewed), M1c-2 hardening 2026-10-01 (v0.8.0, C-020, reviewed, migration applied) — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -178,7 +178,7 @@ Decisions (2026-09-29): live RLS tests insert a few tagged rows per run that sta
 - **Acceptance:** migration applied; `audit_log` RLS suite passes; doctor detects a missing table; `audit.write-failed` tested; lint, typecheck, tests, build green.
 - Logging: `audit.write-failed`.
 
-## M1c — Account commands (needs M1a + M1b)
+## M1c — Account commands (needs M1a + M1b) ✅
 
 Decisions (2026-09-30): split into M1c-1 (all account commands) → M1c-2 (hardening follow-ups). Accounts are named by the short id `mm account list` shows (first 8 hex chars of the account UUID; any unique prefix of ≥ 4 chars or the full UUID also works). Password retries in `add`/`update-password` stay inside one run and are limited by the login guard (2 free, then a 5 s wait, lock after 5). Decided 2026-10-01: the encrypted password is bound to the account's host, port and username (AAD), so an account whose server was changed in the database can't decrypt — the password is never sent to a swapped host; failed `account add` attempts also get an audit row (`result: failed`, `account_id` null, reason code).
 
@@ -201,16 +201,20 @@ Decisions (2026-09-30): split into M1c-1 (all account commands) → M1c-2 (harde
 - [x] Tests: core with fakes (nothing saved on failure, guard-limited retries, duplicate, key-version mismatch, prefix resolution); CLI with mocked prompts; integration test (skips without `MM_TEST_SUPABASE_A_*` + `MM_TEST_IMAP_*`): add → list → test → update-password (same password) → remove on the test mailbox as test user A — no live wrong-password attempt (TESTING.md: the suite's one is in `imap-session`); "wrong password saves nothing" is proven with a fake IMAP opener
 - **Acceptance:** add / list / test / update-password / remove work on the test mailbox; a wrong password saves nothing; no password, address or host in logs or audit rows; RLS suite still passes; lint, typecheck, tests, build green.
 
-### M1c-2 — Hardening follow-ups (needs M1c-1)
+### M1c-2 — Hardening follow-ups (needs M1c-1) ✅
 
-- [ ] New migration (applying it needs the user's go-ahead): `mail_accounts.host = lower(host)` check; `created_at`/`updated_at` forced to `now()` on insert; `audit_log`: revoke `service_role` DELETE, `folder !~ '@'`, `jsonb_typeof(details) = 'object'` (from the M1a and M1b-4d reviews)
-- [ ] `mm login` over an existing session revokes the old refresh token first (logout → login)
-- [ ] Unit test for the `src/cli/bin.ts` exit/flush path; comment that the auth deadline doesn't cancel the underlying library call
-- [ ] Closed pipe for every command (`mm keygen | true` → no "Unexpected error" / `error.unexpected`), fixed in `runCli`/`bin.ts` (C-018 review)
-- [ ] `mm logs` follow-ups (C-018 review): `--json` cap ignores interrupted markers; the "older lines not shown" hint suggests options that help (`--level`/`--security`/`--run`); the empty message mentions active filters; `log.truncated` written just after UTC midnight lands in the previous day's file (writer timestamp)
-- [ ] `SupabaseAuditRepo.listRecent` tie-break by `id desc` (C-017 review)
-- [ ] M1c-1 security-audit follow-ups (C-019): `mm account add` warns specifically when discovery (SRV/autoconfig) returns a host outside the email's domain, and "Use these settings?" then defaults to no; DB length limits for `mail_accounts.host`/`email`/`username` (in the migration above); the `account.remove` audit row can't say which mailbox was removed (`account_id` is null after the delete) — decide on an id in `details` or leave it; `mm logs` column alignment for long command names (`account update-password`)
-- **Acceptance:** migration applied, RLS suite passes; each follow-up has a test; lint, typecheck, tests, build green.
+Decisions (2026-10-01): kept as **one** assignment (sliced: DB / run + login / `mm logs` / accounts); revoke UPDATE on `mail_accounts` email/host/port/username (the app never updates them; changing the server = remove + add); `mm login` with a session present **refuses** ("run `mm logout` first"); every `account.*` audit row for an existing account stores its UUID in `details.account`, so the history stays linked after a remove.
+
+- [x] DB hardening migration (one new file; `npm run db:push` only after the user's go-ahead):
+  - `mail_accounts`: `update … set host = lower(host)` then check `host = lower(host)` (safe: AAD v2 already lowercases the host); length limits email ≤ 254, host ≤ 253, username ≤ 320, label ≤ 100; provider `^[a-z0-9-]{1,40}$`; INSERT granted only on the columns the app sends (`created_at`/`updated_at` always from the database); UPDATE revoked on email, host, port, username
+  - `audit_log`: `folder !~ '@'`; `details` null or a JSON object; `service_role` loses DELETE
+  - RLS suite: one test per new rule with the exact error code; run once after the push
+- [x] `SupabaseAuditRepo.listRecent` tie-break by `id desc` (C-017 review)
+- [x] Run/exit: a closed pipe ends any command quietly (`mm keygen | true` → exit code unchanged, no "Unexpected error", no `error.unexpected`), handled once in `runCli`/`bin.ts` (C-018 review); a test for the `bin.ts` exit/flush path; comment that the auth deadline doesn't cancel the underlying library call
+- [x] `mm login` with a local session present → "You're already logged in — run `mm logout` first", exit 1, nothing sent (so an old refresh token is always revoked by `mm logout` before a new login)
+- [x] `mm logs` (C-018 review): `--json` caps only the records it prints (interrupted markers don't count); the "older lines not shown" hint suggests `--level`/`--security`/`--run`; the empty message says "no matching log lines" when a filter is active; `log.truncated` takes the timestamp of the line that triggered it (lands in the right day file); the command column fits the longest command shown (`account update-password`)
+- [x] Accounts (C-019 security audit + review): a DNS SRV result whose host is neither under the email's domain nor a preset host → a specific warning, and "Use these settings?" defaults to no; `update-password` refusing an unreadable secret emits `account.password-update` failed (`secret-unreadable`) from core; the duplicate-add text also mentions remove + add; stale comment in `src/cli/account-text.ts`; `details.account` (UUID) on `account.add` ok, `account.password-update` and `account.remove` rows
+- **Acceptance:** migration applied, RLS suite passes; each follow-up has a test; lint, typecheck, tests, build, format:check green.
 
 ## M2 — Mailbox insight → [doc](docs/milestones/M2-insight.md)
 
@@ -288,6 +292,7 @@ Decisions (2026-09-30): split into M1c-1 (all account commands) → M1c-2 (harde
 
 ## Later / ideas
 
+- `mm login` session check should fail closed (M1c-2 security audit, 2026-10-01): today a corrupt, unreadable (e.g. root-owned after `sudo mm login`) or non-JSON `session.json` counts as "no session" and login overwrites it without revoking anything. Only a missing file or `{}` should count as empty; anything else → "run `mm logout` first" (`logout` already clears it). Also re-check `isEmpty()` right before `signInWithPassword` (two parallel logins both pass the check). Related: `mm logout` while offline clears the local file but can't revoke the server token and still says "Logged out" — say so ("logged out on this computer only"); a relative `MM_CONFIG_DIR`/`XDG_CONFIG_HOME` should be refused (zod absolute path).
 - Database setup without getting stuck (from 2026-09-29): today `mm doctor` only reports a missing table ("run npm run db:push"); automate or guide it (e.g. detect pending migrations and explain the one command, or apply them from a setup step) so non-technical users never hit a missing-table error
 - Auth audit log retention: scheduled cleanup of `auth.audit_log_entries` older than 90 days (decided 2026-09-29; M6/M7 hosting)
 - Local metadata index (SQLite) for instant filtering on huge mailboxes

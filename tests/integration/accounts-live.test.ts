@@ -141,7 +141,7 @@ describe.skipIf(!enabled)('account commands (live Supabase + test mailbox)', () 
     expect(await services.accounts.get(added.id)).toBeNull();
   });
 
-  it("writes exactly this run's audit rows, provider only", async () => {
+  it("writes exactly this run's audit rows: provider + account id, nothing else", async () => {
     const { records } = await services.audit.listRecent(50);
     const rows = records.filter((r) => r.runId === runId).sort((x, y) => x.id - y.id);
     expect(rows.map((r) => `${r.action}:${r.result}`)).toEqual([
@@ -150,8 +150,9 @@ describe.skipIf(!enabled)('account commands (live Supabase + test mailbox)', () 
       'account.remove:ok',
     ]);
     for (const row of rows) {
-      expect(row.details).toEqual({ provider: 'custom' });
-      // The account is gone: set null on delete, and the remove row never had one.
+      // `details.account` keeps the history linked; the column itself is gone: set null on
+      // delete, and the remove row never had one.
+      expect(row.details).toEqual({ provider: 'custom', account: added?.id });
       expect(row.accountId).toBeUndefined();
     }
   });

@@ -38,6 +38,11 @@ export interface RunCliDeps {
   proc: ProcLike;
   /** Flushes stdout + stderr before exiting. */
   flush: () => Promise<void>;
+  /**
+   * Output streams (stdout, stderr) whose 'error' events the run handles: a closed pipe
+   * (`mm keygen | head -0`) must not look like a crash.
+   */
+  streams?: NodeJS.EventEmitter[];
   /** Package root for relative stack frames. */
   root?: string;
 }
@@ -148,12 +153,35 @@ export async function runCli(deps: RunCliDeps): Promise<void> {
   });
   const crash = (err: unknown): void => {
     try {
-      console.error('Unexpected error');
+      try {
+        console.error('Unexpected error');
+      } catch {
+        // A broken stderr must not stop the log line or the exit.
+      }
       safeEmit(log, () => unexpectedError(err, root));
     } finally {
       proc.exit(1);
     }
   };
+  // Output stream errors never reach `crash` (no "Unexpected error" for a closed pipe):
+  // - EPIPE: the reader went away (`| head`); not our failure, the exit code stays as the
+  //   command set it. ERR_STREAM_DESTROYED only follows an earlier break, so it's the same.
+  // - Anything else (EIO, ...): the output is lost, so the run must not exit 0. Nothing is
+  //   printed: the stream is broken. An error arriving after command.finish was logged can
+  //   make the real exit code 1 while the log says the earlier one; the log can't be rewritten.
+  // A command may set `exitCode = 0` after the error arrived (e.g. after a network wait), so the
+  // failure is remembered and applied again before the finish line and before the exit.
+  let streamFailed = false;
+  const applyStreamFailure = (): void => {
+    if (streamFailed && normalizeExitCode(proc.exitCode) === 0) proc.exitCode = 1;
+  };
+  const onStreamError = (err: unknown): void => {
+    const code = (err as { code?: unknown } | null | undefined)?.code;
+    if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return;
+    streamFailed = true;
+    applyStreamFailure();
+  };
+  for (const stream of deps.streams ?? []) stream.on('error', onStreamError);
   proc.on('uncaughtException', crash);
   proc.on('unhandledRejection', crash);
 
@@ -173,9 +201,11 @@ export async function runCli(deps: RunCliDeps): Promise<void> {
       proc.exitCode = 1;
     }
   }
+  applyStreamFailure();
   logger.finish(proc.exitCode);
   // A finished command must not linger: library timers (e.g. auth-js token-refresh
   // retries, up to ~30 s) would otherwise keep the process alive and print late noise.
   await deps.flush();
+  applyStreamFailure();
   proc.exit();
 }

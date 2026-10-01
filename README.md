@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.7.0-blue?style=flat-square" alt="Version 0.7.0">
+  <img src="https://img.shields.io/badge/version-0.8.0-blue?style=flat-square" alt="Version 0.8.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
@@ -26,7 +26,7 @@ Available today:
 
 - **`mm doctor`** — checks Node version, env config, master key, Supabase reachability, database schema and login session; never prints secrets.
 - **`mm keygen`** — generates a new `MM_MASTER_KEY` for credential encryption.
-- **`mm login` / `mm logout` / `mm whoami`** — sign in to the app (invite-only Supabase users, hidden password prompt).
+- **`mm login` / `mm logout` / `mm whoami`** — sign in to the app (invite-only Supabase users, hidden password prompt); `mm login` while already signed in asks you to run `mm logout` first.
 - **`mm discover <email>`** — finds the IMAP settings for an address without logging in: built-in presets for 24 SK/CZ and global providers (by email domain or the domain's MX records), Mozilla ISPDB, the domain's autoconfig, DNS SRV; if nothing is found, pick your provider from the list or enter the IMAP host manually. Plain-language hints for typos, DNS problems and no internet.
 - **`mm account add | list | test | update-password | remove`** — connect a mailbox: settings are discovered (or picked), the password is tested through the login guard and saved encrypted, bound to that server; mailboxes are named by the short id `mm account list` shows. Nothing is saved when the login fails.
 - **`mm logs`** — what this computer's `mm` runs did, in plain words and local time (`--since 7d`, `--level warn`, `--security`, `--run <id>`); `--json` gives validated records that are safe to send to support. Tampered log lines are skipped and counted, never printed. `mm logs path` shows the folder, `mm logs clear` deletes the log files after a confirmation.

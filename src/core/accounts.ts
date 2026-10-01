@@ -183,8 +183,9 @@ export function knownProvider(provider: string): string {
   return id !== undefined && PRESETS.some((p) => p.id === id) ? id : 'custom';
 }
 
-function auditProvider(provider: string): { provider: string } {
-  return { provider: knownProvider(provider) };
+/** Audit `details` of an account row: the preset id and, once the account exists, its UUID. */
+function auditProvider(provider: string, account?: string): { provider: string; account?: string } {
+  return { provider: knownProvider(provider), ...(account !== undefined && { account }) };
 }
 
 function emit(
@@ -307,7 +308,7 @@ export async function addAccount(
     await audit(deps, {
       accountId: account.id,
       action: 'account.add',
-      details: auditProvider(o.provider),
+      details: auditProvider(o.provider, account.id),
       result: 'ok',
     });
     emit(deps.log, 'account.add', { acct: account.id, provider: o.provider });
@@ -345,6 +346,23 @@ export function storedSecretReadable(
   } catch {
     return false;
   }
+}
+
+/**
+ * The pre-check of `mm account update-password`: refuses an account whose stored secret no
+ * longer decrypts, before any password is asked for. Emits the failed `account.password-update`
+ * (reason `secret-unreadable`) and throws `AccountError('secret-unreadable')`. No audit row —
+ * failed password updates aren't audited. `updatePassword` keeps its own decrypt check as a
+ * safety net; this path throws before it runs, so the event is not emitted twice.
+ */
+export function assertSecretReadable(
+  deps: { credentials: CredentialProvider; log: EventLog },
+  account: MailAccount,
+): void {
+  if (storedSecretReadable(deps.credentials, account)) return;
+  const err = new AccountError('secret-unreadable');
+  emit(deps.log, 'account.password-update', { acct: account.id, provider: account.provider, err });
+  throw err;
 }
 
 /** Logs in with the saved password and records the server's capabilities. */
@@ -404,7 +422,7 @@ export async function updatePassword(
     await audit(deps, {
       accountId: account.id,
       action: 'account.password-update',
-      details: auditProvider(account.provider),
+      details: auditProvider(account.provider, account.id),
       result: 'ok',
     });
     emit(deps.log, 'account.password-update', { acct: account.id, provider: account.provider });
@@ -418,14 +436,15 @@ export async function updatePassword(
   }
 }
 
-/** Deletes the saved account (never touches the mailbox). The audit row has no account id. */
+/** Deletes the saved account (never touches the mailbox). The audit row's `account_id` is null. */
 export async function removeAccount(deps: StoreDeps, account: MailAccount): Promise<void> {
   try {
     if (!(await deps.repo.remove(account.id))) throw new AccountError('not-found');
-    // After the delete the id no longer exists, so the insert policy only accepts null.
+    // After the delete the id no longer exists, so the insert policy only accepts a null
+    // `account_id`; the UUID goes in `details.account` so the history stays linked.
     await audit(deps, {
       action: 'account.remove',
-      details: auditProvider(account.provider),
+      details: auditProvider(account.provider, account.id),
       result: 'ok',
     });
     emit(deps.log, 'account.remove', { acct: account.id, provider: account.provider });

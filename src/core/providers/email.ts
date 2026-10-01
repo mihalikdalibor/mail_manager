@@ -101,5 +101,10 @@ export function parseEmail(input: string): ParsedEmail {
   const displayDomain = /^[\x21-\x7e]+$/.test(rawDomain)
     ? domain
     : domainToUnicode(domain) || domain;
-  return { address: `${localPart}@${domain}`, localPart, domain, displayDomain };
+  // The stored address uses the punycode domain, which can be longer than what was typed, and
+  // is lowercased on save (`İ` lowercases to two characters): it must fit the database limit.
+  const address = `${localPart}@${domain}`;
+  if (address.toLowerCase().length > 254)
+    throw new DiscoveryInputError('Email address is too long');
+  return { address, localPart, domain, displayDomain };
 }

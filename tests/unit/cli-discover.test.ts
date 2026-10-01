@@ -152,6 +152,35 @@ describe('mm discover', () => {
     expect(notice?.trimStart().startsWith('! ')).toBe(true);
   });
 
+  it('prints the off-domain SRV warning (sanitized) and still exits 0', async () => {
+    await runCli({
+      ...base,
+      status: 'found',
+      source: 'srv',
+      via: '_imaps._tcp.example-test-domain.eu',
+      imap: { host: 'imap.attacker\u001b[31m-example.com', port: 993, username: EMAIL },
+      altHosts: [],
+      offDomain: true,
+    });
+    const warning = [...out, ...err].find((l) => l.includes('unsigned DNS record'));
+    expect(warning).toBe(
+      '! Warning: this server is not under example-test-domain.eu and comes from an unsigned DNS record, which someone on your network could fake. Only continue if you know your provider uses imap.attacker[31m-example.com.',
+    );
+    expect(warning).not.toContain('\u001b');
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it('prints no off-domain warning for a found SRV result under the domain', async () => {
+    await runCli({
+      ...base,
+      status: 'found',
+      source: 'srv',
+      imap: { host: 'imap.example-test-domain.eu', port: 993, username: EMAIL },
+      altHosts: [],
+    });
+    expect(all()).not.toContain('unsigned DNS record');
+  });
+
   it('found without provider prints host, exit 0 (no GeoIP hint)', async () => {
     await runCli({
       ...base,

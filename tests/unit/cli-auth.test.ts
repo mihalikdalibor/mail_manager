@@ -192,6 +192,85 @@ describe('mm login', () => {
   });
 });
 
+describe('mm login with a local session', () => {
+  const REFUSAL = "You're already logged in — run `mm logout` first, then `mm login`.";
+
+  it('refuses, and never builds or calls the auth service or prompts', async () => {
+    session.empty = false;
+    await runCli('login');
+    expect(err).toEqual([REFUSAL]);
+    expect(out).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    expect(createSupabaseServices).not.toHaveBeenCalled();
+    expect(fakeAuth.login).not.toHaveBeenCalled();
+    expect(input).not.toHaveBeenCalled();
+    expect(password).not.toHaveBeenCalled();
+    expect(clearSession).not.toHaveBeenCalled();
+  });
+
+  it('logs no auth event (no auth.login, no auth.login-failed)', async () => {
+    session.empty = false;
+    const log = new MemoryEventLog({
+      run: 'abcdef0123456789',
+      ver: 'x',
+      now: Date.now,
+      level: 'debug',
+    });
+    await buildProgram({ exitOverride: true, log }).parseAsync(['login'], { from: 'user' });
+    expect(log.records.filter((r) => r.event.startsWith('auth.'))).toEqual([]);
+  });
+
+  it('still refuses when --email is given', async () => {
+    session.empty = false;
+    await runCli('login', '--email', 'a@x.sk');
+    expect(err).toEqual([REFUSAL]);
+    expect(process.exitCode).toBe(1);
+    expect(createSupabaseServices).not.toHaveBeenCalled();
+    expect(fakeAuth.login).not.toHaveBeenCalled();
+    expect(password).not.toHaveBeenCalled();
+  });
+
+  it('the session message wins over the no-terminal message', async () => {
+    session.empty = false;
+    setTTY(undefined);
+    await runCli('login', '--email', 'a@x.sk');
+    expect(err).toEqual([REFUSAL]);
+    expect(err.join('\n')).not.toContain('interactive terminal');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('logs in unchanged without a session', async () => {
+    session.empty = true;
+    password.mockResolvedValue(PASSWORD);
+    fakeAuth.login.mockResolvedValue({ email: 'a@x.sk', userId: 'u1' });
+    await runCli('login', '--email', 'a@x.sk');
+    expect(err).toEqual([]);
+    expect(fakeAuth.login).toHaveBeenCalledWith('a@x.sk', PASSWORD);
+    expect(out.join('\n')).toContain('Logged in as a@x.sk');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('without a session the no-terminal message is unchanged', async () => {
+    session.empty = true;
+    setTTY(undefined);
+    await runCli('login');
+    expect(err.join('\n')).toContain('interactive terminal');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('a config error from the env files still reaches the error handler', async () => {
+    session.empty = false;
+    loadEnvFiles.mockImplementation(() => {
+      throw new ConfigError([{ variable: 'SUPABASE_URL', problem: 'is missing' }]);
+    });
+    await runCli('login');
+    expect(err.join('\n')).toContain('SUPABASE_URL');
+    expect(err.join('\n')).not.toContain('already logged in');
+    expect(process.exitCode).toBe(1);
+    expect(fakeAuth.login).not.toHaveBeenCalled();
+  });
+});
+
 describe('mm whoami', () => {
   it('prints the email and user id when logged in', async () => {
     fakeAuth.currentUser.mockResolvedValue({ email: 'a@x.sk', userId: 'u1' });

@@ -138,7 +138,7 @@ export class FileEventLog implements EventLog {
       }
       const cap = this.caps[kind];
       if (size >= cap) {
-        this.writeTruncatedMarker(file, kind);
+        this.writeTruncatedMarker(file, kind, record.ts);
         return;
       }
       if (record.level === 'debug' && size >= cap * 0.8) return;
@@ -211,10 +211,15 @@ export class FileEventLog implements EventLog {
     }
   }
 
-  private writeTruncatedMarker(file: string, kind: LogKind): void {
+  /**
+   * `ts` is the triggering record's: the file was picked from its date, so a fresh clock
+   * reading (which may be past UTC midnight) could put a marker with the wrong day in it.
+   */
+  private writeTruncatedMarker(file: string, kind: LogKind, ts: string): void {
     if (this.tailHasMarker(file)) return;
     // The marker bypasses the level threshold and takes the prefix of the file it goes into.
-    this.append(file, formatLine(toRecord({ event: 'log.truncated' }, this.ctx), kind));
+    const record = { ...toRecord({ event: 'log.truncated' }, this.ctx), ts };
+    this.append(file, formatLine(record, kind));
   }
 
   private tailHasMarker(file: string): boolean {

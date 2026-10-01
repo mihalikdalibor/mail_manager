@@ -247,6 +247,18 @@ function found(host = HOST, email = EMAIL): DiscoveryResult {
   };
 }
 
+/** An SRV result: `offDomain` is what the core sets for a host outside the domain. */
+function srvFound(host: string, offDomain: boolean): DiscoveryResult {
+  const base = found(host);
+  if (base.status !== 'found') throw new Error('unreachable');
+  return {
+    ...base,
+    source: 'srv',
+    via: `_imaps._tcp.${DOMAIN}`,
+    ...(offDomain && { offDomain: true as const }),
+  };
+}
+
 function manual(email = EMAIL): DiscoveryResult {
   return { email: parseEmail(email), notices: [], tried: [], status: 'manual' };
 }
@@ -673,6 +685,47 @@ describe('mm account add', () => {
     expect(openSession).not.toHaveBeenCalled();
     expect(repo.rows.size).toBe(1);
     expect(exitCode()).toBe(1);
+  });
+
+  it('already saved: the text also says to remove + add when the saved password is unreadable', async () => {
+    useRepo([row({ id: A_ID })]);
+    confirmAnswers = { [USE_SETTINGS]: [true] };
+    await mm('account', 'add', EMAIL);
+    expect(all()).toContain(
+      `If its saved password can't be decrypted any more, run \`mm account remove ${short(A_ID)}\` and add it again.`,
+    );
+  });
+
+  it('off-domain SRV result: the warning is printed and "Use these settings?" defaults to No', async () => {
+    discover.mockResolvedValue(srvFound('imap.attacker-example.com', true));
+    confirmAnswers = { [USE_SETTINGS]: [false] };
+    select.mockResolvedValue('__cancel__');
+    await mm('account', 'add', EMAIL);
+    expect(out.stdout).toContain(
+      `! Warning: this server is not under ${DOMAIN} and comes from an unsigned DNS record, which someone on your network could fake. Only continue if you know your provider uses imap.attacker-example.com.`,
+    );
+    const call = confirm.mock.calls.find(([c]) => c.message === USE_SETTINGS);
+    expect(call?.[0].default).toBe(false);
+    expect(select).toHaveBeenCalledTimes(1); // "No" → the provider picker, as today
+    expect(password).not.toHaveBeenCalled();
+  });
+
+  it('SRV result under the domain: no warning and the default stays Yes', async () => {
+    discover.mockResolvedValue(srvFound(HOST, false));
+    confirmAnswers = { [USE_SETTINGS]: [true] };
+    passwords = [PASSWORD];
+    await mm('account', 'add', EMAIL);
+    expect(all()).not.toContain('unsigned DNS record');
+    const call = confirm.mock.calls.find(([c]) => c.message === USE_SETTINGS);
+    expect(call?.[0].default).toBe(true);
+  });
+
+  it('a found result from a preset keeps the default Yes', async () => {
+    confirmAnswers = { [USE_SETTINGS]: [true] };
+    passwords = [PASSWORD];
+    await mm('account', 'add', EMAIL);
+    const call = confirm.mock.calls.find(([c]) => c.message === USE_SETTINGS);
+    expect(call?.[0].default).toBe(true);
   });
 
   it('wrong password → generic text, "Try another password?" yes → asks again → saved', async () => {
@@ -1126,6 +1179,17 @@ describe('review and security-audit follow-ups (M1c-1)', () => {
     expect(all()).toContain(`mm account remove ${short(A_ID)}`);
     expect(repo.rows.get(A_ID)?.secret).toEqual(tampered.secret);
     expect(exitCode()).toBe(1);
+    // The refusal comes from core: the failed event exists (reason only), no audit row.
+    const events = log.records.filter((r) => r.event === 'account.password-update');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      acct: A_ID,
+      provider: 'websupport',
+      outcome: 'failed',
+      reason: 'secret-unreadable',
+    });
+    expect(audit.entries).toEqual([]);
+    expect(JSON.stringify(log.records)).not.toContain('attacker');
   });
 
   it('update-password shows the server and username the new password goes to', async () => {
@@ -1215,7 +1279,7 @@ describe('review and security-audit follow-ups (M1c-1)', () => {
   it('a slug-shaped provider that is no preset (from a hostile row) is logged and audited as custom', async () => {
     useRepo([row({ provider: 'victim-example-com' })]);
     await mm('account', 'remove', short(A_ID), '--yes');
-    expect(audit.entries[0]?.details).toEqual({ provider: 'custom' });
+    expect(audit.entries[0]?.details).toEqual({ provider: 'custom', account: A_ID });
     const text = log.lines.join('\n');
     expect(text).not.toContain('victim-example-com');
     expect(log.records.find((r) => r.event === 'account.remove')).toMatchObject({

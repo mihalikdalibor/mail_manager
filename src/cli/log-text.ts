@@ -1,3 +1,4 @@
+import type { LogLevel } from '../core/config.js';
 import type { InterruptedRun, LogEventName, LogRecord, ReadResult } from '../core/log/index.js';
 
 // Plain text for `mm logs`. Records come from the reader already validated field by field;
@@ -9,6 +10,7 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const CMD_WIDTH = 12;
+const CMD_WIDTH_MAX = 32;
 
 // C0/C1 controls and DEL, soft hyphen, the Arabic letter mark, the Mongolian vowel separator,
 // zero-width and bidi marks/embeddings/overrides/isolates, line/paragraph separators, word
@@ -235,17 +237,29 @@ export function eventText(record: LogRecord, timeZone?: string): string {
   return sanitize(rawEventText(record, timeZone));
 }
 
-/** `HH:MM:SS  <cmd>  <text>` in the given zone (local when undefined). */
-export function timelineLine(record: LogRecord, cmd: string, timeZone?: string): string {
+/**
+ * `HH:MM:SS  <cmd>  <text>` in the given zone (local when undefined). The command is
+ * sanitized first, then padded to `width` (longer names are not cut).
+ */
+export function timelineLine(
+  record: LogRecord,
+  cmd: string,
+  timeZone?: string,
+  width: number = CMD_WIDTH,
+): string {
   return sanitize(
-    `${clock(record.ts, timeZone)}  ${cmd.padEnd(CMD_WIDTH)}  ${eventText(record, timeZone)}`,
+    `${clock(record.ts, timeZone)}  ${sanitize(cmd).padEnd(width)}  ${eventText(record, timeZone)}`,
   );
 }
 
-function interruptedLine(run: InterruptedRun, timeZone?: string): string {
+function interruptedLine(
+  run: InterruptedRun,
+  timeZone?: string,
+  width: number = CMD_WIDTH,
+): string {
   const cmd = run.cmd === '' ? '-' : run.cmd;
   return sanitize(
-    `${clock(run.ts, timeZone)}  ${cmd.padEnd(CMD_WIDTH)}  interrupted or still running`,
+    `${clock(run.ts, timeZone)}  ${sanitize(cmd).padEnd(width)}  interrupted or still running`,
   );
 }
 
@@ -253,6 +267,10 @@ export interface ReportOptions {
   now: number;
   sinceMs?: number;
   run?: string;
+  /** `--security` was given (security events only). */
+  securityOnly?: boolean;
+  /** `--level` as given; only used for wording (hint, empty message). */
+  level?: LogLevel;
   timeZone?: string;
 }
 
@@ -274,8 +292,15 @@ export function reportFooters(result: ReadResult, opts: ReportOptions): string[]
     );
   }
   if (result.omitted > 0) {
+    // Only flags that would narrow further: not the ones already given.
+    const flags = ['--since'];
+    if (opts.level !== 'error') flags.push('--level');
+    if (opts.securityOnly !== true) flags.push('--security');
+    if (opts.run === undefined) flags.push('--run');
+    const list =
+      flags.length === 1 ? flags.join('') : `${flags.slice(0, -1).join(', ')} or ${flags.at(-1)}`;
     lines.push(
-      `${plural(result.omitted, 'older line', 'older lines')} not shown — narrow with ${opts.run === undefined ? '--since or --run' : '--since'}`,
+      `${plural(result.omitted, 'older line', 'older lines')} not shown — narrow with ${list}`,
     );
   }
   if (result.skippedFiles > 0) {
@@ -289,7 +314,23 @@ export function reportFooters(result: ReadResult, opts: ReportOptions): string[]
   return lines;
 }
 
-type Entry = { ms: number; line: string };
+type Entry = { ms: number; cmd: string; line: (width: number) => string };
+
+/** Fits the longest command shown: at least 12, at most 32 (longer names push the text right). */
+function commandWidth(cmds: string[]): number {
+  const longest = Math.max(0, ...cmds.map((cmd) => sanitize(cmd).length));
+  return Math.min(CMD_WIDTH_MAX, Math.max(CMD_WIDTH, longest));
+}
+
+/** `--level warn`/`error`, `--security`, or `--run` within a window: fewer lines than the default. */
+function filterActive(opts: ReportOptions): boolean {
+  return (
+    opts.level === 'warn' ||
+    opts.level === 'error' ||
+    opts.securityOnly === true ||
+    (opts.run !== undefined && opts.sinceMs !== undefined)
+  );
+}
 
 /**
  * The flat, time-ordered list with date headers (only when it spans days or isn't today),
@@ -300,10 +341,19 @@ export function formatReport(result: ReadResult, opts: ReportOptions): string[] 
   const entries: Entry[] = result.records.map((record) => {
     const own = record.event === 'command.start' || record.event === 'command.finish';
     const cmd = own ? str(record, 'cmd') : (result.runs.get(record.run)?.cmd ?? '');
-    return { ms: Date.parse(record.ts), line: timelineLine(record, cmd === '' ? '-' : cmd, tz) };
+    const shown = cmd === '' ? '-' : cmd;
+    return {
+      ms: Date.parse(record.ts),
+      cmd: shown,
+      line: (width) => timelineLine(record, shown, tz, width),
+    };
   });
   for (const run of result.interrupted) {
-    entries.push({ ms: Date.parse(run.ts), line: interruptedLine(run, tz) });
+    entries.push({
+      ms: Date.parse(run.ts),
+      cmd: run.cmd === '' ? '-' : run.cmd,
+      line: (width) => interruptedLine(run, tz, width),
+    });
   }
   // Stable: an interrupted marker comes after the records of the same instant.
   entries.sort((a, b) => a.ms - b.ms);
@@ -313,18 +363,19 @@ export function formatReport(result: ReadResult, opts: ReportOptions): string[] 
     lines.push(
       opts.run !== undefined && opts.sinceMs === undefined
         ? sanitize(`No log lines for run ${opts.run}.`)
-        : `No log lines in the last ${windowText(opts.sinceMs ?? DAY_MS)}.`,
+        : `No ${filterActive(opts) ? 'matching log lines' : 'log lines'} in the last ${windowText(opts.sinceMs ?? DAY_MS)}.`,
     );
   } else {
     const days = entries.map((e) => localDate(e.ms, tz));
     const today = localDate(opts.now, tz);
     const headers = new Set(days).size > 1 || days[0] !== today;
+    const width = commandWidth(entries.map((e) => e.cmd));
     let current = '';
     entries.forEach((entry, i) => {
       const day = days[i] ?? '';
       if (headers && day !== current) lines.push(`--- ${day} ---`);
       current = day;
-      lines.push(entry.line);
+      lines.push(entry.line(width));
     });
   }
   lines.push(...reportFooters(result, opts));

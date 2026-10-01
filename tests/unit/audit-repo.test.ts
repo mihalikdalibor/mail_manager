@@ -255,7 +255,11 @@ describe('SupabaseAuditRepo.listRecent', () => {
         .map((c) => c.trim());
       for (const c of COLUMNS) expect(selected).toContain(c);
     }
-    expect(fake.argsOf('order')).toEqual(['created_at', { ascending: false }]);
+    // created_at desc, then id desc as the tie-break, in this order.
+    expect(fake.calls.filter((c) => c.method === 'order').map((c) => c.args)).toEqual([
+      ['created_at', { ascending: false }],
+      ['id', { ascending: false }],
+    ]);
     expect(fake.argsOf('limit')).toEqual([20]);
     expect(fake.methods()).not.toContain('insert');
   });

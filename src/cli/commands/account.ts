@@ -1,14 +1,13 @@
 import { confirm, input, password } from '@inquirer/prompts';
 import type { Command } from 'commander';
 import {
-  AccountError,
   addAccount,
   assertNotDuplicate,
+  assertSecretReadable,
   createLocalGuard,
   parseAccountRef,
   removeAccount,
   resolveAccountRef,
-  storedSecretReadable,
   testAccount,
   updatePassword,
   type AccountDeps,
@@ -49,6 +48,7 @@ import {
   domainProblemText,
   foundVia,
   line,
+  offDomainWarning,
   printHelp,
   printProvider,
   printSettings,
@@ -225,7 +225,10 @@ async function settle(result: DiscoveryResult): Promise<Chosen | null> {
       if (result.domainProblem !== undefined) {
         warn(domainProblemText(result.domainProblem, result.email.displayDomain));
       }
-      if (await confirm({ message: 'Use these settings?', default: true })) {
+      const offDomain = offDomainWarning(result);
+      if (offDomain !== undefined) warn(offDomain);
+      // A faked SRV record is the one way these settings could be hostile: default to "no".
+      if (await confirm({ message: 'Use these settings?', default: result.offDomain !== true })) {
         return { settings: result.imap, provider: result.provider?.id ?? 'custom' };
       }
       return pick(result);
@@ -371,10 +374,8 @@ function registerUpdatePassword(account: Command, ctx: CliContext): void {
         console.log(`Server:  ${serverLabel(found)}`);
         const deps = loginDeps(session, ctx);
         // An unreadable secret means the row can't be trusted (its host may have been swapped
-        // in the database): refuse before asking, so no password is ever typed for it.
-        if (!storedSecretReadable(deps.credentials, found)) {
-          throw new AccountError('secret-unreadable');
-        }
+        // in the database): refuse (and log it) before asking, so no password is ever typed for it.
+        assertSecretReadable(deps, found);
         const ok = await passwordLoop('New password (or app password):', (pw) =>
           updatePassword(deps, found, pw),
         );

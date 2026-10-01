@@ -421,6 +421,35 @@ describe.skipIf(!hasTestUsers)('audit_log row-level security (live Supabase)', (
     expect(res.error?.code).toBe('23514');
   });
 
+  // M1c-2: named checks, all 23514 — the constraint name tells them apart from the 4 KB check.
+  it("a folder containing '@' is rejected (23514, audit_log_folder_no_at)", async () => {
+    const res = await rawA
+      .from('audit_log')
+      .insert(rawRow({ folder: 'INBOX/someone@example.com' }));
+    expect(res.error?.code).toBe('23514');
+    expect(res.error?.message).toContain('audit_log_folder_no_at');
+    const ok = await rawA.from('audit_log').insert(rawRow({ folder: 'INBOX/Archive' }));
+    expect(ok.error).toBeNull();
+  });
+
+  it.each([
+    ['an array', [1, 2]],
+    ['a string', 'text'],
+    ['a number', 5],
+    ['a boolean', true],
+  ])('details as %s is rejected (23514, audit_log_details_object)', async (_name, details) => {
+    const res = await rawA.from('audit_log').insert(rawRow({ details }));
+    expect(res.error?.code).toBe('23514');
+    expect(res.error?.message).toContain('audit_log_details_object');
+  });
+
+  it('details as an object or null is still accepted', async () => {
+    const object = await rawA.from('audit_log').insert(rawRow({ details: { provider: 'custom' } }));
+    expect(object.error).toBeNull();
+    const none = await rawA.from('audit_log').insert(rawRow({ details: null }));
+    expect(none.error).toBeNull();
+  });
+
   it('removing an account keeps its audit rows, with account_id set to null', async () => {
     const account = await accountOfA();
     // Written before the delete: afterwards the insert policy refuses the unknown account id.
@@ -429,5 +458,185 @@ describe.skipIf(!hasTestUsers)('audit_log row-level security (live Supabase)', (
     const rows = (await rowsOfRun(rawA)).filter((r) => r['action'] === 'account.remove');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.['account_id']).toBeNull();
+  });
+});
+
+// M1c-2 hardening of mail_accounts: named checks (all 23514, told apart by the constraint name in
+// the message) and column grants (42501). Bad rows go through the raw client with every other field
+// valid: the repo can't be used, since accountToInsertRow lowercases the host and sends no
+// created_at. Exact error codes, for the same reason as the audit suite above.
+describe.skipIf(!hasTestUsers)('mail_accounts hardening (live Supabase)', () => {
+  const HARDENING_LABEL = 'mm-rls-hardening-test';
+  let a: TestUser;
+  let rawA: SupabaseClient;
+  let credentials: CredentialProvider;
+
+  /** A raw insert row that passes every rule; tests override one field. */
+  function validRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const id = randomUUID();
+    const secret = credentials.encryptPassword(
+      {
+        userId: a.userId,
+        accountId: id,
+        host: 'imap.example.invalid',
+        port: 993,
+        username: `rls-h-${id.slice(0, 8)}`,
+      },
+      'rls-hardening',
+    );
+    return {
+      id,
+      user_id: a.userId,
+      label: HARDENING_LABEL,
+      email: `rls-h-${id.slice(0, 8)}@example.invalid`,
+      provider: 'custom',
+      host: 'imap.example.invalid',
+      port: 993,
+      username: `rls-h-${id.slice(0, 8)}`,
+      auth_type: 'password',
+      secret_ciphertext: secret.ciphertext,
+      secret_iv: secret.iv,
+      secret_tag: secret.tag,
+      key_version: secret.keyVersion,
+      ...overrides,
+    };
+  }
+
+  /** Inserts a valid row (raw client) and returns it as the app reads it. */
+  async function insertValid(): Promise<MailAccount> {
+    const row = validRow();
+    const { error } = await rawA.from('mail_accounts').insert(row);
+    expect(error).toBeNull();
+    const stored = await a.services.accounts.get(row['id'] as string);
+    if (!stored) throw new Error('row missing');
+    return stored;
+  }
+
+  beforeAll(async () => {
+    credentials = createLocalCredentialProvider(env);
+    a = await signIn('A');
+    const cfg = validateSupabaseEnv(env);
+    if (!cfg.ok) throw new Error('config invalid');
+    rawA = createSupabase(cfg.value, new MemorySessionStorage());
+    const { error } = await rawA.auth.signInWithPassword({
+      email: required('MM_TEST_SUPABASE_A_EMAIL'),
+      password: required('MM_TEST_SUPABASE_A_PASSWORD'),
+    });
+    if (error) throw new Error('sign-in A failed');
+  });
+
+  afterAll(async () => {
+    if (!a) return;
+    for (const row of await a.services.accounts.list()) {
+      if (row.label === HARDENING_LABEL) await a.services.accounts.remove(row.id);
+    }
+    await rawA?.auth.signOut({ scope: 'local' });
+    await a.services.auth.logout();
+  });
+
+  it('accepts a fully valid raw row (control for the rejections below)', async () => {
+    const stored = await insertValid();
+    expect(stored.host).toBe('imap.example.invalid');
+  });
+
+  it('an uppercase host is rejected (23514, mail_accounts_host_lower)', async () => {
+    const res = await rawA.from('mail_accounts').insert(validRow({ host: 'IMAP.Example.invalid' }));
+    expect(res.error?.code).toBe('23514');
+    expect(res.error?.message).toContain('mail_accounts_host_lower');
+  });
+
+  it.each([
+    ['email', 'a'.repeat(250) + '@e.io', 'mail_accounts_email_length'], // 255 characters
+    ['host', 'h'.repeat(254), 'mail_accounts_host_length'],
+    ['username', 'u'.repeat(321), 'mail_accounts_username_length'],
+    ['label', 'l'.repeat(101), 'mail_accounts_label_length'],
+  ])('an over-long %s is rejected (23514, %s)', async (column, value, constraint) => {
+    const res = await rawA.from('mail_accounts').insert(validRow({ [column]: value }));
+    expect(res.error?.code).toBe('23514');
+    expect(res.error?.message).toContain(constraint);
+  });
+
+  it('values exactly at the limits are accepted', async () => {
+    const row = validRow({
+      email: 'a'.repeat(249) + '@e.io', // 254 characters
+      username: 'u'.repeat(320),
+      label: 'l'.repeat(100),
+    });
+    const res = await rawA.from('mail_accounts').insert(row);
+    // Its label isn't HARDENING_LABEL, so the afterAll sweep would miss it: delete it here.
+    await rawA.from('mail_accounts').delete().eq('id', row.id);
+    expect(res.error).toBeNull();
+  });
+
+  it.each([
+    ['uppercase', 'Custom'],
+    ['a space', 'my provider'],
+    ['empty', ''],
+    ['an underscore', 'my_provider'],
+    ['41 characters', 'p'.repeat(41)],
+  ])(
+    'a provider with %s is rejected (23514, mail_accounts_provider_format)',
+    async (_n, provider) => {
+      const res = await rawA.from('mail_accounts').insert(validRow({ provider }));
+      expect(res.error?.code).toBe('23514');
+      expect(res.error?.message).toContain('mail_accounts_provider_format');
+    },
+  );
+
+  it.each([
+    ['created_at', '2020-01-01T00:00:00Z'],
+    ['updated_at', '2020-01-01T00:00:00Z'],
+    ['capabilities', { UIDPLUS: true }],
+    ['last_checked_at', '2020-01-01T00:00:00Z'],
+  ])('the client cannot set %s on insert (42501)', async (column, value) => {
+    const row = validRow({ [column]: value });
+    const res = await rawA.from('mail_accounts').insert(row);
+    expect(res.error?.code).toBe('42501');
+    expect(await a.services.accounts.get(row['id'] as string)).toBeNull();
+  });
+
+  it.each([
+    ['email', 'changed@example.invalid'],
+    ['host', 'other.example.invalid'],
+    ['port', 143],
+    ['username', 'someone-else'],
+  ])('updating %s is refused (42501) and the row is unchanged', async (column, value) => {
+    const before = await insertValid();
+    const res = await rawA
+      .from('mail_accounts')
+      .update({ [column]: value })
+      .eq('id', before.id);
+    expect(res.error?.code).toBe('42501');
+    expect(await a.services.accounts.get(before.id)).toEqual(before);
+  });
+
+  it('updating the label and the secret columns still works', async () => {
+    const before = await insertValid();
+    const label = await rawA
+      .from('mail_accounts')
+      .update({ label: HARDENING_LABEL })
+      .eq('id', before.id)
+      .select('id');
+    expect(label.error).toBeNull();
+    expect(label.data).toHaveLength(1);
+
+    const secret = credentials.encryptPassword(
+      {
+        userId: a.userId,
+        accountId: before.id,
+        host: before.host,
+        port: before.port,
+        username: before.username,
+      },
+      'rls-hardening-2',
+    );
+    expect(await a.services.accounts.updateSecret(before.id, secret)).toBe(true);
+    expect(await a.services.accounts.recordCheck(before.id, { UIDPLUS: true }, new Date())).toBe(
+      true,
+    );
+    const after = await a.services.accounts.get(before.id);
+    expect(after?.secret).toEqual(secret);
+    expect(after?.capabilities).toEqual({ UIDPLUS: true });
+    expect(after && after.updatedAt >= before.updatedAt).toBe(true);
   });
 });
