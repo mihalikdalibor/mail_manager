@@ -159,7 +159,7 @@ export async function runCli(deps: RunCliDeps): Promise<void> {
 
   try {
     await deps
-      .build({ log, onCommandStart: (cmd, opts) => logger.start(cmd, opts) })
+      .build({ log, run: deps.ctx.run, onCommandStart: (cmd, opts) => logger.start(cmd, opts) })
       .parseAsync(deps.argv);
   } catch (err) {
     if (err instanceof CommanderError) {

@@ -989,3 +989,362 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - `TODO.md` ticks and "Current milestone" lines are left to `/review-changes` / `/release`.
 
 ---
+
+## C-017 — M1b-4d audit trail: audit_log migration (applied), AuditRepo, recordAudit, doctor probe
+
+- **Status:** reviewed (2026-09-29)
+- **Review:** All criteria met. The docs "Also" item was partially met; its TODO wording is fixed with this review. Deviations justified. Reviewer re-ran:
+  - all checks: 2481 tests;
+  - 7 targeted files: 524 tests;
+  - the PGlite harness on the real migration: 23/23 exact codes, and 3 grant mutations were each caught;
+  - tsx probes: happy path; `__proto__` dropped; `@`, NUL, U+2028, tag characters and lone surrogates in `folder` rejected; hostile error codes hidden; Postgres `details` never reach the event; null and getter entries → false; `listRecent` skips bad rows.
+
+  Live log 13/13 (not re-run). Non-blocking follow-ups:
+  - [LOW] `src/core/audit.ts` folder `@` check is bypassed by look-alikes (U+FF20 `＠`, U+FE6B `﹫`) — verified; for M4: NFKC-normalise first or use the planned HMAC/special-use approach.
+  - [LOW] `listRecent` orders by `created_at` only; add `id desc` as tie-break.
+  - [LOW] The DB still accepts non-object `details` and any `folder` via direct JWT inserts. The proposed follow-up migration (`folder !~ '@'`, `jsonb_typeof(details) = 'object'`, revoke `service_role` DELETE) would close it; the app copes meanwhile.
+  - [note] The integration test's `.order('id')` edit was not re-run live.
+
+- **Date:** 2026-09-29
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-29-m1b4d-audit-trail.md`, TODO.md → "M1b-4 — Logging foundation" → "M1b-4d — Audit trail"
+- **Base:** 22678ac7929b00f6f043ae5f2dd909ca6b8e08bd (0.6.0); files already dirty before the run: none.
+- **Files:**
+  - Created: `supabase/migrations/20260929063314_audit_log.sql` (**applied to the linked Supabase project** with the user's go-ahead), `src/core/audit.ts`, `src/core/db/supabase/audit-repo.ts`; tests `tests/unit/{audit,audit-repo,doctor-audit}.test.ts`.
+  - Modified: `src/core/db/repos.ts`, `src/core/db/supabase/{index,accounts-repo}.ts`, `src/core/doctor.ts`, `src/core/log/{events,domain-events}.ts`; tests `tests/unit/{doctor,log-record,log-catalog}.test.ts`, `tests/integration/supabase-rls.test.ts`; docs `docs/{DATA_MODEL,LOGGING,SECURITY,TESTING}.md`, `docs/milestones/{M1-auth-accounts,M4-safe-delete}.md`, `README.md`.
+- **Requirements (plan acceptance criteria, verbatim):**
+
+  **Migration** (`supabase/migrations/<timestamp>_audit_log.sql`, a new file; the init migration is not edited)
+
+  - [ ] Columns:
+    - `id bigint generated always as identity primary key`
+    - `user_id uuid not null default auth.uid() references auth.users(id) on delete cascade`
+    - `account_id uuid null references public.mail_accounts(id) on delete set null`
+    - `action text not null`, with a check matching `^[a-z]+(\.[a-z-]+)?$` and length ≤ 40
+    - `folder text null`, with a check length ≤ 1024
+    - `message_count integer null`, with a check `>= 0`
+    - `bytes bigint null`, with a check `>= 0`
+    - `details jsonb null`, with a check `pg_column_size(details) <= 4096`
+    - `result text not null`, with a check `in ('ok','partial','failed','aborted')`
+    - `reason text null`, with a check matching `^[a-z0-9-]{1,60}$`
+    - `run_id text null`, with a check matching `^[0-9a-f]{16}$`
+    - `created_at timestamptz not null default now()`
+  - [ ] An index on `(user_id, created_at desc)`, and one on `account_id` (the FK).
+  - [ ] The insert policy's subquery qualifies the column as `audit_log.account_id`, so it can never silently rebind to a `mail_accounts` column.
+  - [ ] RLS is enabled, with two policies:
+    - `own rows: select`, to `authenticated`: using `user_id = (select auth.uid())`.
+    - `own rows: insert`, to `authenticated`: with check `user_id = (select auth.uid()) and (account_id is null or exists (select 1 from public.mail_accounts m where m.id = account_id and m.user_id = (select auth.uid())))`.
+    - No update or delete policies.
+  - [ ] Privileges are reset explicitly, as for `mail_accounts`:
+    - `revoke all on public.audit_log from anon, authenticated;`
+    - `grant select on public.audit_log to authenticated;`
+    - `grant insert (account_id, action, folder, message_count, bytes, details, result, reason, run_id) on public.audit_log to authenticated;`
+    - This leaves out `id`, `user_id` (always `auth.uid()`) and `created_at` (always server time). No UPDATE, DELETE or TRUNCATE is granted. anon gets nothing.
+    - `revoke all on sequence public.audit_log_id_seq from anon, authenticated;` — Supabase's default privileges grant `rwU` on new sequences; `setval` could otherwise break every insert (23505). An identity column needs no sequence privilege to insert (verified on Postgres).
+    - `revoke update, truncate on public.audit_log from service_role;` — keeps the trail append-only even against a leaked service key. The cascade/set-null actions run as the owner and don't need it.
+  - [ ] The migration is applied to the linked project with `npm run db:push` **only after the user explicitly says go**, because it changes the shared cloud DB (`db:push` applies every pending migration with `--yes`). Before asking: run `npm run db:status` / `npx supabase db push --dry-run`, show the user the SQL, and finish the integration test first, so one approval covers exactly what the single live run will prove. `npm run db:status` then shows it as applied.
+
+  **Core**
+
+  - [ ] `src/core/db/repos.ts` (no Supabase imports):
+    - `AUDIT_ACTIONS`, a readonly tuple of the 10 actions: `account.add`, `account.remove`, `account.password-update`, `filter.save`, `filter.delete`, `mail.trash`, `mail.expunge`, `mail.move`, `backup`, `migrate`.
+    - The types `AuditAction`, `AuditResult`, `AuditEntry` (`accountId?`, `action`, `folder?`, `messageCount?`, `bytes?`, `details?`, `result`, `reason?`, `runId?`) and `AuditRecord` (the entry fields plus `id`, `userId`, `createdAt: Date`).
+    - `interface AuditRepo { write(entry: AuditEntry): Promise<void>; listRecent(limit: number): Promise<AuditRecord[]> }`.
+  - [ ] `src/core/audit.ts` (new):
+    - The zod `auditEntrySchema`, strict. Its rules:
+      - `action` must be one of `AUDIT_ACTIONS`.
+      - `accountId` must be a UUID.
+      - `folder` is at most 1024 characters.
+      - `messageCount` and `bytes` are non-negative safe integers.
+      - `reason` must match `^[a-z0-9-]{1,60}$`; `runId` must match `^[0-9a-f]{16}$`.
+      - `details` has a per-action schema. For `account.*` it is `{ provider }` (validated with 4b's `cleanProvider`), strict and optional. Every other action must have `details` undefined until its milestone defines a schema.
+      - `messageCount` ≤ 2,147,483,647 (int4); `folder` rejects control characters (`hasUnsafeChars`; a NUL fails in Postgres with 22P05).
+    - `recordAudit(repo, entry, log): Promise<boolean>`:
+      - It validates the entry and then writes it.
+      - It validates first: an invalid entry → `reason: 'invalid'` without calling the repo.
+      - On a write failure it returns `false` and emits `audit.write-failed`, through `safeEmit`, with `action` and a typed reason `AuditFailureReason = 'forbidden'|'unavailable'|'conflict'|'not-found'|'unknown'|'invalid'`, mapped from the `RepoError` code (`not_found` → `not-found`) like 4b's `authFailureReason`; anything that isn't a `RepoError` → `unknown`.
+      - It never throws, and never puts row values in the event.
+  - [ ] `src/core/db/supabase/audit-repo.ts` (new): `SupabaseAuditRepo`.
+    - `write` validates with `auditEntrySchema` (on failure it throws `RepoError('unknown', 'Invalid audit entry')` — a fixed message, never zod text, which can contain key names from the input), maps camelCase → snake_case, inserts without selecting the row back, and maps errors with `toRepoError`, **imported** from `accounts-repo.ts` (already exported, with `PostgrestLikeError`). Postgres error `details`/`hint` ("Failing row contains …") never reach a message.
+    - `listRecent(limit)` has `limit` clamped to 1–500, orders by `created_at desc`, and validates each row with a zod row schema whose `details` is loose (any JSON object ≤ 4 KB): users can insert their own rows directly with their JWT, so a row that doesn't validate is **skipped and counted** (`{ records, skipped }`), never thrown — otherwise one hand-written row would break the listing forever. Stored text (e.g. `folder`) is untrusted when displayed later (4c must strip control characters).
+    - `src/core/db/supabase/index.ts`: `SupabaseServices` gains `audit: AuditRepo`.
+  - [ ] `src/core/log/events.ts`: the `audit.write-failed` event.
+    - Fields: `action` (`AuditAction | 'other'`), `reason` (`AuditFailureReason`).
+    - Kind: `app`. Level: `error`.
+    - The builder `auditWriteFailed` goes in the 4b domain-events module (`src/core/log/domain-events.ts`), with `action` allowlisted to `AUDIT_ACTIONS` (else `other`); `reason` is the typed union.
+
+  **Doctor**
+
+  - [ ] `src/core/doctor.ts` `checkDatabase` probes `mail_accounts` **and** `audit_log` with the same anon request and the same rules:
+    - anon readable → FAIL (security);
+    - `42501` → OK;
+    - 404 or `PGRST205` → FAIL "`<table>` missing — run `npm run db:push`".
+    - OK detail: `mail_accounts and audit_log present, anon blocked`. If either table fails, the check fails with that table's detail.
+    - The probes run one after the other; after a network failure (timeout/unreachable) on the first, the second is skipped, so a paused project doesn't wait 2× the timeout.
+    - `tests/unit/doctor.test.ts`: its `routedFetch` rejects unknown paths, so every database-check test (and the "all checks ok" test) needs an `/rest/v1/audit_log` route. `README.md:48` quotes the old OK detail — update it.
+
+  **Tests**
+
+  - [ ] Unit:
+    - `tests/unit/audit.test.ts`: the schema and every rule; the per-action `details`; `recordAudit` returning true/false; the event on a `RepoError` and on a validation error; a throwing repo and a throwing log; canary row values (folder, provider) never appear in the event or the error.
+    - `tests/unit/audit-repo.test.ts`: a fake client — the insert payload's column mapping, no `user_id`/`id`/`created_at` in it, error mapping, `listRecent` clamping and row validation.
+    - `tests/unit/doctor.test.ts`: `audit_log` missing → FAIL naming the table and `db:push`; anon-readable `audit_log` → FAIL; both blocked → OK.
+  - [ ] Integration (`tests/integration/supabase-rls.test.ts`, a new `describe` in the same file, same skip condition, **its own** sign-in of A and B, `CredentialProvider` and label sweep — `createAs`, `a`, `b` are local to the existing describe). Every inserted row has `reason: 'rls-test'` and `run_id` = this run's 16-hex id. **Exact codes** (verified on Postgres; asserting anything looser would miss a regressed grant):
+    - A writes a row → A's raw select by `run_id` returns it.
+    - B's raw `select … eq('run_id', RUN)` returns **0 rows** (not `listRecent`, which is capped).
+    - B inserting with A's `account_id` → **42501** (the policy runs before the FK check), mapped to `forbidden`; an unknown UUID also → 42501, so account ids can't be probed.
+    - A raw insert naming `user_id` (even A's own id) → **42501**; naming `created_at` → **42501**; naming `id` → **428C9** (identity: rejected before the permission check).
+    - A raw update and a raw delete of A's own row → **42501** each (never "0 rows"), and a re-select shows the row unchanged.
+    - anon select and insert → **42501**.
+    - An oversized `details` (raw insert bypassing zod, ~5,000 chars) → **23514**.
+    - `on delete set null` inside an `it`: write a row for an A account, remove the account through the repo, raw-select the row by `run_id` → `account_id` is null.
+
+  **Docs + checks**
+
+  - [ ] `docs/DATA_MODEL.md` `audit_log` section:
+    - The exact columns, checks and policies.
+    - The account-ownership check in the insert policy.
+    - The column grants: `user_id` not insertable.
+    - The resolved open question: removing an account sets `account_id` null.
+  - [ ] `docs/LOGGING.md`: the `audit.write-failed` row gets "Emitted from" `M1b-4d`, with its fields.
+  - [ ] `docs/SECURITY.md`: an `audit_log` line in the DB section.
+  - [ ] `docs/milestones/M1-auth-accounts.md`: an "M1b-4d (implemented)" section, including the user's dashboard decision.
+  - [ ] `docs/TESTING.md`: the `audit_log` RLS suite, with a note that its rows stay.
+  - [ ] Also: `docs/LOGGING.md` open question at ~207 and the sentence at ~33 on `auth.audit_log_entries` → resolved (on, 90 days, cleanup later); `README.md` doctor sample output; `docs/SECURITY.md`: the trail is append-only but users write their own rows (they can add, not edit/delete; no row cap or rate limit — free tier 500 MB); TODO M1c lines that say "the next migration" now mean a later one.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and `npm run format:check` pass.
+  - [ ] `npm run test:integration` with `MM_TEST_SUPABASE_*` passes, run once after `db:push`.
+
+- **Summary:** New append-only `audit_log` table in Supabase:
+  - Users read and add their own rows only, and an `account_id` must be one of their own accounts.
+  - The client can't set `id`, `user_id` or `created_at`; there is no update/delete for users, and no anon access.
+  - The identity sequence and `service_role` UPDATE/TRUNCATE are revoked.
+
+  Core gets `AuditRepo`/`SupabaseAuditRepo`, the strict zod `auditEntrySchema` (per-action `details`; folder rejects `@`, invisible characters and lone surrogates) and `recordAudit`. `recordAudit` never throws; it emits the app event `audit.write-failed` with a typed reason. `listRecent` skips and counts untrusted rows. `mm doctor`'s database check probes both tables. Nothing writes rows yet (M1c).
+
+- **Grade / mode:** M — solo + test writer (DB migration = L-level risk, no disjoint slices). The test writer wrote 3 files (314 + 65 tests) from spec + pinned interfaces; no failures against the implementation.
+- **Verification:**
+  - **Checks:** baseline 51 files / 2097 tests, all green. Now 54 files / 2481 tests; typecheck, lint, build and format:check green.
+  - **Migration offline:** the real migration file on PGlite (Postgres) with Supabase-like roles and default privileges, 23/23 checks with exact codes:
+    - own insert/select ok;
+    - B with A's or an unknown `account_id` → 42501;
+    - naming `user_id`/`created_at` → 42501, `id` → 428C9;
+    - update/delete/truncate → 42501; anon → 42501;
+    - details > 4 KB, bad action, bad run_id → 23514;
+    - `nextval` denied; `service_role` update/truncate denied;
+    - account delete → `account_id` null, rows unchanged.
+  - **Migration live:** `npm run db:status` / `db push --dry-run` showed only this migration pending → **user approved** → `npm run db:push` applied → `db:status` local = remote.
+  - **Live RLS suite, run once** (`npx vitest run --config vitest.integration.config.ts tests/integration/supabase-rls.test.ts`): 13/13 (5 `mail_accounts` + 8 new `audit_log`, exact codes). The output passed a value-blind leak check: no test-user e-mail/password, publishable key or master key.
+  - **`mm doctor` live:** `OK database mail_accounts and audit_log present, anon blocked`.
+  - **Mutation checks** (each reverted), with the number of failing tests:
+    - no validation before write: 5;
+    - insert sends `user_id`: 4;
+    - throw on bad row: 2;
+    - no `audit_log` probe: 18;
+    - `filter.save` accepts details: 3;
+    - `not_found` unmapped: 2;
+    - insert raw input: 1;
+    - allow `@` in folder: 2;
+    - show any server code: 10;
+    - no array guard: 5.
+  - **Independent review:** 0 CRITICAL/HIGH. Resolved:
+    - (MEDIUM) `__proto__` in `details` bypassed the strict schema → insert zod's output;
+    - `recordAudit` threw on null / a throwing getter → guarded;
+    - doctor comment and the "unexpected HTTP" detail now name the table;
+    - `TESTING.md` row count; milestone decision line;
+    - unordered live compare → `.order('id')` (not re-run live).
+  - **Security audit** (`security-auditor`, offline PGlite + app probes): the migration held against every RLS/grant attack tried. Resolved:
+    - (MEDIUM) folder names can carry addresses → zod rejects `@` now, plus an M4 open question in DATA_MODEL;
+    - (LOW) extra invisible characters and lone surrogates in `folder`;
+    - (LOW) server error codes printed verbatim → allowlisted code format;
+    - (LOW) `listRecent` non-array → `RepoError`;
+    - (LOW) throwing getters.
+
+    Documented, not fixed (new migration needed): `service_role` still has DELETE/INSERT; per-user row quota (accepted); id gaps reveal others' activity (low).
+
+  - **Out-of-scope, repeated by the audit:** public commit `0ed2604` holds a current `.test.users.cred` value — rotate the Supabase test users' passwords (user action).
+  - **Not verified:** the integration test's `.order('id')` edit wasn't re-run live (run once rule); PostgREST gateway limits (PGlite isn't PostgREST); no real audit rows written by the app yet (M1c).
+- **Deviations:**
+  - `listRecent` returns `{ records, skipped }` (the plan's interface line vs its own skip-and-count criterion).
+  - Review/audit hardening beyond the plan: zod-output insert, getter-safe validation, stricter folder rule (`@`, invisibles, lone surrogates), `toRepoError` code allowlist (shared with the accounts repo), non-array guard, doctor detail names the table.
+  - The applied migration's header says "nobody edits or deletes" — `service_role` still can delete (never edit an applied migration; DATA_MODEL documents it, follow-up migration proposed).
+  - `TODO.md` (M1b-4d ticks, the M1c "next migration" wording) left to `/review-changes` / `/release`.
+
+---
+
+## C-018 — M1b-4c `mm logs`: shared event schemas, validating reader, plain/--json output, path, clear
+
+- **Status:** reviewed (2026-09-30)
+- **Review:** All criteria met, and the deviations are justified (folder status, file and run caps, builder tightenings, unknown events).
+  - The reviewer re-ran every check: 2812 tests; typecheck, lint, build and format green.
+  - The real CLI was run in a temp config:
+    - happy path, `--security`, `--json` 12/12 parsed;
+    - tampered lines → 4 unreadable and 2 unknown counted, no escapes printed;
+    - a hand-removed finish → "interrupted or still running";
+    - EPIPE on stdout and stderr → exit 0;
+    - all `clear` refusals; symlink and FIFO day files and a symlinked folder;
+    - pty confirm "n" and Ctrl+C → 130;
+    - date headers in the Tokyo time zone.
+
+  Non-blocking follow-ups:
+  - [LOW] `--json` prints one record fewer per interrupted marker: `capCombined` counts markers that `--json` never prints (`reader.ts:318`; 4999 vs 5000). Cap without markers in `--json` mode.
+  - [LOW] The "older lines not shown — narrow with --since or --run" hint can't reveal older lines (`log-text.ts:255`). Suggest `--level`/`--security`/`--run` (or add `--until`).
+  - [LOW] The empty message ignores the filters (`--security --level warn` → "No log lines in the last …"). Say "no matching log lines" when a filter is set.
+  - [LOW, pre-existing for every command] EPIPE outside `mm logs` (`mm keygen | true`, `mm logs path | true`) → "Unexpected error" plus `error.unexpected` (verified). Needs a general fix in `runCli`/`bin.ts`.
+  - [LOW, 4a writer] A `log.truncated` marker written within ms after UTC midnight lands in the previous day's file with the next day's `ts`, so the reader rejects it and a false "interrupted" can show.
+
+- **Date:** 2026-09-30
+- **Type:** feature
+- **Source:** `.claude/plans/2026-09-29-m1b4c-mm-logs.md`; TODO.md → "### M1b-4 — Logging foundation" → "#### M1b-4c — `mm logs` (needs 4a, 4b)"
+- **Base:** 22678ac7929b00f6f043ae5f2dd909ca6b8e08bd. Files already dirty before the run (C-017, M1b-4d, unreviewed):
+  - `.claude/changes.md`, `README.md`, `TODO.md`;
+  - `docs/DATA_MODEL.md`, `docs/LOGGING.md`, `docs/SECURITY.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`, `docs/milestones/M4-safe-delete.md`;
+  - `src/core/db/repos.ts`, `src/core/db/supabase/accounts-repo.ts`, `src/core/db/supabase/index.ts`, `src/core/doctor.ts`, `src/core/log/domain-events.ts`, `src/core/log/events.ts`;
+  - `tests/integration/supabase-rls.test.ts`, `tests/unit/doctor.test.ts`, `tests/unit/log-catalog.test.ts`, `tests/unit/log-record.test.ts`;
+  - untracked: `src/core/audit.ts`, `src/core/db/supabase/audit-repo.ts`, `supabase/migrations/20260929063314_audit_log.sql`, `tests/unit/audit-repo.test.ts`, `tests/unit/audit.test.ts`, `tests/unit/doctor-audit.test.ts`.
+- **Files:**
+  - **New:**
+    - `src/core/log/event-schemas.ts`, `src/core/log/reader.ts`, `src/core/log/files.ts`;
+    - `src/cli/log-text.ts`, `src/cli/commands/logs.ts`;
+    - `tests/unit/log-event-schemas.test.ts`, `tests/unit/log-reader.test.ts`, `tests/unit/log-text.test.ts`, `tests/unit/cli-logs.test.ts`, `tests/unit/cli-logs-smoke.test.ts`.
+  - **Modified:**
+    - `src/core/log/builders.ts`, `src/core/log/domain-events.ts`, `src/core/log/guard-events.ts`, `src/core/log/schema.ts`, `src/core/log/index.ts`;
+    - `src/cli/index.ts`, `src/cli/run.ts`;
+    - `tests/unit/cli-run-logging.test.ts`;
+    - `docs/LOGGING.md`, `docs/TESTING.md`, `docs/milestones/M1-auth-accounts.md`, `README.md`;
+    - `.claude/plans/2026-09-29-m1b4c-mm-logs.md` (status, notes).
+- **Requirements** (the plan's acceptance criteria, condensed; the full text is in the plan):
+  - [ ] **Shared schemas.** `src/core/log/event-schemas.ts` defines the allowlists and regexes once. The builders import them; the private copies and the duplicate `TARGET_RE` are removed; no `export *` collisions.
+  - [ ] **`validateRecord(line, fileKind)` never throws.**
+    - Rejects: unknown events, extra or missing fields, a kind mismatch (except `log.truncated` in both kinds), a level ≠ `eventLevel`.
+    - `v !== LOG_SCHEMA_VERSION` counts as unknown.
+    - Strict per-event schemas accept the builders' output range, including fallbacks.
+    - Exact field shapes (`exit`, `ms`/`attempts`, `stack`, `ver`/`node`, `os`, `cmd`).
+    - `ts` in the writer's exact format and on the file's date; canonical key order.
+  - [ ] **`readLogs(dir, opts)`:**
+    - Signature: `records`, `runs`, `interrupted`, `unreadable`, `unknown`, `omitted`.
+    - Files: missing, symlinked or non-directory folder → empty; `LOG_FILE_RE` + `nameDateMs`; window by UTC name date (all files for `run` without `sinceMs`); app files always read; lstat, then `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`, then `fstat().isFile()`.
+    - Byte splitter: 64 KB chunks, line cap (counted once), fatal UTF-8, CRLF, last line without `\n`.
+    - `parseLogLine` → `validateRecord`.
+    - Run info is built before filtering; `truncatedDay`.
+    - Filters: time (default 24 h), level (default info), `securityOnly`, `run`; `ownRun` excluded everywhere.
+    - One UTC day at a time, stable sort, newest `maxRecords` (5,000) kept, `omitted` counted.
+    - Interrupted rules: started, not finished, not own run, in the window, run filter, not `truncatedDay`, not `securityOnly`, level ≤ warn.
+  - [ ] **CLI wiring.** `BuildOptions.run`/`CliContext.run`, passed by `runCli`.
+  - [ ] **`src/cli/log-text.ts`:**
+    - `sanitize` (C0/C1, DEL, bidi, zero-width/invisible, U+2028/2029/061C, tags, lone surrogates; keeps diacritics and emoji);
+    - `eventText`: exhaustive over the 14 events, real fields only, no address/host/IP/target; "Mail Manager login failed: invalid credentials";
+    - `timelineLine`;
+    - `formatReport`: date headers only when the output spans days or isn't today; "interrupted or still running"; the unreadable/unknown/older footers; the window-aware empty message;
+    - `Intl` with `h23` and an injectable `timeZone`.
+  - [ ] **`src/cli/commands/logs.ts`:**
+    - No commander defaults; zod `--since` (1 min … 90 d, plain error, exit 1), `--level`, `--security`, `--run` (16 hex), `--json`.
+    - Plain → `formatReport`; `--json` → one sanitized canonical record per line, footers on stderr.
+    - EPIPE → exit 0 with no `error.unexpected`.
+    - `path` prints `logDir`.
+    - `clear [--yes]`:
+      - refuses a symlinked or non-directory folder and counts only regular day files;
+      - asks for confirmation only when stdin and stdout are TTYs; "No" → "Nothing deleted." exit 0; Ctrl+C → 130;
+      - non-TTY without `--yes` → refused, exit 1;
+      - reports the count actually deleted.
+    - Parent options are refused on `path`/`clear`. Dispatch works as verified (`mm logs foo` → too many arguments).
+  - [ ] **`leaves()`** in `cli-run-logging.test.ts` includes commands with their own action, and asserts `logs`.
+  - [ ] **Docs:**
+    - LOGGING.md "Reading the logs": flat list, `--json` = validated records, no invented counts, sanitization, own run, `--since`, cap, interrupted wording, `clear` rules; the M1b-4c open question resolved;
+    - README usage;
+    - milestone section M1b-4c (implemented) with Verification and Logging, and the step 2 wording;
+    - TESTING.md line.
+  - [ ] lint, typecheck, test, build and format:check pass.
+- **Summary:**
+  - One source of truth for event field allowlists (`event-schemas.ts`), used by the builders and by a strict per-event `validateRecord`.
+  - `readLogs` reads the local day files as untrusted input:
+    - only regular files, never through a symlink, never a FIFO or an oversized file;
+    - a capped byte splitter;
+    - validated, counted, merged per UTC day, capped;
+    - the own run excluded, interrupted runs detected.
+  - `mm logs` prints a flat plain-language timeline in local time (or validated JSON records). `mm logs path` / `clear` manage the folder; `clear` checks the folder's identity before each delete.
+- **Grade / mode:** M — solo + test writer. The test writer wrote 5 files (about 312 tests) from spec and signatures only. Its 3 failures were real builder gaps; the builders were fixed, not the tests.
+- **Verification:**
+  - **Checks:** baseline 54 files / 2481 tests, all green. Now 59 files / 2812 tests; typecheck, lint, build and format:check green.
+  - **Manual CLI runs** (temp `MM_CONFIG_DIR`, real `bin.ts`):
+    - keygen/discover/logout listed; `--security`; `--json` parses (12/12);
+    - a tampered OSC line → "1 unreadable line skipped" and no ESC;
+    - EPIPE: `logs | head -1` → exit 0 with 12k lines; `--json 2>&1 | head` is covered by a smoke test;
+    - `clear` without a TTY → refused; parent options before and after the subcommand → refused; `logs foo`/`logs help` → too many arguments;
+    - invalid `--since 0m`, `91d`, `--level x` and `--run XYZ` → plain errors, exit 1;
+    - `clear --yes` → "Deleted 2 log files.";
+    - a hand-removed finish → "interrupted or still running"; Ctrl+C in `mm login` (pty) → "interrupted after 2.7 s";
+    - 12k records → the 5,000 cap with the omitted footer.
+  - **Mutation probes:** 19 in total, 18 caught by the new tests. The one survivor, removing the pre-open `lstat`, is redundant with `O_NOFOLLOW` + `fstat`.
+  - **Independent review:** 1 MEDIUM, fixed (EPIPE on stderr in `--json`). LOWs fixed:
+    - interrupted markers outside the cap;
+    - an unreadable or symlinked folder shown as "No log lines";
+    - `__proto__` extra key;
+    - impossible `until`;
+    - envelope `v`/`RUN_RE`;
+    - `clear` logic moved to core;
+    - an order-dependent test;
+    - README wording;
+    - extra invisible characters.
+  - **Security audit** (`security-auditor`, 1,360 hostile lines, terminal injection held): LOWs fixed:
+    - `clear` folder swapped during the prompt (the reproduction now stops with "Deleted 0");
+    - unbounded runs map / RangeError counted as a skipped file;
+    - a sparse file of terabytes hung the reader;
+    - `node:` host-shaped frames from the writer.
+
+    Deferred to M6a, documented in LOGGING.md: a reader frame grammar, ids in `--json`, an HMAC chain, the writer's `prune`/`chmod` TOCTOUs (4a code).
+
+  - **Not verified:**
+    - macOS/Windows (`O_NOFOLLOW`/`O_NONBLOCK` fallbacks);
+    - Ctrl+C at the `clear` confirm in a real terminal (unit test only);
+    - milestone verification step 2 (a wrong password in a real `mm login`, external terminal) — not run;
+    - the remaining microsecond race between the folder re-check and `unlink` in `clear --yes`.
+- **Deviations:** see the plan's "Implementation notes".
+  - `validateRecord` returns `{record}|{skipped}`; an unknown event is "unknown", not unreadable.
+  - New `files.ts` and `folder` status: a symlinked or unreadable folder → exit 1 with a message, not the empty list.
+  - Reader size, run caps and `runsCapped`; the extra skipped-files footer.
+  - Builder tightenings: check type, safe ints, real `until`, `node:` frames.
+  - TODO.md ticks and CLAUDE.md "Current state" are left to `/review-changes` / `/release`.
+
+## C-019 — M1c-1 account commands: `mm account add | list | test | update-password | remove`, AAD v2, account events + audit rows
+
+- **Status:** reviewed (2026-10-01)
+- **Review:** All criteria met; the `update-password` refusal deviation is justified (closes the swapped-host path AAD v2 targets) and applied in core, CLI, texts and docs. The reviewer re-ran all checks (3122 tests) and the non-TTY CLI paths (help footer, terminal/id/key refusals, an escape-code ref never echoed, `list`/`remove` without the key) and, through a scratch script with the real core, confirmed that a swapped host, swapped username, copied row id or port 994 → no login attempt, a wrong-password add saves nothing and writes one failed audit row, and no address/password appears in any record. Live suites not re-run (rationed). Non-blocking follow-ups:
+  - [LOW] The `update-password` refusal of an unreadable secret leaves no `account.password-update` failed event: the CLI pre-check throws `AccountError` before core runs and `reportError` emits nothing for user-facing errors (`src/cli/commands/account.ts:375-377`). `account test` logs the same case, and a tampered row is a security signal, so emit it from core.
+  - [LOW] Stale comment: `src/cli/account-text.ts:31-34` says `account` is "for the update-password hint"; it now feeds the `remove <id>` hint.
+  - [LOW] The duplicate text (`src/cli/account-text.ts:41,43`) points only at `update-password`. If the saved secret is unreadable, that command refuses and redirects to remove + add, which costs one extra command; mention remove + add there too.
+  - (The superseded TODO wording "use `update-password`" was annotated when ticking.)
+  - Still open: the interactive TTY flows (milestone verification step 4) are for the user in an external terminal.
+- **Date:** 2026-10-01
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-01-m1c1-account-commands.md`; TODO.md → "## M1c — Account commands (needs M1a + M1b)" → "### M1c-1 — Account commands"
+- **Base:** 22678ac7929b00f6f043ae5f2dd909ca6b8e08bd. C-017 (M1b-4d) and C-018 (M1b-4c), both reviewed, were still uncommitted in the working tree.
+- **Acceptance criteria:**
+  - [x] **AAD v2:** `accountAad` binds `[userId, accountId, lower(host), port, username]` (JSON); `encryptPassword(ref)` / `decryptPassword(account)`; a changed host/port/username → `CryptoError`; SECURITY.md paragraph; CI probe `crypto-local-files.mts` updated.
+  - [x] **Core `src/core/accounts.ts`:** `AccountError`, `shortId`/`parseAccountRef`/`resolveAccountRef`, `settingsOf` (`unsupported`), narrow `LoginDeps`/`StoreDeps`, `createLocalGuard`, `checkLogin`, `assertNotDuplicate`, `addAccount`, `testAccount`, `updatePassword`, `removeAccount`, `accountFailureReason`; the repo lowercases `host`.
+  - [x] **Events:** `account.add` / `account.test` / `account.password-update` / `account.remove` (strict schemas, ok/reason consistency), `accountEvent` builder, `mm logs` texts without the acct id, LOGGING.md table "Account commands (M1c-1)", catalog test reads every table.
+  - [x] **CLI:** `discovery-text.ts` move (`mm discover` byte-identical, `cli-discover.test.ts` unedited), `account-text.ts`, `AccountError` in `USER_FACING`, `commands/account.ts` with the planned check order, password loop, ref texts, list table, remove confirm/`--yes`, "Getting started" help footer.
+  - [x] **Audit:** every add attempt (failed: `account_id` null + reason), password-update on success, remove after the delete with `account_id` null; `details: { provider }`.
+  - [x] **Docs:** LOGGING, SECURITY, DATA_MODEL, TESTING, milestone M1c-1 section (Verification + Logging), README.
+  - [x] lint, typecheck, test, build and format:check pass; live accounts test and RLS suite pass.
+- **Summary:**
+  - A logged-in user connects a mailbox with `mm account add`: discovery → confirm or pick settings → duplicate check → hidden password → guarded login → encrypt (bound to host/port/username) → save → capabilities. Nothing is saved when the login fails.
+  - `list` (sanitized table, short ids), `test` (decrypt → login → features), `update-password` (new password tested first; refused when the stored secret no longer decrypts), `remove` (confirm or `--yes`, no key needed).
+  - Every login goes through one in-memory `LoginGuard` per command with the run's file log (security lines now reach `security-*.log`).
+- **Grade / mode:** M — solo + test writer (L-level risk noted in the plan). The test writer wrote `accounts.test.ts` + `log-account-events.test.ts` (169 tests, all passing first time) and then `cli-account.test.ts` (75 tests); its one failure was a real gap (a capitalised discovered host saved as given) — fixed in core, not in the test.
+- **Verification:**
+  - **Checks:** baseline 59 files / 2812 tests. Now 62 files / 3122 tests; typecheck, lint, build and format:check green.
+  - **Mutation probes:** 11 on the core safety properties (changed host still decrypts, save on a failed login, duplicate not caught before the prompt, remove needs the key, list without `sanitize`, no failed-add audit row, …); 10 caught, the survivor (repo not lowercasing `host`) got a test in `accounts-repo.test.ts`.
+  - **Live, once per code state:** `accounts-live.test.ts` 3/3 (before the review fixes, and once more after them, 2026-10-01 15:49); RLS suite 13/13 (before the review fixes; they touched no DB code). No wrong-password attempt.
+  - **Offline CLI** (temp `MM_CONFIG_DIR`, built `bin.js`, no TTY): `--help` footer; `account add` / `update-password` → "needs a terminal"; `account test` → "Which mailbox?"; `account remove zz` → invalid id; `account remove 3f2a` → needs a terminal or `--yes`; `MM_MASTER_KEY=bad account test 3f2a` → keygen hint; all exit 1; `mm logs` shows the runs.
+  - **Independent review:** 1 HIGH, 1 MEDIUM, 8 LOW.
+    - HIGH (also found by the security audit): `update-password` logged in with the newly typed password to whatever host the row held, and the secret-unreadable text sent users there — a host swapped (or a row inserted) with a stolen Supabase session would receive the password. Fixed: core `updatePassword` and the CLI (before the prompt) refuse when `storedSecretReadable` is false; the CLI shows mailbox, server and username before asking; recovery text is now `remove` + `add`.
+    - MEDIUM: invalid `MM_MASTER_KEY` had no `mm keygen` hint — fixed.
+    - LOWs fixed: short ids sanitized; the duplicate pre-check logs/audits its own lookup failure; a stored username with control characters → `unsupported` (no endless retry); chosen settings shown after the picker/manual host; closing line when the user stops retrying; stronger CLI tests (exact failed-row counts, duplicate pre-check row, `unsupported`/`not-found` texts); doc drift. Not fixed: `mm logs` column width for long command names (M1b-4c code) → M1c-2.
+  - **Security audit** (`security-auditor`): the same HIGH; only real preset ids reach logs/audit rows (`knownProvider`); follow-ups added to TODO M1c-2 (off-domain SRV/autoconfig host warning, DB length limits, remove row can't name the mailbox, `mm logs` columns). It also re-flagged the known test-user password in public commit `0ed2604` (rotate in the Supabase dashboard).
+  - **Not verified:** the interactive TTY flows (milestone verification step 4: `mm account add` with a real password prompt, `list`, `test`, `update-password`, `remove`, then `mm logs`) — for the user in an external terminal; the 5 s challenge and the lock in a real terminal (unit-tested only).
+- **Deviations:** see the plan's "Implementation notes".
+  - `update-password` refuses an unreadable secret (the plan said it works then; the TODO's "secret saved with another key version → use `update-password`" is now "remove + add").
+  - `addAccount` lowercases the host itself (login, binding and row), not only the repo.
+  - New core exports `storedSecretReadable`, `knownProvider`; `settingsOf` also refuses a stored username with control characters.
+  - `VERSION` moved to `src/cli/version.ts` (shared by the program and the IMAP client info).
+  - TODO.md ticks and CLAUDE.md "Current state" are left to `/review-changes` / `/release`.

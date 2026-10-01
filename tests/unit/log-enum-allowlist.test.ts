@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  accountEvent,
   authLoginFailed,
   authLogout,
   count,
@@ -231,5 +232,67 @@ describe('runtime allowlists: guard events', () => {
     const e = block({ reason: c });
     expect(e).toMatchObject({ reason: 'unexpected' });
     line(e);
+  });
+});
+
+describe('runtime allowlists: account events (M1c-1)', () => {
+  it.each(CANARIES)('outcome %j → failed (with a reason)', (c) => {
+    const e = accountEvent('account.add', { provider: 'custom', outcome: c as unknown as 'ok' });
+    expect(e.outcome).toBe('failed');
+    expect(e.reason).toBe('unexpected');
+    line(e);
+  });
+
+  it.each(CANARIES)('reason %j → unexpected', (c) => {
+    const e = accountEvent('account.test', {
+      provider: 'custom',
+      outcome: 'failed',
+      reason: c as unknown as 'auth-failed',
+    });
+    expect(e.reason).toBe('unexpected');
+    line(e);
+  });
+
+  // Slug-shaped canaries ('hunter2', 'constructor') are valid preset-id shapes and kept by
+  // cleanProvider; the canary test covers leaks with real secrets.
+  it.each(CANARIES.filter((c) => !/^[a-z0-9-]{1,40}$/.test(c)))(
+    'provider %j → custom, acct dropped',
+    (c) => {
+      const e = accountEvent('account.remove', { acct: c, provider: c, outcome: 'ok' });
+      expect(e.provider).toBe('custom');
+      expect(e).not.toHaveProperty('acct');
+      line(e);
+    },
+  );
+
+  it('an ok outcome drops any reason; valid values are kept', () => {
+    const acct = '6c1f0e2a-9b3d-4c5e-8f7a-1b2c3d4e5f60';
+    const e = accountEvent('account.add', {
+      acct,
+      provider: 'gmail',
+      outcome: 'ok',
+      reason: 'duplicate',
+    });
+    expect(e).toEqual({ event: 'account.add', acct, provider: 'gmail', outcome: 'ok' });
+    for (const reason of [
+      'blocked',
+      'duplicate',
+      'not-found',
+      'secret-unreadable',
+      'unsupported',
+      'database',
+      'auth-failed',
+    ] as const) {
+      expect(
+        accountEvent('account.add', { provider: 'gmail', outcome: 'failed', reason }).reason,
+      ).toBe(reason);
+    }
+  });
+
+  it('levels: ok → info, failed → warn', () => {
+    expect(eventLevel(accountEvent('account.add', { provider: 'x', outcome: 'ok' }))).toBe('info');
+    expect(eventLevel(accountEvent('account.add', { provider: 'x', outcome: 'failed' }))).toBe(
+      'warn',
+    );
   });
 });

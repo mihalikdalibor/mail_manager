@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M1b-4 Logging foundation** (added 2026-09-23; split 2026-09-28 into 4a–4d — 4a log core + run logging done 2026-09-28, C-015 reviewed; 4b domain + security events done 2026-09-29, C-016 reviewed; next 4c `mm logs` or 4d audit trail — both unblocked), then M1c — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M1c Account commands** — M1c-1 account commands done 2026-10-01 (v0.7.0, C-019, reviewed); next M1c-2 hardening follow-ups — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -59,7 +59,7 @@ Decisions (2026-09-21): migrations via Supabase CLI (npm devDependency, `npm run
 Decisions (2026-09-21): SK/CZ market first; synthetic test mail built with nodemailer MailComposer (devDependency, no SMTP); ~150 messages / ~25 MB seeded deterministically into folder `mm-test` of **test@example-test-domain.eu** (Websupport).
 Split on 2026-09-22 into M1b-1 → M1b-2 → M1b-3 (each its own assignment); M1b-4 logging foundation added 2026-09-23 (after M1b-3, before M1c).
 
-### M1b-1 — Provider discovery (no login)
+### M1b-1 — Provider discovery (no login) ✅
 
 Decisions (2026-09-22): order = preset by email domain → preset by **MX suffix** (primary for custom domains: the domain's MX host is matched against the preset records) → ISPDB → autoconfig (**HTTPS only**: `autoconfig.<domain>` + `<domain>/.well-known/autoconfig`) → SRV `_imaps._tcp` → manual. XML parsed with **fast-xml-parser**. Only implicit-TLS / 993 results accepted.
 
@@ -123,7 +123,7 @@ Decisions (2026-09-24): seed appends only missing messages and refuses when `mm-
 - **Acceptance:** a second seed changes nothing; server state matches the manifest; guard refuses other folders before any IMAP command; unseed leaves no `mm-test` folder; no `src/` change; lint, typecheck, unit + integration tests, build green; leak check clean.
 - Logging: none (seed/unseed are npm scripts, not `mm` commands).
 
-### M1b-4 — Logging foundation (needs M1b-2b; after M1b-3, before M1c) → [design](docs/LOGGING.md)
+### M1b-4 — Logging foundation (needs M1b-2b; after M1b-3, before M1c) → [design](docs/LOGGING.md) ✅
 
 Decisions (2026-09-23): four kinds of records split by purpose — audit trail (Supabase `audit_log`), security events (`security-*.log`), app log (`app-*.log`), metrics/alerts (hosted only); local files in `<config dir>/logs/`; typed, allowlisted events only; the cloud `audit_log` is created **here** (moved from M4) so M1c's account actions are audited from day one. Settles the M1c "security log file" note (location, events, `mm logs`).
 
@@ -154,36 +154,63 @@ Decisions (2026-09-28/29): security day files get their own **150 MB** cap (app 
 - **Acceptance:** failed `mm login` → `auth.login-failed` with a reason and no e-mail/password; successful → `auth.login` with the user id only; `mm doctor` → one `doctor.check` per check; `mm discover` → one `discover.finish` without address/domain/host; guard events built and tested; fail2ban regex still matches; canary clean; lint, typecheck, tests, build green.
 - Logging: `doctor.check`, `discover.finish`, `auth.login`, `auth.login-failed`, `auth.logout`, `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block`.
 
-#### M1b-4c — `mm logs` (needs 4a, 4b)
+#### M1b-4c — `mm logs` (needs 4a, 4b) ✅
 
-- [ ] `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language lines in `src/cli/log-text.ts`; interrupted runs marked; malformed lines skipped and counted, never printed raw
-- **Acceptance:** `mm logs` readable, interrupted runs marked, `--json` lines parse with `jq`; lint, typecheck, tests, build green.
+Decisions (2026-09-29): flat event list (one line per event, time order, `command.start` shown as "started"); `--json` prints validated, re-serialized records — never raw lines.
 
-#### M1b-4d — Audit trail (needs 4a; implement after 4b — both edit the event catalog)
+- [x] Reader (`src/core/log/`): per-event zod schemas (same allowlists as the builders) over `parseLogLine`; unknown events and malformed lines skipped and **counted**; reads only regular `app-`/`security-` day files in the window (no symlinks, line by line — security files can reach 150 MB); merges both kinds by `ts`; excludes the reader's own run
+- [x] `mm logs [--since 30m|24h|7d] [--level debug|info|warn|error] [--security] [--run <16 hex>] [--json]`: default last 24 h, `--since` max 90 d; `--level` is a minimum; `--security` = security lines only; `--run` searches all retained files; local time (`HH:MM:SS`, date headers when the range spans days); plain text per event in `src/cli/log-text.ts` from the event's real fields only (no invented counts); every printed string stripped of control/bidi/invisible characters; runs with a start and no finish (other than the reader's own) shown as **interrupted**; footer "N unreadable lines skipped"
+- [x] `mm logs --json`: one validated record per line (`JSON.stringify` of the schema output), same filters — safe to paste into a support ticket
+- [x] `mm logs path` prints the log folder; `mm logs clear` deletes the real `app-*`/`security-*` day files only after a confirmation (non-TTY: refuses unless `--yes`), never follows symlinks, reports the count
+- [x] Tests: per-event schema round trip for every catalog event, tampered lines (escape sequences, bidi, wrong types, unknown events, oversized) skipped/counted or sanitized, interrupted detection incl. own run excluded, filters, day-boundary/local-time formatting with a fake clock + TZ, `clear` refusals and symlink safety, `--json` output parses and contains only catalog fields
+- **Acceptance:** `mm logs` readable, interrupted runs marked, tampered lines never printed raw, `--json` lines parse with `jq`/`JSON.parse`; lint, typecheck, tests, build green.
+- Logging: `mm logs` runs are logged like every command (start/finish); no new events.
+
+#### M1b-4d — Audit trail (needs 4a; implement after 4b — both edit the event catalog) ✅
 
 Decisions (2026-09-29): live RLS tests insert a few tagged rows per run that stay (append-only; deleting a test user removes them); `mm doctor` checks that `audit_log` exists (to be automated later so users don't get stuck — see Later); Supabase Auth "write audit logs to the database" → **on**, deleted after 90 days (cleanup job later).
 
-- [ ] **User:** Supabase dashboard → Authentication → Audit Logs → turn on "write audit logs to the database"
-- [ ] New migration `audit_log` per docs/DATA_MODEL.md: `user_id` default `auth.uid()` (cascade), `account_id` FK `on delete set null`, `action` check + zod enum (all 10 actions), `details` jsonb ≤ 4 KB (`pg_column_size` check), `result`/`reason`/`run_id`, `created_at` server-set; RLS `select` + `insert` own rows only, insert policy also requires `account_id` null or one of the user's own accounts; privileges reset (no anon, no update/delete/truncate, column-level insert without `id`/`created_at`). Applying it (`npm run db:push`, shared cloud DB) needs the user's go-ahead
-- [ ] `AuditRepo` interface (`src/core/db/repos.ts`) + Supabase implementation (`write`, `listRecent` for tests/`mm logs` later); zod `details` schema for `account.*` (`provider` preset id) — other actions get theirs in their milestones; core `recordAudit(repo, entry, log)` never throws and emits `audit.write-failed` (`action`, `reason` code) on failure; nothing calls it before M1c
-- [ ] `mm doctor` `database` check also probes `audit_log` (present + anon blocked → OK; missing → FAIL "run npm run db:push")
-- [ ] Tests: unit (repo mapping/validation with a fake client, `recordAudit` failure → event, no row data in errors); two-user RLS integration test (own rows only, B can't read A's rows, can't insert with A's `user_id` or A's `account_id`, no update/delete, anon denied, `created_at` not client-settable; rows tagged `reason: 'rls-test'`)
+- [x] **User:** Supabase dashboard → Authentication → Audit Logs → turn on "write audit logs to the database"
+- [x] New migration `audit_log` per docs/DATA_MODEL.md: `user_id` default `auth.uid()` (cascade), `account_id` FK `on delete set null`, `action` check + zod enum (all 10 actions), `details` jsonb ≤ 4 KB (`pg_column_size` check), `result`/`reason`/`run_id`, `created_at` server-set; RLS `select` + `insert` own rows only, insert policy also requires `account_id` null or one of the user's own accounts; privileges reset (no anon, no update/delete/truncate, column-level insert without `id`/`created_at`). Applying it (`npm run db:push`, shared cloud DB) needs the user's go-ahead
+- [x] `AuditRepo` interface (`src/core/db/repos.ts`) + Supabase implementation (`write`, `listRecent` for tests/`mm logs` later); zod `details` schema for `account.*` (`provider` preset id) — other actions get theirs in their milestones; core `recordAudit(repo, entry, log)` never throws and emits `audit.write-failed` (`action`, `reason` code) on failure; nothing calls it before M1c
+- [x] `mm doctor` `database` check also probes `audit_log` (present + anon blocked → OK; missing → FAIL "run npm run db:push")
+- [x] Tests: unit (repo mapping/validation with a fake client, `recordAudit` failure → event, no row data in errors); two-user RLS integration test (own rows only, B can't read A's rows, can't insert with A's `user_id` or A's `account_id`, no update/delete, anon denied, `created_at` not client-settable; rows tagged `reason: 'rls-test'`)
 - **Acceptance:** migration applied; `audit_log` RLS suite passes; doctor detects a missing table; `audit.write-failed` tested; lint, typecheck, tests, build green.
 - Logging: `audit.write-failed`.
 
 ## M1c — Account commands (needs M1a + M1b)
 
-- [ ] `mm account add [email]` — discover → (`chooseImapSettings`: provider picker / manual host from M1b-1) → hints → hidden password → test login through the login guard (M1b-2b; generic failure message incl. GeoIP hint) → encrypt → save
-- [ ] `mm account list` / `test` / `remove` (confirm) / `update-password`
-- [ ] `mm --help` shows how to connect a mailbox (user, 2026-09-22): the `account` command group with its subcommands, plus a short "Getting started" footer (`mm login` → `mm discover <email>` → `mm account add <email>` → `mm account test`)
-- [ ] Logging ([LOGGING.md](docs/LOGGING.md); foundation from M1b-4): `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`); `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; no address, host or password in any event (canary)
-- [ ] Integration test: add + test account on test@example-test-domain.eu; wrong password saves nothing
-- [ ] Follow-ups from the M1a review (2026-09-22):
-  - [ ] lowercase `host` in the accounts repo + a DB check in the next migration (the `(user_id, email, host)` uniqueness can be bypassed by case)
-  - [ ] next migration: force `created_at`/`updated_at` to `now()` on insert (the client can currently set them)
-  - [ ] `mm login` over an existing session: revoke the old refresh token first (logout → login)
-  - [ ] unit test for the `src/cli/bin.ts` exit/flush path; comment that the auth deadline doesn't cancel the underlying library call
-- **Acceptance:** account add/test works on the test mailbox; wrong password saves nothing; RLS holds; no password in output.
+Decisions (2026-09-30): split into M1c-1 (all account commands) → M1c-2 (hardening follow-ups). Accounts are named by the short id `mm account list` shows (first 8 hex chars of the account UUID; any unique prefix of ≥ 4 chars or the full UUID also works). Password retries in `add`/`update-password` stay inside one run and are limited by the login guard (2 free, then a 5 s wait, lock after 5). Decided 2026-10-01: the encrypted password is bound to the account's host, port and username (AAD), so an account whose server was changed in the database can't decrypt — the password is never sent to a swapped host; failed `account add` attempts also get an audit row (`result: failed`, `account_id` null, reason code).
+
+### M1c-1 — Account commands ✅
+
+- [x] Core `src/core/accounts.ts` (no prompts): add / test / update-password / remove / resolve id prefix. Every login goes through `guardedOpenSession` with one `LoginGuard` per run (in-memory store, target key from `MM_MASTER_KEY`); the same run log is passed to the guard and the session (security log)
+- [x] `mm account add [email]` (needs a terminal):
+  - discover → show provider, host, hint/help link and the unverified warning; nothing found or a per-mailbox host → provider picker / manual host; blocked provider (Outlook) → reason, exit 1
+  - hidden password → test login; wrong password → the generic message (with GeoIP hint) and "try again?" (guard-limited); other failures → their message, exit 1
+  - success → encrypt → save → capabilities recorded → "Added <email> (id 3f2a91c0)"
+  - same email + host already saved → points at `update-password`; nothing is saved unless the login succeeded; the repo lowercases `host`
+- [x] `mm account list`: id (8 chars), email, provider, host, last checked — never secrets; empty → "No mailboxes yet — run `mm account add <email>`"
+- [x] `mm account test <id>`: decrypt → login → "Login works" + server features; stores capabilities and last-checked time; failure → the same texts, exit 1
+- [x] `mm account update-password <id>` (terminal): new hidden password → test login with it → only then encrypt and save; a wrong password saves nothing (retries as in `add`)
+- [x] `mm account remove <id> [--yes]`: shows email and provider, asks (default no); without a terminal refuses unless `--yes`; Ctrl+C → 130; the audit row is written after the delete with `account_id` null
+- [x] Id handling: no id → "Which mailbox? Run `mm account list` and pass its id"; bad format → plain error; no match → "No mailbox with id …"; ambiguous prefix → "matches N mailboxes — type more characters"
+- [x] Errors in plain words: not logged in → `mm login`; missing/invalid `MM_MASTER_KEY` → `mm keygen` hint; secret saved with another key version → "use `update-password`" (superseded 2026-10-01, C-019: `update-password` refuses an unreadable secret — the row may point at a swapped host — so the texts say `mm account remove` + `mm account add`); database unreachable → the existing repo texts
+- [x] `mm --help` lists the `account` group and a "Getting started" footer: `mm login` → `mm discover <email>` → `mm account add <email>` → `mm account test <id>` (user, 2026-09-22)
+- [x] Logging ([LOGGING.md](docs/LOGGING.md)): app events `account.add` / `account.test` / `account.password-update` / `account.remove` (`acct`, `provider`, `outcome`, `reason`); `audit_log` rows for add (also failed attempts) / remove / password-update (`details: { provider }`); guard + IMAP events in the security log; canary tests (no address, host or password in any line or row)
+- [x] Tests: core with fakes (nothing saved on failure, guard-limited retries, duplicate, key-version mismatch, prefix resolution); CLI with mocked prompts; integration test (skips without `MM_TEST_SUPABASE_A_*` + `MM_TEST_IMAP_*`): add → list → test → update-password (same password) → remove on the test mailbox as test user A — no live wrong-password attempt (TESTING.md: the suite's one is in `imap-session`); "wrong password saves nothing" is proven with a fake IMAP opener
+- **Acceptance:** add / list / test / update-password / remove work on the test mailbox; a wrong password saves nothing; no password, address or host in logs or audit rows; RLS suite still passes; lint, typecheck, tests, build green.
+
+### M1c-2 — Hardening follow-ups (needs M1c-1)
+
+- [ ] New migration (applying it needs the user's go-ahead): `mail_accounts.host = lower(host)` check; `created_at`/`updated_at` forced to `now()` on insert; `audit_log`: revoke `service_role` DELETE, `folder !~ '@'`, `jsonb_typeof(details) = 'object'` (from the M1a and M1b-4d reviews)
+- [ ] `mm login` over an existing session revokes the old refresh token first (logout → login)
+- [ ] Unit test for the `src/cli/bin.ts` exit/flush path; comment that the auth deadline doesn't cancel the underlying library call
+- [ ] Closed pipe for every command (`mm keygen | true` → no "Unexpected error" / `error.unexpected`), fixed in `runCli`/`bin.ts` (C-018 review)
+- [ ] `mm logs` follow-ups (C-018 review): `--json` cap ignores interrupted markers; the "older lines not shown" hint suggests options that help (`--level`/`--security`/`--run`); the empty message mentions active filters; `log.truncated` written just after UTC midnight lands in the previous day's file (writer timestamp)
+- [ ] `SupabaseAuditRepo.listRecent` tie-break by `id desc` (C-017 review)
+- [ ] M1c-1 security-audit follow-ups (C-019): `mm account add` warns specifically when discovery (SRV/autoconfig) returns a host outside the email's domain, and "Use these settings?" then defaults to no; DB length limits for `mail_accounts.host`/`email`/`username` (in the migration above); the `account.remove` audit row can't say which mailbox was removed (`account_id` is null after the delete) — decide on an id in `details` or leave it; `mm logs` column alignment for long command names (`account update-password`)
+- **Acceptance:** migration applied, RLS suite passes; each follow-up has a test; lint, typecheck, tests, build green.
 
 ## M2 — Mailbox insight → [doc](docs/milestones/M2-insight.md)
 

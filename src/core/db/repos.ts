@@ -65,3 +65,55 @@ export class RepoError extends Error {
     this.code = code;
   }
 }
+
+// Audit trail (M1b-4d): append-only record of what a user changed. Counts, bytes, folder
+// names, the filter definition and reason codes only — never message content.
+
+export const AUDIT_ACTIONS = [
+  'account.add',
+  'account.remove',
+  'account.password-update',
+  'filter.save',
+  'filter.delete',
+  'mail.trash',
+  'mail.expunge',
+  'mail.move',
+  'backup',
+  'migrate',
+] as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export type AuditResult = 'ok' | 'partial' | 'failed' | 'aborted';
+
+export interface AuditEntry {
+  /** The mail account the action belongs to; must be one of the user's own accounts. */
+  accountId?: string;
+  action: AuditAction;
+  folder?: string;
+  messageCount?: number;
+  bytes?: number;
+  /** Per-action details (validated by src/core/audit.ts), e.g. `{ provider }` for account.*. */
+  details?: Record<string, unknown>;
+  result: AuditResult;
+  /** Typed reason code, never raw error text. */
+  reason?: string;
+  /** The local run id — links the row to the app log. */
+  runId?: string;
+}
+
+export interface AuditRecord extends AuditEntry {
+  id: number;
+  userId: string;
+  createdAt: Date;
+}
+
+export interface AuditRepo {
+  /** Throws RepoError (codes only) when the row can't be written. */
+  write(entry: AuditEntry): Promise<void>;
+  /**
+   * Newest first. Rows the user wrote directly (with their JWT) may not match the app's
+   * schema: those are skipped and counted, never thrown, so one bad row can't break the list.
+   */
+  listRecent(limit: number): Promise<{ records: AuditRecord[]; skipped: number }>;
+}

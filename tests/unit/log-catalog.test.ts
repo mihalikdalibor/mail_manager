@@ -9,10 +9,12 @@ interface CatalogRow {
   emittedFrom: string;
 }
 
-/** Rows of the "### Foundation (M1b-4)" table: `| `event.name` | Kind | Level | Fields | OWASP | Emitted from |`. */
-function foundationRows(md: string): CatalogRow[] {
-  const start = md.indexOf('### Foundation (M1b-4)');
-  expect(start).toBeGreaterThanOrEqual(0);
+/** The catalog tables whose rows are events: `| `event.name` | Kind | Level | Fields | OWASP | Emitted from |`. */
+const CATALOG_TABLES = ['### Foundation (M1b-4)', '### Account commands (M1c-1)'];
+
+function tableRows(md: string, heading: string): CatalogRow[] {
+  const start = md.indexOf(heading);
+  expect(start, heading).toBeGreaterThanOrEqual(0);
   const rest = md.slice(md.indexOf('\n', start) + 1);
   const next = rest.search(/^#{1,3} /m);
   const section = next === -1 ? rest : rest.slice(0, next);
@@ -30,11 +32,15 @@ function foundationRows(md: string): CatalogRow[] {
   return rows;
 }
 
-describe('docs/LOGGING.md event catalog', () => {
-  const rows = foundationRows(LOGGING_MD);
+function catalogRows(md: string): CatalogRow[] {
+  return CATALOG_TABLES.flatMap((heading) => tableRows(md, heading));
+}
 
-  it('has foundation rows', () => {
-    expect(rows.length).toBeGreaterThan(0);
+describe('docs/LOGGING.md event catalog', () => {
+  const rows = catalogRows(LOGGING_MD);
+
+  it.each(CATALOG_TABLES)('has rows in %s', (heading) => {
+    expect(tableRows(LOGGING_MD, heading).length).toBeGreaterThan(0);
   });
 
   it('lists every event the code can emit', () => {
@@ -42,9 +48,12 @@ describe('docs/LOGGING.md event catalog', () => {
     for (const name of LOG_EVENT_NAMES) expect(names).toContain(name);
   });
 
-  it.each(['M1b-4a', 'M1b-4b'])('every row marked as emitted from %s exists in the code', (ms) => {
-    const emitted = rows.filter((r) => r.emittedFrom === ms).map((r) => r.name);
-    expect(emitted.length).toBeGreaterThan(0);
-    for (const name of emitted) expect(LOG_EVENT_NAMES).toContain(name);
-  });
+  it.each(['M1b-4a', 'M1b-4b', 'M1b-4d', 'M1c-1'])(
+    'every row marked as emitted from %s exists in the code',
+    (ms) => {
+      const emitted = rows.filter((r) => r.emittedFrom === ms).map((r) => r.name);
+      expect(emitted.length).toBeGreaterThan(0);
+      for (const name of emitted) expect(LOG_EVENT_NAMES).toContain(name);
+    },
+  );
 });

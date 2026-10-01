@@ -100,7 +100,8 @@ export function accountToInsertRow(a: NewMailAccount) {
     label: a.label ?? null,
     email: a.email.toLowerCase(),
     provider: a.provider,
-    host: a.host,
+    // Hosts are case-insensitive: lowercased so the (user, email, host) uniqueness holds.
+    host: a.host.toLowerCase(),
     port: a.port,
     username: a.username,
     auth_type: a.authType,
@@ -126,7 +127,10 @@ export function toRepoError(err: PostgrestLikeError): RepoError {
   ) {
     kind = 'unavailable';
   }
-  return new RepoError(kind, `Database error: ${kind}${code ? ` (${code})` : ''}`);
+  // The code comes from the server: only a real SQLSTATE / PostgREST code is shown, so a hostile
+  // endpoint can't put terminal escapes or text into the message.
+  const shown = /^(?:[0-9A-Z]{5}|PGRST\d{3})$/.test(code) ? ` (${code})` : '';
+  return new RepoError(kind, `Database error: ${kind}${shown}`);
 }
 
 export class SupabaseAccountsRepo implements AccountsRepo {

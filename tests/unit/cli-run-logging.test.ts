@@ -109,10 +109,18 @@ interface Leaf {
   cmd: Command;
 }
 
+/** Commander-internal: whether the command has its own action (e.g. `logs` besides `logs clear`). */
+function hasOwnAction(cmd: Command): boolean {
+  return (cmd as unknown as { _actionHandler: unknown })._actionHandler != null;
+}
+
+/** Every runnable command: leaves, plus parents that have their own action. */
 function leaves(cmd: Command, prefix: string[] = []): Leaf[] {
   return cmd.commands.flatMap((c) => {
     const path = [...prefix, c.name()];
-    return c.commands.length > 0 ? leaves(c, path) : [{ path: path.join(' '), cmd: c }];
+    const self =
+      c.commands.length === 0 || hasOwnAction(c) ? [{ path: path.join(' '), cmd: c }] : [];
+    return [...self, ...leaves(c, path)];
   });
 }
 
@@ -172,7 +180,23 @@ describe('runCli: every command logs start and finish', () => {
 
   it('finds the known commands', () => {
     expect(all.map((l) => l.path)).toEqual(
-      expect.arrayContaining(['login', 'logout', 'whoami', 'keygen', 'doctor', 'discover']),
+      expect.arrayContaining([
+        'login',
+        'logout',
+        'whoami',
+        'keygen',
+        'doctor',
+        'discover',
+        // `logs` has its own action and subcommands: a commander change must fail loudly here.
+        'logs',
+        'logs path',
+        'logs clear',
+        'account add',
+        'account list',
+        'account test',
+        'account update-password',
+        'account remove',
+      ]),
     );
   });
 
@@ -216,9 +240,10 @@ describe('buildProgram onCommandStart', () => {
       .option('--level <n>', 'level', '5')
       .option('--name <value>')
       .action(() => undefined);
+    // A nested fixture path (the real `account` group exists since M1c-1).
     program
-      .command('account')
-      .command('add')
+      .command('group')
+      .command('sub')
       .action(() => undefined);
     await program.parseAsync(argv, { from: 'user' });
     return seen;
@@ -264,8 +289,8 @@ describe('buildProgram onCommandStart', () => {
   });
 
   it('passes the command path without the root, space-joined', async () => {
-    const seen = await started(['account', 'add']);
-    expect(seen).toEqual([['account add', []]]);
+    const seen = await started(['group', 'sub']);
+    expect(seen).toEqual([['group sub', []]]);
   });
 });
 

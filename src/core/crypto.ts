@@ -24,9 +24,23 @@ function assertKey(key: Buffer): void {
   if (key.length !== KEY_BYTES) throw new CryptoError(`Key must be ${KEY_BYTES} bytes`);
 }
 
-/** Binds a ciphertext to one account of one user: copied into another row it won't decrypt. */
-export function accountAad(userId: string, accountId: string): string {
-  return `mail_accounts:${userId}:${accountId}`;
+/** What a stored mailbox secret is bound to (AAD v2). */
+export interface AccountBinding {
+  userId: string;
+  accountId: string;
+  host: string;
+  port: number;
+  username: string;
+}
+
+/**
+ * Binds a ciphertext to one account of one user and to the server it logs in to: copied into
+ * another row it won't decrypt, and neither will it after the row's host, port or username was
+ * changed in the database — so the password can never be sent to a swapped server. JSON keeps
+ * the fields unambiguous (a `:` in a username can't shift them).
+ */
+export function accountAad(b: AccountBinding): string {
+  return `mail_accounts:v2:${JSON.stringify([b.userId, b.accountId, b.host.toLowerCase(), b.port, b.username])}`;
 }
 
 export function encryptSecret(

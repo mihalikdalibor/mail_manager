@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AuthError } from '../../src/core/auth.js';
 import {
+  accountEvent,
   authFailureReason,
   authLogin,
   authLoginFailed,
@@ -151,6 +152,35 @@ describe('canary: guard events — ip, target, addr, until', () => {
           attempts: 3,
           until: v,
           target: v,
+        }),
+      ),
+    );
+  });
+});
+
+describe('canary: account events (M1c-1) — acct, provider and enum fields', () => {
+  const names = [
+    'account.add',
+    'account.test',
+    'account.password-update',
+    'account.remove',
+  ] as const;
+
+  it.each(names)('%s acct and provider', (name) => {
+    expectClean(
+      VALUES.map((v) =>
+        accountEvent(name, { acct: v, provider: v, outcome: 'failed', reason: 'auth-failed' }),
+      ),
+    );
+  });
+
+  it.each(names)('%s outcome and reason cast from canaries', (name) => {
+    expectClean(
+      VALUES.map((v) =>
+        accountEvent(name, {
+          provider: 'custom',
+          outcome: v as unknown as 'failed',
+          reason: v as unknown as 'auth-failed',
         }),
       ),
     );

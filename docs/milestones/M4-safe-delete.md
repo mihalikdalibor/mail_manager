@@ -13,7 +13,7 @@ Delete mail by filter (range, sender, age, size…) with near-zero risk of delet
   - every fallback is announced and confirmed ([IMAP.md §6.2](../IMAP.md#62-delete-strategy-matrix));
   - UIDVALIDITY re-check before each batch; batches ~500; progress.
 - Resumability: plan saved to `~/.config/mail-manager/plans/<id>.json`; `mm delete --resume <id>`.
-- Audit: rows in the existing `audit_log` (created in M1b-4, [DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4)); one row per folder per run, actions `mail.trash` / `mail.expunge` / `mail.move`.
+- Audit: rows in the existing `audit_log` (created in M1b-4, [DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4d-migration-20260929063314_audit_logsql)); one row per folder per run, actions `mail.trash` / `mail.expunge` / `mail.move`.
 - CLI: `mm delete <account> [filter flags] [--expunge] [--max N] [--list-file <path>] [--no-backup]`, `mm audit [--account]`.
 - Confirmation UX ([IMAP.md §6.4](../IMAP.md#64-confirmation-flow-for-every-delete)): notices (fallback, Trash folder, Gmail) → **full paged list of every message** → `y/N` → type the count (`DELETE <n>` for permanent). Interactive only (refuses without a TTY), no `--yes`.
 - Trash selection ([IMAP.md §6.5](../IMAP.md#65-choosing-the-trash-folder)): server-marked `\Trash`, otherwise our own name scan → root-Trash ranking → user picks. Always printed. Choice saved on the account (new migration: `trash_path`, `trash_source`, `trash_confirmed_at`).

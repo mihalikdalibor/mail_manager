@@ -31,7 +31,15 @@ const find = (m: string): void => {
 const ok = (m: string): void => console.log(`ok    ${m}`);
 const key = randomBytes(32);
 const PLAIN = 'PLAIN-CANARY-31c2';
-const aad = c.accountAad('user-a', 'acct-1');
+// AAD v2 (M1c-1): bound to user, account, host, port and username.
+const BINDING = {
+  userId: 'user-a',
+  accountId: 'acct-1',
+  host: 'imap.example.invalid',
+  port: 993,
+  username: 'someone@example.invalid',
+};
+const aad = c.accountAad(BINDING);
 
 // 1. AES-GCM properties.
 const ivs = new Set<string>();
@@ -43,8 +51,25 @@ ivs.size === 20_000
 const enc = c.encryptSecret(PLAIN, key, 1, aad);
 if (JSON.stringify(enc).includes(PLAIN)) find('plaintext in ciphertext object');
 const mustFail: [string, () => unknown][] = [
-  ['other account (row swap)', () => c.decryptSecret(enc, key, c.accountAad('user-a', 'acct-2'))],
-  ['other user', () => c.decryptSecret(enc, key, c.accountAad('user-b', 'acct-1'))],
+  [
+    'other account (row swap)',
+    () => c.decryptSecret(enc, key, c.accountAad({ ...BINDING, accountId: 'acct-2' })),
+  ],
+  ['other user', () => c.decryptSecret(enc, key, c.accountAad({ ...BINDING, userId: 'user-b' }))],
+  [
+    'other host (row edited in the DB)',
+    () => c.decryptSecret(enc, key, c.accountAad({ ...BINDING, host: 'imap.attacker.invalid' })),
+  ],
+  [
+    'host with a trailing dot',
+    () => c.decryptSecret(enc, key, c.accountAad({ ...BINDING, host: 'imap.example.invalid.' })),
+  ],
+  ['other port', () => c.decryptSecret(enc, key, c.accountAad({ ...BINDING, port: 994 }))],
+  [
+    'other username',
+    () =>
+      c.decryptSecret(enc, key, c.accountAad({ ...BINDING, username: 'other@example.invalid' })),
+  ],
   [
     'flipped ciphertext bit',
     () => {
@@ -81,7 +106,14 @@ ok('AAD / tamper / key-length checks run');
 // Key version mismatch must be refused, not silently decrypted with the wrong key.
 const provider = new creds.LocalCredentialProvider({ masterKey: key, masterKeyVersion: 2 });
 try {
-  provider.decryptPassword({ id: 'acct-1', userId: 'user-a', secret: enc });
+  provider.decryptPassword({
+    id: BINDING.accountId,
+    userId: BINDING.userId,
+    host: BINDING.host,
+    port: BINDING.port,
+    username: BINDING.username,
+    secret: enc,
+  });
   find('key_version mismatch accepted');
 } catch {
   ok('key_version mismatch refused');

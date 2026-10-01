@@ -1,6 +1,14 @@
-import { IMAP_FAILURE_REASONS, type ImapFailureReason } from '../imap/errors.js';
+import type { ImapFailureReason } from '../imap/errors.js';
 import type { BlockKind } from '../security/events.js';
 import { cleanProvider, count, oneOf, uuidOrUndefined } from './builders.js';
+import {
+  ADDR_RE,
+  BLOCK_KINDS,
+  HMAC_RE,
+  IMAP_FAILURE_REASON_SET,
+  IP_BUCKET_RE,
+  isWriterTimestamp,
+} from './event-schemas.js';
 import type {
   ImapLoginEvent,
   ImapLoginFailedEvent,
@@ -12,24 +20,10 @@ import type {
 // (normalised bucket + HMAC), so no host, username or password can reach these lines; the
 // builders still allowlist them, so a caller bug can't either (or break fail2ban's format).
 
-/** normalizeIp buckets: IPv4, IPv6 /64 (`h:h:h:h::/64`), `local`, `invalid`. */
-const IP_BUCKET_RE = /^(?:local|invalid|(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-f]{1,4}:){4}:\/64)$/;
-/** eventAddress output: IPv4 or a full 8-hextet IPv6 address. */
-const ADDR_RE = /^(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4})$/;
-const TARGET_RE = /^[0-9a-f]{64}$/;
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
-const BLOCK_KINDS: Record<BlockKind, true> = {
-  'too-many-attempts': true,
-  'ip-blocked': true,
-  permanent: true,
-};
-const FAILURE_REASONS = new Set<string>(IMAP_FAILURE_REASONS);
-
 /** A known ImapFailureReason (or `blocked` where allowed), else `unexpected`. */
 function cleanReason(reason: unknown, allowBlocked: boolean): ImapFailureReason | 'blocked' {
   if (allowBlocked && reason === 'blocked') return 'blocked';
-  return typeof reason === 'string' && FAILURE_REASONS.has(reason)
+  return typeof reason === 'string' && IMAP_FAILURE_REASON_SET.has(reason)
     ? (reason as ImapFailureReason)
     : 'unexpected';
 }
@@ -39,7 +33,7 @@ function cleanIp(ip: string): string {
 }
 
 function cleanTarget(target: string): string {
-  return TARGET_RE.test(target) ? target : 'invalid';
+  return HMAC_RE.test(target) ? target : 'invalid';
 }
 
 export interface ImapLoginContext {
@@ -108,7 +102,7 @@ export function guardBlock(f: GuardBlockFields): LoginGuardBlockEvent {
     ip: cleanIp(f.ip),
     addr: f.addr !== null && ADDR_RE.test(f.addr) ? f.addr : null,
     attempts: count(f.attempts),
-    until: f.until !== null && ISO_RE.test(f.until) ? f.until : null,
+    until: typeof f.until === 'string' && isWriterTimestamp(f.until) ? f.until : null,
     target: cleanTarget(f.target),
   };
 }

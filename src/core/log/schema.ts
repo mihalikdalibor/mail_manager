@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { LOG_LEVELS } from '../config.js';
+import { RUN_RE } from './event-schemas.js';
 import type { LogKind } from './events.js';
 import { lineBytes, MAX_LINE_BYTES, SECURITY_PREFIX, type LogRecord } from './record.js';
 
@@ -10,8 +11,9 @@ const envelope = z.looseObject({
   ts: z.iso.datetime(),
   event: z.string().regex(/^[a-z]+(-[a-z]+)*(\.[a-z]+(-[a-z]+)*)+$/),
   level: z.enum(LOG_LEVELS),
-  run: z.string().regex(/^[0-9a-f]{16}$/),
-  v: z.number().int().positive(),
+  run: z.string().regex(RUN_RE),
+  // Any number: validateRecord counts another version as "unknown" (a newer Mail Manager).
+  v: z.number(),
 });
 
 export interface ParsedLogLine {
@@ -31,6 +33,9 @@ export function parseLogLine(line: string): ParsedLogLine | null {
   } catch {
     return null;
   }
+  // JSON.parse keeps `__proto__` as an own key, but zod's copy drops it: the strict per-event
+  // schema would never see that extra field.
+  if (data !== null && typeof data === 'object' && Object.hasOwn(data, '__proto__')) return null;
   const parsed = envelope.safeParse(data);
   if (!parsed.success) return null;
   return { kind: security ? 'security' : 'app', record: parsed.data };

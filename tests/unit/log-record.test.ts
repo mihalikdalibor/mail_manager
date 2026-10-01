@@ -28,6 +28,11 @@ const APP_EVENTS = [
   'log.truncated',
   'doctor.check',
   'discover.finish',
+  'audit.write-failed',
+  'account.add',
+  'account.test',
+  'account.password-update',
+  'account.remove',
 ] as const;
 const SECURITY_EVENTS = [
   'auth.login',
@@ -78,7 +83,7 @@ describe('constants', () => {
     expect(SECURITY_PREFIX).toBe('mm-security ');
   });
 
-  it('lists exactly the M1b-4a and M1b-4b events', () => {
+  it('lists exactly the M1b-4a, M1b-4b, M1b-4d and M1c-1 events', () => {
     expect([...LOG_EVENT_NAMES].sort()).toEqual([...APP_EVENTS, ...SECURITY_EVENTS].sort());
   });
 
@@ -88,6 +93,15 @@ describe('constants', () => {
     expect(EVENT_FIELDS['error.unexpected']).toEqual(['errClass', 'code', 'stack']);
     expect(EVENT_FIELDS['log.truncated']).toEqual([]);
     expect(EVENT_FIELDS['doctor.check']).toEqual(['check', 'status']);
+    expect(EVENT_FIELDS['audit.write-failed']).toEqual(['action', 'reason']);
+    for (const name of [
+      'account.add',
+      'account.test',
+      'account.password-update',
+      'account.remove',
+    ] as const) {
+      expect(EVENT_FIELDS[name]).toEqual(['acct', 'provider', 'outcome', 'reason']);
+    }
     expect(EVENT_FIELDS['discover.finish']).toEqual([
       'outcome',
       'source',
@@ -119,7 +133,7 @@ describe('constants', () => {
     ]);
   });
 
-  it('command, doctor and discover events are app events; auth, imap and guard events are security', () => {
+  it('command, doctor, discover, audit and account events are app events; auth, imap and guard events are security', () => {
     for (const name of APP_EVENTS) expect(EVENT_KIND[name]).toBe('app');
     for (const name of SECURITY_EVENTS) expect(EVENT_KIND[name]).toBe('security');
   });

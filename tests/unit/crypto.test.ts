@@ -32,8 +32,36 @@ function expectCryptoError(fn: () => unknown, message?: string): CryptoError {
 }
 
 describe('accountAad', () => {
-  it('builds the exact AAD string', () => {
-    expect(accountAad('u-123', 'a-456')).toBe('mail_accounts:u-123:a-456');
+  const binding = {
+    userId: 'u-123',
+    accountId: 'a-456',
+    host: 'IMAP.Example.com',
+    port: 993,
+    username: 'me:x',
+  };
+
+  it('builds the exact v2 AAD string (host lowercased)', () => {
+    expect(accountAad(binding)).toBe(
+      'mail_accounts:v2:["u-123","a-456","imap.example.com",993,"me:x"]',
+    );
+  });
+
+  it('a ":" in the username cannot shift fields into another binding', () => {
+    const shifted = { ...binding, accountId: 'a-456:me', username: 'x' };
+    expect(accountAad(shifted)).not.toBe(accountAad(binding));
+  });
+
+  it('changes with each bound field', () => {
+    const base = accountAad(binding);
+    for (const changed of [
+      { ...binding, userId: 'u-124' },
+      { ...binding, accountId: 'a-457' },
+      { ...binding, host: 'imap.other.com' },
+      { ...binding, port: 994 },
+      { ...binding, username: 'me:y' },
+    ]) {
+      expect(accountAad(changed)).not.toBe(base);
+    }
   });
 });
 

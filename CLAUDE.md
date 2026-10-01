@@ -4,7 +4,7 @@ IMAP-only mailbox **management** tool (filters, size insight, safe delete, backu
 
 ## Current state
 
-- **Current milestone: M1b-4 (logging foundation, added 2026-09-23; split 2026-09-28 into 4a–4d) — 4a log core + run logging and 4b domain + security events done (v0.6.0, C-015, C-016); next 4d audit trail (planned) or 4c `mm logs`**, then M1c. M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012), M1b-3a synthetic mail generator (v0.4.0, C-013) and M1b-3b test ground seed/unseed + live test (v0.5.0, C-014) done and reviewed. `TODO.md` is the source of truth for progress.
+- **Current milestone: M1c (account commands, split 2026-09-30 into M1c-1 → M1c-2) — M1c-1 `mm account add | list | test | update-password | remove` done (v0.7.0, C-019); next M1c-2 hardening follow-ups.** M1b-4 logging foundation done: 4a log core + run logging and 4b domain + security events (v0.6.0, C-015, C-016), 4d audit trail (C-017, migration applied) and 4c `mm logs` (C-018) (v0.7.0). M0, M1a (v0.0.1), M1b-1 provider discovery (v0.1.0, C-004…C-008), M1b-2a IMAP session (v0.2.0, C-009, C-010), M1b-2b login guard (v0.3.0, C-012), M1b-3a synthetic mail generator (v0.4.0, C-013) and M1b-3b test ground seed/unseed + live test (v0.5.0, C-014) done and reviewed. `TODO.md` is the source of truth for progress.
 - Docs: `docs/ARCHITECTURE.md`, `DATA_MODEL.md`, `SECURITY.md`, `PROVIDERS.md`, `IMAP.md` (protocol/capability research), `LOGGING.md` (what is logged, where, retention, event catalog), `TESTING.md`, `DEPLOYMENT.md`, `docs/milestones/Mx-*.md`.
 
 ## Workflow rules

@@ -150,6 +150,15 @@ describe('accountToInsertRow', () => {
     expect(keys).not.toContain('authType');
   });
 
+  it('lowercases the host (M1c-1: the (user, email, host) uniqueness is case-insensitive) but keeps the username', () => {
+    const row = accountToInsertRow({
+      ...base,
+      host: 'IMAP.Example.SK',
+    } as unknown as NewAccountInput);
+    expect(row.host).toBe('imap.example.sk');
+    expect(row.username).toBe('Mixed.Case@Example.SK');
+  });
+
   it('keeps an explicit label', () => {
     const row = accountToInsertRow({ ...base, label: 'Home' } as unknown as NewAccountInput);
     expect(row).toMatchObject({ label: 'Home' });

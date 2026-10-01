@@ -114,13 +114,18 @@ async function readErrorCode(res: Response): Promise<string | undefined> {
   }
 }
 
-/**
- * The anon role must be denied on mail_accounts (42501). A missing table means the
- * migration wasn't applied; a successful read means the grants are wrong.
- */
-async function checkDatabase(url: string, key: string, deps: DoctorDeps): Promise<CheckResult> {
-  const name = 'database';
-  const endpoint = new URL('/rest/v1/mail_accounts', url);
+/** Tables the app needs; each must exist and be closed to anon (RLS + grants). */
+const TABLES = ['mail_accounts', 'audit_log'] as const;
+
+/** One table: null when present and anon is blocked, else the failing check result. */
+async function probeTable(
+  name: string,
+  table: string,
+  url: string,
+  key: string,
+  deps: DoctorDeps,
+): Promise<CheckResult | null> {
+  const endpoint = new URL(`/rest/v1/${table}`, url);
   endpoint.searchParams.set('select', 'id');
   endpoint.searchParams.set('limit', '1');
   const where = endpoint.host;
@@ -130,15 +135,13 @@ async function checkDatabase(url: string, key: string, deps: DoctorDeps): Promis
       return {
         name,
         status: 'fail',
-        detail: 'anon can read mail_accounts — check the table grants (security problem)',
+        detail: `anon can read ${table} — check the table grants (security problem)`,
       };
     }
     const code = await readErrorCode(res);
-    if ((res.status === 401 || res.status === 403) && code === '42501') {
-      return { name, status: 'ok', detail: 'mail_accounts present, anon blocked' };
-    }
+    if ((res.status === 401 || res.status === 403) && code === '42501') return null;
     if (res.status === 404 || code === 'PGRST205') {
-      return { name, status: 'fail', detail: 'mail_accounts missing — run `npm run db:push`' };
+      return { name, status: 'fail', detail: `${table} missing — run \`npm run db:push\`` };
     }
     if (isRedirect(res)) {
       return { name, status: 'fail', detail: `${where}: unexpected redirect — check SUPABASE_URL` };
@@ -146,11 +149,26 @@ async function checkDatabase(url: string, key: string, deps: DoctorDeps): Promis
     return {
       name,
       status: 'fail',
-      detail: `${where}: unexpected HTTP ${res.status}${code ? ` (${code})` : ''}`,
+      detail: `${where}: unexpected HTTP ${res.status}${code ? ` (${code})` : ''} on ${table}`,
     };
   } catch (err) {
     return networkFailure(name, where, err, deps);
   }
+}
+
+/**
+ * The anon role must be denied on every app table (42501). A missing table means a migration
+ * wasn't applied; a successful read means the grants are wrong.
+ */
+async function checkDatabase(url: string, key: string, deps: DoctorDeps): Promise<CheckResult> {
+  const name = 'database';
+  // One after the other; the first failure (incl. a network one) ends the check, so a paused
+  // project doesn't wait for the timeout once per table.
+  for (const table of TABLES) {
+    const failed = await probeTable(name, table, url, key, deps);
+    if (failed !== null) return failed;
+  }
+  return { name, status: 'ok', detail: 'mail_accounts and audit_log present, anon blocked' };
 }
 
 /** The app is invite-only: public signups on the project are a configuration error. */

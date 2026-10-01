@@ -4,15 +4,20 @@ import {
   discover,
   SOURCE_LABEL,
   type DiscoveryResult,
-  type DomainProblem,
-  type DiscoverySource,
-  type ProviderInfo,
-  type Tried,
 } from '../../core/providers/discover.js';
 import { DiscoveryInputError } from '../../core/providers/email.js';
-import type { ImapSettings } from '../../core/providers/settings.js';
 import { discoverFinish, safeEmit, type DiscoverChoice } from '../../core/log/index.js';
 import type { CliContext } from '../index.js';
+import {
+  domainProblemText,
+  foundVia,
+  line,
+  printHelp,
+  printProvider,
+  printSettings,
+  printTried,
+  warn,
+} from '../discovery-text.js';
 import { chooseImapSettings, inquirerPrompts } from '../prompts/imap-settings.js';
 import { reportError } from '../report-error.js';
 
@@ -27,60 +32,6 @@ const SOURCE_TEXT = {
 /** Prompts only when both ends are a terminal (not when piped, e.g. `mm discover x | cat`). */
 function interactive(): boolean {
   return process.stdin.isTTY && process.stdout.isTTY;
-}
-
-const OUTCOME_LABEL: Record<Tried['outcome'], string> = {
-  'no-match': 'no known provider',
-  'not-found': 'nothing found',
-  'insecure-only': 'only STARTTLS / non-993 (not supported)',
-  invalid: 'invalid response',
-  timeout: 'timed out',
-  error: 'failed',
-};
-
-/** Plain-language explanation of a domain problem: what happened and what to do. */
-function domainProblemText(problem: DomainProblem, domain: string): string {
-  switch (problem) {
-    case 'not-exist':
-      return `The domain "${domain}" does not exist. Check the email address for typos. If the domain has expired but the mailbox still exists at your provider, you can still choose the provider or enter its IMAP host.`;
-    case 'dns-error':
-      return `The DNS servers of "${domain}" answered with an error, so its mail settings can't be looked up right now. Try again later, or ask whoever manages the domain.`;
-    case 'dns-unreachable':
-      return `Could not reach DNS to look up "${domain}". Check your internet connection and try again.`;
-  }
-}
-
-function line(label: string, value: string): void {
-  console.log(`${label.padEnd(10)} ${value}`);
-}
-
-function warn(text: string): void {
-  console.log(`! ${text}`);
-}
-
-function printProvider(provider: ProviderInfo): void {
-  line('Provider', provider.verified ? provider.name : `${provider.name} (unverified preset)`);
-}
-
-function printHelp(provider: ProviderInfo | undefined): void {
-  if (provider?.hint !== undefined) line('Hint', provider.hint);
-  if (provider?.helpUrl !== undefined) line('Help', provider.helpUrl);
-}
-
-function printSettings(imap: ImapSettings): void {
-  line('IMAP', `${imap.host}:${imap.port} (TLS)`);
-  line('Username', imap.username);
-}
-
-function foundVia(source: DiscoverySource, via: string | undefined): string {
-  return via === undefined ? SOURCE_LABEL[source] : `${SOURCE_LABEL[source]} — ${via}`;
-}
-
-function printTried(tried: Tried[]): void {
-  for (const t of tried) {
-    const detail = t.detail === undefined ? '' : ` (${t.detail})`;
-    line('  tried', `${SOURCE_LABEL[t.source]}: ${OUTCOME_LABEL[t.outcome]}${detail}`);
-  }
 }
 
 /** Exit code plus what the log may know about the run (no address, domain or host). */

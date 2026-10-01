@@ -10,6 +10,7 @@ const KEY_OK = 'sb_publishable_TESTKEY123';
 const HEALTH_URL = 'https://abcdefghijklmnop.supabase.co/auth/v1/health';
 const HEALTH_PATH = '/auth/v1/health';
 const DB_PATH = '/rest/v1/mail_accounts';
+const AUDIT_PATH = '/rest/v1/audit_log';
 const SETTINGS_PATH = '/auth/v1/settings';
 
 type FetchArgs = [input: string | URL | Request, init?: RequestInit];
@@ -50,15 +51,22 @@ const dbAnonBlocked: FetchImpl = () =>
 const settingsInviteOnly: FetchImpl = () =>
   Promise.resolve(jsonResponse({ disable_signup: true, external: { email: true } }));
 
-/** Fake fetch that routes by pathname: health endpoint, the mail_accounts probe, auth settings. */
-function routedFetch(routes: { health?: FetchImpl; db?: FetchImpl; settings?: FetchImpl } = {}) {
+/**
+ * Fake fetch that routes by pathname: health endpoint, the mail_accounts and audit_log probes,
+ * auth settings.
+ */
+function routedFetch(
+  routes: { health?: FetchImpl; db?: FetchImpl; audit?: FetchImpl; settings?: FetchImpl } = {},
+) {
   const health = routes.health ?? healthOk;
   const db = routes.db ?? dbAnonBlocked;
+  const audit = routes.audit ?? dbAnonBlocked;
   const settings = routes.settings ?? settingsInviteOnly;
   return makeFetch((input, init) => {
     const path = pathOf(input);
     if (path === HEALTH_PATH) return health(input, init);
     if (path === DB_PATH) return db(input, init);
+    if (path === AUDIT_PATH) return audit(input, init);
     if (path === SETTINGS_PATH) return settings(input, init);
     return Promise.reject(new Error(`unexpected fetch to ${path}`));
   });
@@ -137,9 +145,11 @@ describe('runDoctor', () => {
       'session',
     ]);
     expect(results.map((r) => r.status)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok', 'ok', 'ok']);
-    expect(mock).toHaveBeenCalledTimes(3);
+    // health, mail_accounts, audit_log (M1b-4d), settings
+    expect(mock).toHaveBeenCalledTimes(4);
     expect(callsTo(mock, HEALTH_PATH)).toHaveLength(1);
     expect(callsTo(mock, DB_PATH)).toHaveLength(1);
+    expect(callsTo(mock, AUDIT_PATH)).toHaveLength(1);
     expect(callsTo(mock, SETTINGS_PATH)).toHaveLength(1);
     expect(byName(results, 'supabase-api').detail).toContain('v2.197.0');
     expect(hasFailures(results)).toBe(false);
@@ -344,6 +354,44 @@ describe('runDoctor', () => {
   });
 
   describe('database check', () => {
+    it('probes audit_log after mail_accounts; both blocked → ok with both names', async () => {
+      const { fetch, mock } = okFetch();
+      const results = await runDoctor(deps({ fetch }));
+      expect(callsTo(mock, AUDIT_PATH)).toHaveLength(1);
+      const order = mock.mock.calls.map(([input]) => pathOf(input));
+      expect(order.indexOf(DB_PATH)).toBeLessThan(order.indexOf(AUDIT_PATH));
+      expect(byName(results, 'database')).toMatchObject({
+        status: 'ok',
+        detail: 'mail_accounts and audit_log present, anon blocked',
+      });
+    });
+
+    it('fails pointing at db:push when only audit_log is missing', async () => {
+      const { fetch } = routedFetch({
+        audit: () =>
+          Promise.resolve(
+            jsonResponse({ code: 'PGRST205', message: "Could not find 'public.audit_log'" }, 404),
+          ),
+      });
+      const check = byName(await runDoctor(deps({ fetch })), 'database');
+      expect(check.status).toBe('fail');
+      expect(check.detail).toBe('audit_log missing — run `npm run db:push`');
+    });
+
+    it('fails ("anon can read audit_log") when anon gets 200 on audit_log', async () => {
+      const { fetch } = routedFetch({ audit: () => Promise.resolve(jsonResponse([])) });
+      const check = byName(await runDoctor(deps({ fetch })), 'database');
+      expect(check.status).toBe('fail');
+      expect(check.detail).toContain('anon can read audit_log');
+    });
+
+    it('skips the audit_log probe after a network failure on mail_accounts', async () => {
+      const { fetch, mock } = dbFetch(() => Promise.reject(new TypeError('fetch failed')));
+      const check = byName(await runDoctor(deps({ fetch })), 'database');
+      expect(check.status).toBe('fail');
+      expect(callsTo(mock, AUDIT_PATH)).toHaveLength(0);
+    });
+
     it('probes mail_accounts with select=id&limit=1, apikey header, manual redirect and a signal', async () => {
       const { fetch, mock } = okFetch();
       await runDoctor(deps({ fetch }));

@@ -1,6 +1,7 @@
 import type { LogLevel } from '../config.js';
 import type { CheckStatus } from '../doctor.js';
 import type { ImapFailureReason } from '../imap/errors.js';
+import type { AuditAction } from '../db/repos.js';
 import type { DiscoverySource, DomainProblem } from '../providers/discover.js';
 import type { BlockKind } from '../security/events.js';
 
@@ -133,6 +134,44 @@ export interface LoginGuardBlockEvent {
   target: string;
 }
 
+export type AuditFailureReason =
+  'forbidden' | 'unavailable' | 'conflict' | 'not-found' | 'unknown' | 'invalid';
+
+/** The action happened, but its audit_log row couldn't be written. */
+export interface AuditWriteFailedEvent {
+  event: 'audit.write-failed';
+  action: AuditAction | 'other';
+  reason: AuditFailureReason;
+}
+
+export type AccountEventName =
+  'account.add' | 'account.test' | 'account.password-update' | 'account.remove';
+
+export type AccountOutcome = 'ok' | 'failed';
+
+/** Why an account action failed: an IMAP reason or a typed account/storage problem. */
+export type AccountFailureReason =
+  | ImapFailureReason
+  | 'blocked'
+  | 'duplicate'
+  | 'not-found'
+  | 'secret-unreadable'
+  | 'unsupported'
+  | 'database'
+  | 'unexpected';
+
+/** `mm account …` (M1c-1): ids and codes only — never the address, host or username. */
+export interface AccountEvent<N extends AccountEventName = AccountEventName> {
+  event: N;
+  /** Mail account UUID (none for an add that didn't save). */
+  acct?: string;
+  /** Preset id or `custom`. */
+  provider: string;
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: AccountFailureReason;
+}
+
 export type LogEvent =
   | CommandStartEvent
   | CommandFinishEvent
@@ -146,7 +185,12 @@ export type LogEvent =
   | ImapLoginEvent
   | ImapLoginFailedEvent
   | LoginGuardChallengeEvent
-  | LoginGuardBlockEvent;
+  | LoginGuardBlockEvent
+  | AuditWriteFailedEvent
+  | AccountEvent<'account.add'>
+  | AccountEvent<'account.test'>
+  | AccountEvent<'account.password-update'>
+  | AccountEvent<'account.remove'>;
 
 export type LogEventName = LogEvent['event'];
 
@@ -169,6 +213,11 @@ export const EVENT_FIELDS: {
   'imap.login-failed': ['acct', 'provider', 'reason', 'counted', 'ip', 'target'],
   'login-guard.challenge': ['ip', 'attempts', 'target'],
   'login-guard.block': ['kind', 'reason', 'ip', 'addr', 'attempts', 'until', 'target'],
+  'audit.write-failed': ['action', 'reason'],
+  'account.add': ['acct', 'provider', 'outcome', 'reason'],
+  'account.test': ['acct', 'provider', 'outcome', 'reason'],
+  'account.password-update': ['acct', 'provider', 'outcome', 'reason'],
+  'account.remove': ['acct', 'provider', 'outcome', 'reason'],
 };
 
 export const EVENT_KIND: Record<LogEventName, LogKind> = {
@@ -185,6 +234,11 @@ export const EVENT_KIND: Record<LogEventName, LogKind> = {
   'imap.login-failed': 'security',
   'login-guard.challenge': 'security',
   'login-guard.block': 'security',
+  'audit.write-failed': 'app',
+  'account.add': 'app',
+  'account.test': 'app',
+  'account.password-update': 'app',
+  'account.remove': 'app',
 };
 
 export const LOG_EVENT_NAMES = Object.keys(EVENT_FIELDS) as LogEventName[];
@@ -194,12 +248,17 @@ export const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 
 export function eventLevel(e: LogEvent): LogLevel {
   switch (e.event) {
     case 'command.finish':
+    case 'account.add':
+    case 'account.test':
+    case 'account.password-update':
+    case 'account.remove':
       return e.outcome === 'ok' ? 'info' : 'warn';
     case 'doctor.check':
       return e.status === 'ok' ? 'info' : 'warn';
     case 'login-guard.block':
       return e.kind === 'permanent' ? 'error' : 'warn';
     case 'error.unexpected':
+    case 'audit.write-failed':
       return 'error';
     case 'auth.login-failed':
     case 'imap.login-failed':

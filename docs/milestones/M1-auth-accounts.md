@@ -121,14 +121,14 @@ Split on 2026-09-28 into **M1b-4a** log core + run logging → **4b** domain and
   - Security events: `auth.login`, `auth.login-failed` (reason + HMAC of the typed e-mail), `auth.logout`; `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block` (all guard events, incl. `too-many-attempts`) built and tested through `guardedOpenSession` with a fake opener — M1c wires them to the file.
   - CLI: run logger in `src/cli/bin.ts` + commander `preAction` hook → `command.start` (command path, option **names**) / `command.finish` (outcome, exit code, ms) for every command, also on direct `process.exit` and Ctrl+C (`interrupted`); `error.unexpected` (class, code, relative stack frames, no message). Events for today's commands: `login`/`logout`/`whoami`, `doctor` (`doctor.check`), `discover` (`discover.finish`: source + provider id, no domain), `keygen` (start/finish only).
   - `mm logs [--since] [--level] [--security] [--run] [--json]`, `mm logs path`, `mm logs clear` (confirm); plain-language text in `src/cli/log-text.ts`. `mm doctor` `logs` check. `MM_LOG_LEVEL` in `config.ts`.
-  - Audit trail: new migration — generic `audit_log` ([DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4)), `AuditRepo` interface + Supabase implementation, `audit.write-failed` when a row can't be written. First rows are written by M1c.
-  - **User:** Supabase dashboard → Authentication → Audit Logs: decide on "write audit logs to the database" and its retention (proposal: on, 90 days).
+  - Audit trail: new migration — generic `audit_log` ([DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4d-migration-20260929063314_audit_logsql)), `AuditRepo` interface + Supabase implementation, `audit.write-failed` when a row can't be written. First rows are written by M1c.
+  - **User:** Supabase dashboard → Authentication → Audit Logs: "write audit logs to the database" — decided 2026-09-29: on, 90 days (cleanup job later).
 - **Out of scope:** account events (M1c), hosted log shipping, error tracking, alerting (M6a/M7), `security_events` table (M6a).
 - **Acceptance:** every existing command leaves `command.start` + `command.finish` with the same `run`; a failed `mm login` writes `auth.login-failed` with a reason and no e-mail or password; `mm logs` shows readable lines and marks interrupted runs; canary test clean (no password, address, host, subject in any line); files 600, dir 700; daily files pruned by age; a write failure doesn't change the command's result; catalog ↔ LOGGING.md test and "every command logs start/finish" test pass; the fail2ban regex still matches `login-guard.block` lines; two-user RLS test on `audit_log` (select/insert own rows only, no update/delete); lint, typecheck, tests, build green.
 - **Verification:**
   1. `MM_CONFIG_DIR=$(mktemp -d) mm discover <placeholder address>` → `mm logs` shows the run; `mm logs --json` lines parse with `jq`.
-  2. `mm login` with a wrong password (external terminal, dashboard test user) → `mm logs --security` shows "Mail Manager login failed"; `grep` the log folder for the typed address → nothing.
-  3. Ctrl+C during a `mm login` prompt → `mm logs` shows the run as interrupted.
+  2. `mm login` with a wrong password (external terminal, dashboard test user) → `mm logs --security` shows "Mail Manager login failed: invalid credentials"; `grep` the log folder for the typed address → nothing.
+  3. Ctrl+C during a `mm login` prompt → `mm logs` shows the run as "interrupted after …" (a run killed without a finish line: "interrupted or still running").
   4. `ls -la` on the log folder → 700 / 600. `mm doctor` → `logs` OK.
   5. `npm run test:integration` with `MM_TEST_SUPABASE_*` → `audit_log` RLS suite passes.
 
@@ -173,11 +173,71 @@ Split on 2026-09-28 into **M1b-4a** log core + run logging → **4b** domain and
 
 `doctor.check`, `discover.finish`, `auth.login`, `auth.login-failed`, `auth.logout`, `imap.login`, `imap.login-failed`, `login-guard.challenge`, `login-guard.block`. Canary tests cover every builder.
 
+#### M1b-4c — `mm logs` (implemented)
+
+- **Shared schemas** (`src/core/log/event-schemas.ts`): the allowlists and field shapes the builders clean to (statuses, outcomes, reasons, block kinds, audit actions, `PROVIDER_RE`, `UUID_RE`, `IP_BUCKET_RE`, `ADDR_RE`, `ISO_RE`, `TARGET_RE`, cmd/option/version/os/frame rules) are defined once; `builders.ts`, `domain-events.ts`, `guard-events.ts` import them. Output is unchanged except where a builder could write a line the reader rejects: a non-string doctor check → `other`, `exit`/`ms` safe integers only, `until` a real instant (else null), a stack frame's `node:` location only as a real module path (else `<external>`). `validateRecord(line, fileKind, fileDate)` checks a parsed line against its event's strict schema: exact fields and types, the writer's `ts` format on the file's UTC day, the level the writer derives, the file's kind (`log.truncated` fits both), `command.finish` outcome ↔ exit, `until` a real instant; returns the record in canonical key order, or `unreadable` / `unknown` (other `v`, or an event this version doesn't know). Never throws.
+- **Day files** (`src/core/log/files.ts`): `listDayFiles` (folder status `ok`/`missing`/`not-a-folder`/`unreadable`, names with a real date), `regularDayFiles` and `deleteDayFiles` for `clear` (lstat before counting and again before each unlink; the folder's dev/ino re-checked before each unlink, so a folder swapped during the prompt stops the delete).
+- **Reader** (`src/core/log/reader.ts`, `readLogs`): day files in the window by name date (all retained files for `--run` without `--since`); only regular files (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` + `fstat` — no symlink, no FIFO hang); 64 KB chunks split on `\n` by bytes, lines over the cap dropped while streaming and counted once, fatal UTF-8 decoding, CRLF tolerated; one UTC day at a time (app + security merged by time), newest 5,000 kept together with the interrupted markers (`omitted`); files over 151 MB skipped unread; at most 100,000 runs tracked, only from start/finish lines (`runsCapped`); only read errors count a file as skipped; `parseLogLine` rejects an own `__proto__` key and leaves any other `v` to `validateRecord` (unknown). Run info (cmd, started, finished, last time, truncated day) from every valid record before filtering; the reading run is excluded everywhere; interrupted = started, no finish, last line in the window, not `--security`, level ≤ warn, day not truncated.
+- **CLI:** `mm logs [--since] [--level] [--security] [--run] [--json]` (`src/cli/commands/logs.ts`, zod-validated, no commander defaults), `mm logs path`, `mm logs clear [--yes]`; text in `src/cli/log-text.ts` (`sanitize`, `eventText` for all 14 events, `timelineLine`, `formatReport` with date headers, interrupted lines and footers; the time zone is injectable for tests). `--json` prints sanitized canonical records, footers on stderr. EPIPE on stdout or stderr (`mm logs | head`, `mm logs --json 2>&1 | head`) ends quietly with exit 0. A log folder that is a symlink, a file or unreadable → a plain message, exit 1. `CliContext.run` / `BuildOptions.run` carry the run id so the reader can leave its own run out.
+- **Known commander behaviour:** `mm logs foo` / `mm logs help` → "too many arguments for 'logs'" (exit 1; use `mm help logs`); `logs` options given with `path`/`clear` are refused.
+
+#### Verification (M1b-4c)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`.
+2. `D=$(mktemp -d); export MM_CONFIG_DIR=$D; npm run dev -- keygen; npm run dev -- discover not-an-email; npm run dev -- logout` → `npm run dev -- logs` lists the three runs (not its own); `--security` shows the logout; `--json` lines parse.
+3. Append `printf '\x1b]0;pwn\x07{"ts":"x"}\n'` to today's app file → `mm logs` prints no escape and "1 unreadable line skipped".
+4. `mm logs | head -1` → exit 0, no "Unexpected error".
+5. `mm logs clear </dev/null` → refused (exit 1); `mm logs clear --since 7d --yes` → refused; `mm logs clear --yes` → "Deleted N log files.".
+6. A run whose finish line was removed by hand → "interrupted or still running"; Ctrl+C in `mm login` (a terminal) → "interrupted after …".
+
+#### Logging (M1b-4c)
+
+No new events: `mm logs`, `mm logs path` and `mm logs clear` log `command.start` / `command.finish` like every command (the "every command" test now also covers commands with their own action and subcommands).
+
+#### M1b-4d — Audit trail (implemented)
+
+- **Migration** `supabase/migrations/20260929063314_audit_log.sql` (applied 2026-09-29 with the user's go-ahead): `audit_log` per [DATA_MODEL.md](../DATA_MODEL.md#audit_log-m1b-4d-migration-20260929063314_audit_logsql) — checks on every column, RLS select/insert own rows (insert also requires an own `account_id`), column-level insert grant (no `id`/`user_id`/`created_at`), identity-sequence grants revoked, no UPDATE/TRUNCATE for `service_role`. Verified offline on Postgres (PGlite, Supabase-like roles; 23 checks) and live.
+- **Core:** `AUDIT_ACTIONS`, `AuditEntry`/`AuditRecord`/`AuditRepo` (`src/core/db/repos.ts`); `auditEntrySchema` + `recordAudit` (`src/core/audit.ts`: validates first → `invalid`, never throws, `audit.write-failed` with a typed reason); `SupabaseAuditRepo` (`src/core/db/supabase/audit-repo.ts`: fixed error messages, `listRecent` skips + counts untrusted rows); `createSupabaseServices(...).audit`. Nothing writes rows yet — M1c's account commands will.
+- **Doctor:** the `database` check probes `mail_accounts` then `audit_log` (missing → "run `npm run db:push`"; a network failure skips the second probe).
+- **User decisions (2026-09-29):** Supabase Auth → Audit Logs → "write audit logs to the database" **on**, 90 days (cleanup job later); live RLS test rows stay (append-only); database setup to be automated later so users don't get stuck on a missing table.
+- **M1c trap:** write `account.remove`'s row before deleting the account (the insert policy refuses a deleted account's id), or with `account_id` null.
+
+#### Verification (M1b-4d)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`.
+2. `npm run db:status` → `20260929063314` local = remote.
+3. `npx vitest run --config vitest.integration.config.ts tests/integration/supabase-rls.test.ts` → 13 passed (5 `mail_accounts` + 8 `audit_log`), once.
+4. `npm run dev -- doctor` → `database  mail_accounts and audit_log present, anon blocked`.
+
+#### Logging (M1b-4d)
+
+`audit.write-failed` (app log, error): `action`, `reason` (`forbidden`/`unavailable`/`conflict`/`not-found`/`unknown`/`invalid`) — no row values.
+
 ## M1c — Account commands
+
+Split on 2026-09-30 into **M1c-1** (all account commands) → **M1c-2** (hardening follow-ups, see `TODO.md`).
 
 - `mm account add [email]` — `discover` → `chooseImapSettings` (picker / manual, from M1b-1) → hints → hidden password → test login (on timeout/refused: GeoIP hint) → encrypt → save.
 - `mm account list` · `test` · `remove` (confirm) · `update-password`.
 - **Logging** ([LOGGING.md](../LOGGING.md)): `account.add` / `account.remove` / `account.password-update` → app log + `audit_log` row; `account.test` → app log; `guardedOpenSession` wired to the security log file (`imap.login`, `imap.login-failed`, `login-guard.*`) — pass the **same** file log to `new LoginGuard({ log })` and `guardedOpenSession({ log })`, or the guard's `login-guard.block` lines are lost. No address, host or password in any event.
+
+### M1c-1 — Account commands (implemented)
+
+- **Core** (`src/core/accounts.ts`, prompt-free): `addAccount` (duplicate check → guarded login → encrypt → save → capabilities, best effort → audit), `testAccount` (decrypt → login → capabilities), `updatePassword` (login with the new password first, then save), `removeAccount` (no key needed), `assertNotDuplicate`, `parseAccountRef` / `resolveAccountRef` (UUID prefix ≥ 4 chars), `settingsOf` (refuses port ≠ 993 / OAuth rows), `createLocalGuard` (one in-memory guard per command), `accountFailureReason`, `AccountError` (`duplicate` / `not-found` / `secret-unreadable` / `unsupported`).
+- **AAD v2** (decided 2026-10-01): the secret is bound to user, account id, host, port and username — a server swapped in the database can't decrypt, so the password is never sent there ([SECURITY.md](../SECURITY.md#credential-encryption)); `update-password` refuses such a row before the prompt (recovery: `remove` + `add`). `addAccount` lowercases the host once (login, binding and saved row) and the repo lowercases it again on insert.
+- **CLI** (`src/cli/commands/account.ts`, texts in `src/cli/account-text.ts`, shared discovery printing in `src/cli/discovery-text.ts`): checks run cheapest first — terminal → id format → `MM_MASTER_KEY` → login → network. `add` confirms found settings ("Use these settings?" → else picker), refuses blocked providers, checks duplicates before the password, and offers "Try another password?" only after a rejected password (the guard locks at the 5th failure; network failures end the run). `update-password` shows the mailbox, server and username before the prompt. Every stored string (ids included) is sanitized before printing. `mm --help` ends with a "Getting started" list.
+- **Audit** (decided 2026-10-01): every `account.add` attempt writes a row (failed: `account_id` null + reason); password-update on success; remove after the delete with `account_id` null.
+
+#### Verification (M1c-1)
+
+1. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check`.
+2. `D=$(mktemp -d); MM_CONFIG_DIR=$D npm run dev -- account add x@example.com </dev/null` → "needs a terminal"; `account test` → "Which mailbox?"; `account remove zz` → invalid id; `account list` → "Not logged in"; `mm --help` → "Getting started".
+3. `npx vitest run --config vitest.integration.config.ts tests/integration/accounts-live.test.ts` (once) → 3 passed; the RLS suite → 13 passed.
+4. Interactive (external terminal, logged in): `mm account add <test mailbox>` → confirm → password → "Added … (id …)"; `mm account list`, `test`, `update-password`, `remove`; `mm logs --since 30m` shows `account.*` and `imap.login` lines without address or host.
+
+#### Logging (M1c-1)
+
+`account.add`, `account.test`, `account.password-update`, `account.remove` (app log; `acct`, `provider`, `outcome`, `reason` on failure) — catalog table "Account commands (M1c-1)". `imap.login`, `imap.login-failed`, `login-guard.*` now reach `security-*.log`. `mm account add` emits `account.add`, not `discover.finish`. Canary tests cover the new builder and the account core (no password, address or host in any line or audit row).
 
 ## Out of scope (M1)
 

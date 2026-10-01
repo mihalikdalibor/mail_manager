@@ -6,23 +6,33 @@ import type {
   CommandStartEvent,
   UnexpectedErrorEvent,
 } from './events.js';
+import {
+  CLASS_RE,
+  CMD_STRIP,
+  CODE_RE,
+  FRAME_STRIP,
+  MAX_CMD_CHARS,
+  MAX_FRAME_BYTES,
+  MAX_FRAMES,
+  MAX_OPT_CHARS,
+  MAX_OPTS,
+  OPT_NAME_RE,
+  OS_STRIP,
+  PROVIDER_RE,
+  UUID_RE,
+  VERSION_STRIP,
+} from './event-schemas.js';
 
 // Event builders cap and allowlist every field: whatever the caller passes, only short,
 // value-free text reaches a log line (no option values, messages, home paths).
 
-const MAX_CMD_CHARS = 100;
-const MAX_OPTS = 30;
-const MAX_OPT_CHARS = 40;
-const MAX_FRAMES = 10;
-const MAX_FRAME_BYTES = 200;
-const CLASS_RE = /^[A-Za-z][A-Za-z0-9_]{0,40}$/;
-const CODE_RE = /^[A-Z0-9_]{1,40}$/;
 // The shapes V8 prints: `fn`, `Obj.method`, `Object.<anonymous>`, `async fn`, `new Foo`,
 // `obj.fn [as alias]`. Anything else (spaces inside, computed names) could be data → `<fn>`.
 const FN_RE = /^(?:async |new )?[A-Za-z0-9_$.<>]{1,80}(?: \[as [A-Za-z0-9_$]{1,40}\])?$/;
 const FRAME_RE = /^\s+at (.+)$/;
 const CALL_RE = /^(.*?) \((.*)\)$/;
 const LINE_COL_RE = /(:\d+(?::\d+)?)$/;
+const NODE_LOCATION_RE = /^node:[a-z0-9_/]{1,80}(?::\d+){0,2}$/;
 
 export interface Runtime {
   ver: string;
@@ -44,11 +54,11 @@ function clean(value: string, allowed: RegExp, max: number): string {
 }
 
 function cleanCmd(cmd: string): string {
-  return clean(cmd, /[^a-z0-9 -]/g, MAX_CMD_CHARS);
+  return clean(cmd, CMD_STRIP, MAX_CMD_CHARS);
 }
 
 function cleanVersion(value: string): string {
-  return clean(value, /[^0-9A-Za-z.+-]/g, 40);
+  return clean(value, VERSION_STRIP, 40);
 }
 
 export function commandStart(
@@ -57,7 +67,7 @@ export function commandStart(
   rt: Runtime,
 ): CommandStartEvent {
   const opts = [...new Set(optionNames)]
-    .filter((name) => /^[A-Za-z0-9-]{1,40}$/.test(name))
+    .filter((name) => OPT_NAME_RE.test(name))
     .slice(0, MAX_OPTS)
     .map((name) => name.slice(0, MAX_OPT_CHARS));
   return {
@@ -66,7 +76,7 @@ export function commandStart(
     opts,
     ver: cleanVersion(rt.ver),
     node: cleanVersion(rt.node),
-    os: clean(rt.os, /[^a-z0-9]/g, 20),
+    os: clean(rt.os, OS_STRIP, 20),
   };
 }
 
@@ -81,19 +91,23 @@ export function commandFinish(cmd: string, exitCode: number, ms: number): Comman
     event: 'command.finish',
     cmd: cleanCmd(cmd),
     outcome: outcomeFor(exitCode),
-    exit: Number.isInteger(exitCode) ? exitCode : 1,
-    ms: Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : 0,
+    // Safe integers only: the reader (`mm logs`) rejects anything JSON can't carry exactly.
+    exit: Number.isSafeInteger(exitCode) ? exitCode : 1,
+    ms: Number.isFinite(ms) && ms >= 0 ? Math.min(Math.round(ms), Number.MAX_SAFE_INTEGER) : 0,
   };
 }
 
 /** Printable ASCII without `"` and `\` (1 byte each in JSON), capped in bytes. */
 function frameText(text: string): string {
-  return text.replace(/[^\x20-\x7e]|["\\]/g, '?').slice(0, MAX_FRAME_BYTES);
+  return text.replace(FRAME_STRIP, '?').slice(0, MAX_FRAME_BYTES);
 }
 
 /** file:// URL or absolute path → path relative to the package root; `<external>` otherwise. */
 function rewriteLocation(location: string, root: string): string {
-  if (location.startsWith('node:')) return location;
+  // Only a real Node module path (`node:internal/process/task_queues:95:5`): a rewritten stack
+  // could put a host or an address after `node:`.
+  if (location.startsWith('node:'))
+    return NODE_LOCATION_RE.test(location) ? location : '<external>';
   if (location === 'native' || location === '<anonymous>') return location;
   const lineCol = LINE_COL_RE.exec(location)?.[1] ?? '';
   let path = location.slice(0, location.length - lineCol.length);
@@ -189,9 +203,6 @@ export function unexpectedError(err: unknown, root: string): UnexpectedErrorEven
     stack: isError ? stackFrames(err as Error, root) : [],
   };
 }
-
-const PROVIDER_RE = /^[a-z0-9-]{1,40}$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Preset id (`websupport`, `custom`), or undefined for anything else. */
 export function cleanProvider(id: unknown): string | undefined {

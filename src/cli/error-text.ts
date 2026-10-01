@@ -1,3 +1,4 @@
+import { AccountError } from '../core/accounts.js';
 import { AuthError } from '../core/auth.js';
 import { ConfigError } from '../core/config.js';
 import { CredentialError } from '../core/credentials.js';
@@ -12,6 +13,7 @@ import { loginBlockedText } from './login-guard-text.js';
 // Core errors whose messages are written to be shown: fixed text, variable names or codes,
 // never secrets, server replies or library messages.
 const USER_FACING = [
+  AccountError,
   AuthError,
   ConfigError,
   CredentialError,

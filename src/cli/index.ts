@@ -1,21 +1,22 @@
-import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { NullEventLog, type EventLog } from '../core/log/index.js';
+import { registerAccount } from './commands/account.js';
 import { registerAuth } from './commands/auth.js';
 import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
 import { registerKeygen } from './commands/keygen.js';
+import { registerLogs } from './commands/logs.js';
+import { VERSION } from './version.js';
 
-// Same relative path from src/cli (tsx) and dist/cli (built).
-const pkg = createRequire(import.meta.url)('../../package.json') as { version: string };
-
-export const VERSION = pkg.version;
+export { VERSION };
 
 export interface BuildOptions {
   /** Throw CommanderError instead of calling process.exit (for tests). */
   exitOverride?: boolean;
   /** Where commands send events (default: nothing is recorded). */
   log?: EventLog;
+  /** Id of the current run (`mm logs` leaves its own lines out). */
+  run?: string;
   /** Called before every command's action with its path and the option names given. */
   onCommandStart?: (cmd: string, opts: string[]) => void;
 }
@@ -23,6 +24,8 @@ export interface BuildOptions {
 /** What every command gets from the program. */
 export interface CliContext {
   log: EventLog;
+  /** Id of the current run, when it is logged. */
+  run?: string;
 }
 
 /** `account add` style path of a command, without the root program name. */
@@ -64,10 +67,26 @@ export function buildProgram(options: BuildOptions = {}): Command {
       }
     });
   }
-  const ctx: CliContext = { log: options.log ?? new NullEventLog() };
+  const ctx: CliContext = {
+    log: options.log ?? new NullEventLog(),
+    ...(options.run !== undefined && { run: options.run }),
+  };
   registerAuth(program, ctx);
   registerKeygen(program);
   registerDoctor(program, ctx);
   registerDiscover(program, ctx);
+  registerAccount(program, ctx);
+  registerLogs(program, ctx);
+  program.addHelpText(
+    'after',
+    [
+      '',
+      'Getting started:',
+      '  1. mm login                  sign in to Mail Manager',
+      '  2. mm discover <email>       find your mailbox settings (no password needed)',
+      '  3. mm account add <email>    connect the mailbox (asks for its password)',
+      '  4. mm account test <id>      check the login any time (ids: mm account list)',
+    ].join('\n'),
+  );
   return program;
 }
