@@ -1,5 +1,10 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { cliChallenge, formatUntil, loginBlockedText } from '../../src/cli/login-guard-text.js';
+import {
+  CHALLENGE_DELAY_MS,
+  cliChallenge,
+  formatUntil,
+  loginBlockedText,
+} from '../../src/cli/login-guard-text.js';
 import { LoginBlockedError } from '../../src/core/security/login-guard.js';
 
 function zoneName(d: Date): string {
@@ -112,6 +117,16 @@ describe('cliChallenge', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0]?.[0]).toMatch(/\b5 seconds\b/);
     expect(write.mock.calls[0]?.[0]).not.toMatch(/\n./);
+  });
+
+  it('the default delay is CHALLENGE_DELAY_MS (5 s, shared with the M2b browser notice)', async () => {
+    expect(CHALLENGE_DELAY_MS).toBe(5000);
+    const write = vi.fn<(line: string) => void>();
+    await settlesAt(CHALLENGE_DELAY_MS, write);
+    vi.useRealTimers();
+    const defaultWrite = vi.fn<(line: string) => void>();
+    await settlesAt(undefined, defaultWrite);
+    expect(defaultWrite.mock.calls[0]?.[0]).toBe(write.mock.calls[0]?.[0]);
   });
 
   it('custom delay: mentions it in seconds and resolves after it', async () => {

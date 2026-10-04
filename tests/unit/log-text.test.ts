@@ -17,15 +17,19 @@ import {
   authLogin,
   authLoginFailed,
   authLogout,
+  browseFinish,
+  capabilityFallback,
   commandFinish,
   commandStart,
   discoverFinish,
   doctorCheck,
+  foldersList,
   guardBlock,
   guardChallenge,
   imapLogin,
   imapLoginFailed,
   renderEvent,
+  statsFinish,
   toRecord,
   unexpectedError,
 } from '../../src/core/log/index.js';
@@ -52,6 +56,22 @@ const TARGET = 'd4'.repeat(32);
 const USER = randomUUID();
 const ACCT = randomUUID();
 const UNTIL = '2026-09-29T08:15:00.000Z';
+const BROWSE = {
+  acct: ACCT,
+  folders: 3,
+  mails: 400,
+  marked: 12,
+  bytes: 4_300_000,
+  reconnects: 1,
+  ms: 2300,
+};
+const STATS = {
+  acct: ACCT,
+  folders: 12,
+  messages: 45_210,
+  bytes: 3_200_000_000,
+  ms: 41_000,
+};
 
 const BRATISLAVA = 'Europe/Bratislava';
 const NEW_YORK = 'America/New_York';
@@ -298,6 +318,16 @@ function samples(): Map<LogEventName, LogRecord[]> {
       outcome: 'failed',
       reason: 'not-found',
     }),
+    foldersList({ acct: ACCT, folders: 12, ms: 340, outcome: 'ok' }),
+    foldersList({ acct: ACCT, folders: 0, ms: 90, outcome: 'failed', reason: 'connection-lost' }),
+    capabilityFallback('status-size'),
+    capabilityFallback('quota'),
+    capabilityFallback('list-status'),
+    browseFinish({ ...BROWSE, outcome: 'ok' }),
+    browseFinish({ ...BROWSE, outcome: 'interrupted' }),
+    browseFinish({ ...BROWSE, outcome: 'failed', reason: 'connection-lost' }),
+    statsFinish({ ...STATS, outcome: 'ok' }),
+    statsFinish({ ...STATS, outcome: 'failed', reason: 'gmail-all-hidden' }),
   ];
   const map = new Map<LogEventName, LogRecord[]>();
   for (const e of list) map.set(e.event, [...(map.get(e.event) ?? []), rec(e)]);
@@ -307,7 +337,7 @@ function samples(): Map<LogEventName, LogRecord[]> {
 describe('eventText', () => {
   const all = samples();
 
-  it('has samples for all 18 catalog events', () => {
+  it('has samples for all 22 catalog events', () => {
     expect([...all.keys()].sort()).toEqual([...LOG_EVENT_NAMES].sort());
   });
 
@@ -321,6 +351,71 @@ describe('eventText', () => {
       }
       expect(text).toBe(sanitize(text));
     }
+  });
+
+  it('folders.list ok / failed (M2a)', () => {
+    expect(eventText(rec(foldersList({ acct: ACCT, folders: 12, ms: 340, outcome: 'ok' })))).toBe(
+      'folders listed: 12 in 340 ms',
+    );
+    expect(
+      eventText(
+        rec(foldersList({ folders: 0, ms: 5, outcome: 'failed', reason: 'connection-lost' })),
+      ),
+    ).toBe('folder listing failed: connection lost');
+  });
+
+  it('browse.finish ok / interrupted / failed (M2b-2)', () => {
+    expect(eventText(rec(browseFinish({ ...BROWSE, outcome: 'ok' })))).toBe(
+      'folder browser: 3 folders opened, 400 mails loaded, 12 marked, 1 reconnect in 2.3 s',
+    );
+    expect(eventText(rec(browseFinish({ ...BROWSE, outcome: 'interrupted' })))).toBe(
+      'folder browser interrupted: 3 folders opened, 400 mails loaded, 12 marked, 1 reconnect in 2.3 s',
+    );
+    expect(
+      eventText(
+        rec(
+          browseFinish({
+            folders: 1,
+            mails: 1,
+            marked: 0,
+            bytes: 0,
+            reconnects: 0,
+            ms: 340,
+            outcome: 'ok',
+          }),
+        ),
+      ),
+    ).toBe('folder browser: 1 folder opened, 1 mail loaded, 0 marked, 0 reconnects in 340 ms');
+    expect(
+      eventText(rec(browseFinish({ ...BROWSE, outcome: 'failed', reason: 'connection-lost' }))),
+    ).toBe('folder browser failed: connection lost');
+    expect(eventText(rec(browseFinish({ ...BROWSE, outcome: 'failed' })))).toBe(
+      'folder browser failed: unexpected',
+    );
+  });
+
+  it('stats.finish ok / failed (M2c-1): counts only, no bytes', () => {
+    expect(eventText(rec(statsFinish({ ...STATS, outcome: 'ok' })))).toBe(
+      'mailbox stats: 12 folders, 45210 messages read in 41.0 s',
+    );
+    expect(
+      eventText(rec(statsFinish({ folders: 1, messages: 1, bytes: 10, ms: 340, outcome: 'ok' }))),
+    ).toBe('mailbox stats: 1 folder, 1 message read in 340 ms');
+    expect(
+      eventText(rec(statsFinish({ ...STATS, outcome: 'failed', reason: 'folder-not-found' }))),
+    ).toBe('mailbox stats failed: folder not found');
+    expect(
+      eventText(rec(statsFinish({ ...STATS, outcome: 'failed', reason: 'gmail-all-hidden' }))),
+    ).toBe('mailbox stats failed: gmail all hidden');
+    expect(eventText(rec(statsFinish({ ...STATS, outcome: 'failed' })))).toBe(
+      'mailbox stats failed: unexpected',
+    );
+  });
+
+  it('imap.capability-fallback names the feature in words (M2a)', () => {
+    expect(eventText(rec(capabilityFallback('quota')))).toContain('no quota');
+    expect(eventText(rec(capabilityFallback('status-size')))).toContain('summed message sizes');
+    expect(eventText(rec(capabilityFallback('list-status')))).toContain('each folder');
   });
 
   it('command.start → exactly "started"', () => {

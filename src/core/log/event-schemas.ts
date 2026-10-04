@@ -3,6 +3,7 @@ import { LOG_LEVELS } from '../config.js';
 import { AUDIT_ACTIONS } from '../db/repos.js';
 import type { CheckStatus } from '../doctor.js';
 import { IMAP_FAILURE_REASONS } from '../imap/errors.js';
+import { FALLBACK_OF, type FallbackFeature, type FallbackKind } from '../mailbox/folders.js';
 import type { DiscoverySource, DomainProblem } from '../providers/discover.js';
 import type { BlockKind } from '../security/events.js';
 import {
@@ -14,6 +15,7 @@ import {
   type AuditFailureReason,
   type AuthFailureReason,
   type AuthLogoutEvent,
+  type BrowseOutcome,
   type CommandOutcome,
   type DiscoverChoice,
   type DiscoverOutcome,
@@ -86,6 +88,11 @@ export const AUDIT_FAILURE_REASONS: Record<AuditFailureReason, true> = {
 };
 export const IMAP_FAILURE_REASON_SET: ReadonlySet<string> = new Set<string>(IMAP_FAILURE_REASONS);
 export const ACCOUNT_OUTCOMES: Record<AccountOutcome, true> = { ok: true, failed: true };
+export const BROWSE_OUTCOMES: Record<BrowseOutcome, true> = {
+  ok: true,
+  interrupted: true,
+  failed: true,
+};
 /** IMAP reasons plus the account/storage problems an account action can fail with. */
 export const ACCOUNT_FAILURE_REASONS: Record<AccountFailureReason, true> = {
   ...(Object.fromEntries(IMAP_FAILURE_REASONS.map((r) => [r, true])) as Record<
@@ -98,7 +105,22 @@ export const ACCOUNT_FAILURE_REASONS: Record<AccountFailureReason, true> = {
   'secret-unreadable': true,
   unsupported: true,
   database: true,
+  'list-failed': true,
+  'connection-lost': true,
+  'folder-unavailable': true,
+  'folder-not-found': true,
+  'gmail-all-hidden': true,
   unexpected: true,
+};
+export const FALLBACK_FEATURES: Record<FallbackFeature, true> = {
+  'status-size': true,
+  quota: true,
+  'list-status': true,
+};
+export const FALLBACK_KINDS: Record<FallbackKind, true> = {
+  'fetch-size-sum': true,
+  'folder-sum': true,
+  'status-per-folder': true,
 };
 export const AUDIT_ACTION_SET: ReadonlySet<string> = new Set<string>(AUDIT_ACTIONS);
 
@@ -234,6 +256,37 @@ const FIELD_SCHEMAS: {
   'account.test': accountFields,
   'account.password-update': accountFields,
   'account.remove': accountFields,
+  'folders.list': {
+    acct: uuid.optional(),
+    folders: nonNegative,
+    ms: nonNegative,
+    outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
+    reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
+  },
+  'imap.capability-fallback': {
+    feature: z.enum(keys(FALLBACK_FEATURES)),
+    fallback: z.enum(keys(FALLBACK_KINDS)),
+  },
+  'browse.finish': {
+    acct: uuid.optional(),
+    folders: nonNegative,
+    mails: nonNegative,
+    marked: nonNegative,
+    bytes: nonNegative,
+    reconnects: nonNegative,
+    ms: nonNegative,
+    outcome: z.enum(keys(BROWSE_OUTCOMES)),
+    reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
+  },
+  'stats.finish': {
+    acct: uuid.optional(),
+    folders: nonNegative,
+    messages: nonNegative,
+    bytes: nonNegative,
+    ms: nonNegative,
+    outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
+    reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
+  },
 };
 
 const RECORD_SCHEMAS = new Map<string, z.ZodType<Record<string, unknown>>>(
@@ -282,7 +335,18 @@ export function validateRecord(
     if (!isWriterTimestamp(ts)) return { skipped: 'unreadable' };
     if (fileDate !== undefined && ts.slice(0, 10) !== fileDate) return { skipped: 'unreadable' };
     if (name === 'command.finish' && !finishConsistent(data)) return { skipped: 'unreadable' };
-    if (name.startsWith('account.') && !accountConsistent(data)) return { skipped: 'unreadable' };
+    if (
+      (name.startsWith('account.') ||
+        name === 'folders.list' ||
+        name === 'browse.finish' ||
+        name === 'stats.finish') &&
+      !accountConsistent(data)
+    ) {
+      return { skipped: 'unreadable' };
+    }
+    if (name === 'imap.capability-fallback' && !fallbackConsistent(data)) {
+      return { skipped: 'unreadable' };
+    }
     if (eventLevel(data as unknown as LogEvent) !== data['level']) {
       return { skipped: 'unreadable' };
     }
@@ -299,9 +363,14 @@ function finishConsistent(data: Record<string, unknown>): boolean {
   return data['outcome'] === expected;
 }
 
-/** The builder writes a reason only for a failed account action, and always for one. */
+/** The builder writes a reason only for a failed action (account, listing, browser, stats), and always for one. */
 function accountConsistent(data: Record<string, unknown>): boolean {
   return (data['outcome'] === 'failed') === (data['reason'] !== undefined);
+}
+
+/** Each feature has exactly one fallback (the builder derives it). */
+function fallbackConsistent(data: Record<string, unknown>): boolean {
+  return FALLBACK_OF[data['feature'] as FallbackFeature] === data['fallback'];
 }
 
 /** The writer's key order: ts, event, the event's fields, level, run, v. */

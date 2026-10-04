@@ -142,6 +142,7 @@ What limits and policies a login runs into. Only the Websupport row is **measure
 - **Bans look like network failures.** Once an IP is banned, the server refuses, resets or silently drops the connection. The user sees the same generic message as for a wrong password (address, password/app password, IMAP server, GeoIP). That's on purpose: see "User-facing errors" in CLAUDE.md.
 - **App passwords.** Gmail, iCloud and Yahoo reject the normal password; the generic message always mentions app passwords.
 - **Integration tests** make one wrong-password attempt per run against the test mailbox (TESTING.md). Don't loop them.
+- **QUOTA is advertised on Websupport, but no quota is set per mailbox** (measured 2026-10-01: `GETQUOTAROOT INBOX` → OK with no root and no numbers). The limit is on the hosting plan as a whole (mail + web/FTP + databases), which IMAP can't see; `mm folders` shows "Quota: not available from the mail server". STATUS=SIZE there is exact: the `mm-test` size equals the byte sum of the 150 seeded messages (28,044,687).
 - **SPECIAL-USE is missing on Websupport.** Trash/Sent/Junk must be found by name (with the user's confirmation) there (IMAP.md §6.5).
 
 ## Open questions

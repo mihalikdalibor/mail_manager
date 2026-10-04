@@ -38,20 +38,23 @@ Core functions take plain typed inputs and return plain results plus progress ca
 
 ## Core modules (planned)
 
-| Module                                            | Purpose                                                                                    | Milestone |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------- |
-| `config.ts`                                       | zod-validated env loading                                                                  | M0        |
-| `crypto.ts`                                       | AES-256-GCM encrypt/decrypt secrets, key versioning                                        | M1        |
-| `providers/presets.json`, `providers/discover.ts` | IMAP settings lookup                                                                       | M1        |
-| `imap/session.ts`                                 | Open/close connections, TLS policy, capability detection, folder listing, batching helpers | M1–M2     |
-| `credentials.ts`                                  | `CredentialProvider` interface + local implementation                                      | M1        |
-| `security/`                                       | Login guard, IP buckets, security event records                                            | M1b-2b    |
-| `log/`, `paths.ts`                                | Typed log events, `EventLog` + file sink, config/log folder ([LOGGING.md](LOGGING.md))     | M1b-4     |
-| `stats.ts`                                        | Counts/sizes per folder, sender, year; quota                                               | M2        |
-| `filters/schema.ts`, `filters/compile.ts`         | Filter model → imapflow SearchObject + client-side post-filters                            | M3        |
-| `planner.ts`                                      | Immutable action plan (folder, UIDVALIDITY, UID set, totals)                               | M4        |
-| `delete.ts`                                       | Execute plan: move to Trash / UID EXPUNGE, batched, resumable                              | M4        |
-| `backup.ts`                                       | Stream messages to `.eml`, manifest, verify, incremental                                   | M5        |
+| Module                                            | Purpose                                                                                                                                                                                    | Milestone |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
+| `config.ts`                                       | zod-validated env loading                                                                                                                                                                  | M0        |
+| `crypto.ts`                                       | AES-256-GCM encrypt/decrypt secrets, key versioning                                                                                                                                        | M1        |
+| `providers/presets.json`, `providers/discover.ts` | IMAP settings lookup                                                                                                                                                                       | M1        |
+| `imap/session.ts`                                 | Open/close connections, TLS policy, capability detection, folder listing, batching helpers                                                                                                 | M1–M2     |
+| `credentials.ts`                                  | `CredentialProvider` interface + local implementation                                                                                                                                      | M1        |
+| `security/`                                       | Login guard, IP buckets, security event records                                                                                                                                            | M1b-2b    |
+| `log/`, `paths.ts`                                | Typed log events, `EventLog` + file sink, config/log folder ([LOGGING.md](LOGGING.md))                                                                                                     | M1b-4     |
+| `mailbox/`                                        | Folder tree, counts, sizes, quota (`folders.ts`); typed `MailboxError`; shared guards (`guards.ts`); read-only message paging (`messages.ts`) and the basket of marked mails (`basket.ts`) | M2a, M2b  |
+| `mailbox/scan.ts`, `mailbox/stats.ts`             | Read-only streaming scan of a folder in sequence ranges (`scan.ts`, shared with the M2a size fallback); `mm stats` scope and aggregation: per folder, year, sender, domain, largest mails  | M2c-1     |
+| `filters/schema.ts`, `filters/compile.ts`         | Filter model → imapflow SearchObject + client-side post-filters                                                                                                                            | M3        |
+| `planner.ts`                                      | Immutable action plan (folder, UIDVALIDITY, UID set, totals)                                                                                                                               | M4        |
+| `delete.ts`                                       | Execute plan: move to Trash / UID EXPUNGE, batched, resumable                                                                                                                              | M4        |
+| `backup.ts`                                       | Stream messages to `.eml`, manifest, verify, incremental                                                                                                                                   | M5        |
+
+CLI side of the folder browser (M2b): `src/cli/browser/` — a pure state reducer (`state.ts`, keys → new state + effects for the shell to run), a pure renderer (`render.ts`, state → plain-text lines) and display-width helpers (`width.ts`); `terminal.ts` (raw mode, alternate screen, frames, keys, and a restore that runs on every exit path) and `controller.ts` (runs the reducer's effects: page loads on the current session, reconnect, quit) (M2b-2). `mm folders` prints the tree and then opens the browser when stdin and stdout are a terminal.
 
 ## Key decisions
 

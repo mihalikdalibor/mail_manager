@@ -4,25 +4,14 @@ import {
   addAccount,
   assertNotDuplicate,
   assertSecretReadable,
-  createLocalGuard,
-  parseAccountRef,
   removeAccount,
-  resolveAccountRef,
   testAccount,
   updatePassword,
-  type AccountDeps,
 } from '../../core/accounts.js';
-import type { AuthUser } from '../../core/auth.js';
-import { loadEnvFiles, validateMasterKeyEnv } from '../../core/config.js';
+import { loadEnvFiles } from '../../core/config.js';
 import { createLocalCredentialProvider } from '../../core/credentials.js';
 import type { MailAccount } from '../../core/db/repos.js';
-import {
-  createSupabaseServices,
-  FileSessionStorage,
-  type SupabaseServices,
-} from '../../core/db/supabase/index.js';
 import { ImapSessionError } from '../../core/imap/errors.js';
-import { configDir } from '../../core/paths.js';
 import {
   defaultDiscoveryDeps,
   discover,
@@ -32,16 +21,20 @@ import {
 import type { ImapSettings } from '../../core/providers/settings.js';
 import { COUNTED_REASONS } from '../../core/security/login-guard.js';
 import {
-  accountErrorText,
+  checkRef,
+  fail,
+  findAccount,
+  guarded,
+  interactive,
+  loggedIn,
+  loginDeps,
+} from '../account-session.js';
+import {
   accountLabel,
   accountTable,
   featuresLine,
   idOf,
   NO_ACCOUNTS_TEXT,
-  REF_INVALID_TEXT,
-  refAmbiguousText,
-  refMissingText,
-  refNoneText,
   serverLabel,
 } from '../account-text.js';
 import {
@@ -57,109 +50,14 @@ import {
 } from '../discovery-text.js';
 import { imapErrorText } from '../imap-errors.js';
 import type { CliContext } from '../index.js';
-import { cliChallenge } from '../login-guard-text.js';
 import { sanitize } from '../log-text.js';
 import { chooseImapSettings, inquirerPrompts } from '../prompts/imap-settings.js';
-import { reportError } from '../report-error.js';
-import { VERSION } from '../version.js';
 
 // `mm account …` (M1c-1): a thin shell over src/core/accounts.ts — it asks, the core decides.
 // Checks run cheapest first (terminal, id format, key, then the network), so a mistake is
 // reported before anything is sent anywhere.
 
 const DISCOVERY_TIMEOUT_MS = 5000;
-
-/** Prompts only when both ends are a terminal. */
-function interactive(): boolean {
-  return process.stdin.isTTY === true && process.stdout.isTTY === true;
-}
-
-function fail(message: string): void {
-  console.error(message);
-  process.exitCode = 1;
-}
-
-/** Runs a command body: Ctrl+C → 130, other errors → their text (and `error.unexpected`). */
-async function guarded(
-  ctx: CliContext,
-  body: (state: { account?: MailAccount }) => Promise<void>,
-): Promise<void> {
-  const state: { account?: MailAccount } = {};
-  try {
-    await body(state);
-  } catch (err) {
-    if (err instanceof Error && err.name === 'ExitPromptError') {
-      process.exitCode = 130;
-      return;
-    }
-    reportError(err, ctx.log, (e) => accountErrorText(e, state.account));
-    process.exitCode = 1;
-  }
-}
-
-/** The ref argument, validated before anything goes over the network; null after printing. */
-function checkRef(ref: string | undefined, command: string): string | null {
-  if (ref === undefined || ref.trim() === '') {
-    fail(refMissingText(command));
-    return null;
-  }
-  const parsed = parseAccountRef(ref);
-  if (parsed === null) fail(REF_INVALID_TEXT);
-  return parsed;
-}
-
-interface Session {
-  services: SupabaseServices;
-  user: AuthUser;
-}
-
-/** Services + the logged-in user; null after "Not logged in". */
-async function loggedIn(): Promise<Session | null> {
-  const services = createSupabaseServices(
-    process.env,
-    new FileSessionStorage(configDir(process.env)),
-  );
-  const user = await services.auth.currentUser();
-  if (user === null) {
-    fail('Not logged in — run `mm login`');
-    return null;
-  }
-  return { services, user };
-}
-
-/** The saved account a ref points at; null after printing why not. */
-async function findAccount(session: Session, ref: string): Promise<MailAccount | null> {
-  const result = resolveAccountRef(await session.services.accounts.list(), ref);
-  switch (result.kind) {
-    case 'found':
-      return result.account;
-    case 'none':
-      fail(refNoneText(ref));
-      return null;
-    case 'ambiguous':
-      fail(refAmbiguousText(ref, result.count));
-      return null;
-    case 'invalid':
-      fail(REF_INVALID_TEXT);
-      return null;
-  }
-}
-
-/** Everything a login needs. The key and the guard are made once per command. */
-function loginDeps(session: Session, ctx: CliContext): AccountDeps {
-  const credentials = createLocalCredentialProvider(process.env);
-  const env = validateMasterKeyEnv(process.env);
-  return {
-    repo: session.services.accounts,
-    audit: session.services.audit,
-    log: ctx.log,
-    runId: ctx.run,
-    credentials,
-    guard: createLocalGuard(env.ok ? env.value.masterKey : undefined, ctx.log),
-    clientVersion: VERSION,
-    onChallenge: () => cliChallenge(),
-  };
-}
 
 /**
  * Asks for the password until a login works or the user stops. Only a rejected password (or

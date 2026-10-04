@@ -1532,3 +1532,700 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - **Security audit** (`security-auditor`): 0 CRITICAL/HIGH/MEDIUM, 4 LOW + 2 info. Fixed: L3 — a stream error's exit 1 could be overwritten by a later `exitCode = 0` (flag applied before the finish line and before exit; 2 tests). Doc-only: L1 wording ("always revoked" corrected), L4 + info → M4 requirements in SECURITY.md and the M4 milestone doc, two migration comments reworded. **Open follow-ups for the user:** L1 `mm logout` offline clears the local session but doesn't revoke the server token and still prints "Logged out"; L2 `mm login` treats a corrupt/unreadable/non-JSON session file as empty and overwrites it (the plan decided this, like `logout`; the auditor suggests failing closed); a relative `MM_CONFIG_DIR`/`XDG_CONFIG_HOME` depends on the current directory (pre-existing). Suggested extra RLS cases for later: PostgREST upsert of `host` (expect 42501), delete + re-insert keeping the id.
   - **Not verified:** the Supabase CLI's transaction wrapping of a failed migration (the push succeeded, so the failure path was never exercised on the cloud); `service_role` DELETE revoke on the real project (no service key in the CLI; offline only); real `mm login` with a real session in a terminal (unit tests + offline CLI with a fake session file only).
 - **Deviations:** none from the plan's scope, except: extra RLS tests (limit values accepted, valid control insert, `details` object/null accepted); `crash()` wraps its `console.error` so a broken stderr can't skip the `error.unexpected` line; the stream-failure flag (security L3) and `parseEmail` lowercased length (review #2) were added after the review/audit; docs also touched `M4-safe-delete.md` (audit follow-ups). TODO.md ticks and CLAUDE.md "Current state" are left to `/review-changes` / `/release`.
+
+## C-021 — M2a folder tree + `mm folders` (read-only): `listFolders`, `withAccountSession`, `MailboxError`, `folders.list` / `imap.capability-fallback`
+
+- **Status:** reviewed (2026-10-01)
+- **Review:** All plan criteria met (as amended by C-022). One reviewer subagent re-ran typecheck, lint, build, format:check and 3534/3534 unit tests, checked the verbatim helper move, and exercised `listFolders` + texts offline with fakes: hostile names, Gmail with All Mail shown and hidden, server vs summed sizes, `--no-size`, FETCH failure, connection loss, `INBOX.` namespace. No live login in review; the integration run from C-021 stands. Non-blocking follow-ups (LOW):
+  - Recording gaps: the M4 wording changed to the opt-in review folder (user decision); the canary/allowlist tests live in `log-mailbox-events.test.ts`, not in the files the plan named.
+  - Doc drift in `docs/milestones/M2-insight.md`: line 55 still mentions the quota stand-in and line 56 has a doubled bullet ("- - STATUS…"); line 54 overstates that a mid-run expunge always gives "—".
+  - Display: an orphan folder (parent not listed) shows only its last segment under the nearest ancestor, so its path context is lost.
+- **Date:** 2026-10-01
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-01-m2a-folder-tree.md` + TODO.md → "M2 — Mailbox insight" → "### M2a — Folder tree + `mm folders` (read-only)"
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049; files already dirty before the run: `TODO.md` (M2 split, written by `/next`; not changed by this run)
+- **Files:**
+  - new: `src/core/mailbox/folders.ts`, `src/core/mailbox/errors.ts`, `src/core/log/mailbox-events.ts`, `src/cli/account-session.ts`, `src/cli/commands/folders.ts`, `src/cli/folders-text.ts`, `tests/unit/mailbox-folders.test.ts`, `tests/unit/log-mailbox-events.test.ts`, `tests/unit/folders-text.test.ts`, `tests/unit/cli-folders.test.ts`, `tests/unit/m2a-review-fixes.test.ts`, `tests/integration/folders-live.test.ts`
+  - modified: `src/core/imap/session.ts`, `src/core/accounts.ts`, `src/core/log/events.ts`, `src/core/log/event-schemas.ts`, `src/core/log/index.ts`, `src/cli/log-text.ts`, `src/cli/error-text.ts`, `src/cli/index.ts`, `src/cli/commands/account.ts`, `tests/unit/imap-session.test.ts`, `tests/unit/test-ground-cli.test.ts`, `tests/unit/log-catalog.test.ts`, `tests/unit/log-event-schemas.test.ts`, `tests/unit/log-record.test.ts`, `tests/unit/log-text.test.ts`, `tests/unit/cli-error-text.test.ts`, `docs/milestones/M2-insight.md`, `docs/milestones/M4-safe-delete.md`, `docs/LOGGING.md`, `docs/IMAP.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`, `CLAUDE.md`
+- **Requirements:** (the plan's acceptance criteria, verbatim)
+  - [ ] `docs/milestones/M2-insight.md` is split into M2a / M2b / M2c, each with scope, design, logging, acceptance and verification. The "all folders vs INBOX" question is marked resolved (all folders).
+  - [ ] The docs also carry the 2026-10-01 decisions:
+    - `docs/milestones/M4-safe-delete.md`: basket input; staging folder rejected, with the reason
+    - `docs/LOGGING.md`: new events in the catalog; the M2 row of the planned table updated
+    - `docs/IMAP.md` §9 M2 checklist ticked for what M2a does
+    - `docs/ARCHITECTURE.md`: `mailbox/` module row
+    - CLAUDE.md "Current state"
+  - [ ] `listFolders` returns every LIST entry except `\NonExistent` (up to 5,000; `truncated: true` beyond that), each with:
+    - path, display name, parent path, depth
+    - role (`\Inbox` from the path; special-use with its source)
+    - `selectable`, `subscribed`
+    - `messages` / `unseen` / `bytes` (`null` = unknown)
+    - `sizeSource`: `'server'` (STATUS=SIZE, which RFC 8438 only bounds as ≥ the sum of RFC822.SIZE) or `'sum'` (fallback). Both are labelled approximate ("~").
+  - [ ] Without `STATUS=SIZE`, sizes come from read-only (EXAMINE) `FETCH (RFC822.SIZE)` per selectable folder in sequence-range batches of 5,000 (`1:5000`, `5001:10000`, … up to `exists`), streamed and summed, with progress per batch. Only running totals are kept, so memory does not grow with the message count. `--no-size` skips this and prints no size column.
+  - [ ] Quota: `features.quota` → `getQuota('INBOX')` → `storage.usage` / `storage.limit` in bytes. **imapflow sets `usage`, not `used`**: the d.ts and `docs/IMAP.md:156` are wrong, and IMAP.md gets fixed. `false`, `undefined` or no `storage` → null. Otherwise `quota: null` and the text says "Quota: not reported by the server — approx. total of folders: X".
+  - [ ] Gmail (`features.gmail`):
+    - total = `\All` + `\Trash` + `\Junk`
+    - other selectable folders are flagged `overlapping: true` and left out of the total; **only `\All`/`\Trash`/`\Junk` are sized** (label folders get counts but no size fallback)
+    - no `\All` listed (hidden from IMAP in Gmail settings) → totals `null`, with the text "Totals unknown: All Mail is hidden from IMAP — enable it in Gmail settings (Labels → Show in IMAP)"
+    - other servers: total = sum of all selectable folders
+  - [ ] One folder's STATUS or size failure → its value is `null` ("—"). A failure is `typeof status?.messages !== 'number'`; `status.error` is never read or shown. The listing continues and the footer says "N folders could not be read".
+  - [ ] Failures after a successful login are a new typed core error `MailboxError` (`src/core/mailbox/errors.ts`, codes `list-failed` | `connection-lost`):
+    - LIST throws → `list-failed`
+    - `session.closed` after any step → `connection-lost`
+    - the error is whitelisted in `src/cli/error-text.ts` (`isUserFacing`/`errorText`) with its own text: "The connection to the mail server was lost while reading folders — try again." / "The mail server could not list the folders — try again later."
+    - it is **never** the generic login text, and maps in `accountFailureReason` to new reason codes
+  - [ ] Display sanitises every server string (folder names, delimiter) with `sanitize` from `src/cli/log-text.ts`. JSON output is the sanitised name too.
+  - [ ] `mm folders`:
+    - with no id and exactly one saved mailbox: uses it and prints "Mailbox: <label>"
+    - with 0 mailboxes: `NO_ACCOUNTS_TEXT`
+    - with ≥2: "Several mailboxes saved — run `mm folders <id>`" plus the account table, exit 1
+  - [ ] `--json` prints one object:
+    - `{ "v": 1, "account": "<uuid>", "folders": [...], "totals": {...}, "quota": {...}|null, "truncated": bool, "unreadable": n }`
+    - no progress output on stdout
+    - closed pipe (`| head`) handled like `mm logs`
+  - [ ] Progress (`Sizing folder 3/42 …`) goes to stderr only when stderr is a TTY and not `--json`.
+  - [ ] Logging:
+    - `folders.list` (`acct`, `folders`, `ms`, `outcome`, `reason?`)
+    - `imap.capability-fallback` (`feature`: `status-size` | `quota` | `list-status`; `fallback`: `fetch-size-sum` | `folder-sum` | `status-per-folder`), at most once per feature per run, kind `app` (unlike other `imap.*` events, which are `security`; noted in LOGGING.md). Emitted by the CLI from the returned `fallbacks`, not inside core.
+    - both in `events.ts`, `event-schemas.ts`, a builder, `log-text.ts`, the `docs/LOGGING.md` catalog and the canary test
+    - a canary test shows no folder name, address or host reaches a log line
+  - [ ] Unit tests (fake client) cover every bullet above. The integration test passes against the seeded test mailbox: the `mm-test` entry has messages = manifest `count`, unseen = count − `seen`, and bytes = `totalBytes` on the fallback path or ≥ `totalBytes` when the server reports STATUS=SIZE. **Only `mm-test` is STATUSed or sized** (core option `only`).
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check` are green.
+- **Summary:** New read-only mailbox module: `listFolders` does LIST (all folders, `\NonExistent` dropped, cap 5,000), then counts from LIST-STATUS or one STATUS per folder, then the quota (`storage.usage`), then sizes from STATUS=SIZE or an EXAMINE + FETCH RFC822.SIZE sum in sequence ranges of 5,000. It builds the tree and computes Gmail-safe totals, and returns the fallbacks it used. A typed `MailboxError` (`list-failed`/`connection-lost`) has its own CLI texts. `withAccountSession` does one guarded login → fn → logout. `mm folders [id] [--json] [--no-size]` prints the tree, totals, quota and footer, or versioned JSON; progress goes to stderr only on a TTY. Two new app-log events go through the builder, schema, reader text and catalog. The account CLI helpers moved verbatim to `src/cli/account-session.ts`. The docs split M2 into M2a/M2b/M2c.
+- **Grade / mode:** M — solo + test writer. A spec-only test writer wrote `mailbox-folders`, `log-mailbox-events` and `folders-text` (197 tests, none failed against the code; its readings of ambiguous points matched the design). An independent review followed.
+- **Verification:**
+  - Baseline (before edits): typecheck, lint, build, format:check green; 63 files / 3298 tests.
+  - Now: typecheck, lint, build, format:check green; 68 files / 3534 tests.
+  - `npm run test:integration` ran **once** after the review fixes: 7 files / 76 tests passed, none skipped. That includes `folders-live` (mm-test messages/unseen/bytes = manifest; nothing outside mm-test counted or sized) and `accounts-live` (exercises the `checkLogin` refactor).
+  - Helper extraction diffed against HEAD: identical apart from `export`. `cli-account` and `m1c2-spec` pass unchanged.
+  - Mutation check: reverting review fixes #1 and #2 makes 2 regression tests fail.
+  - `mm folders --help` checked. No real host or address appears in docs, code or tests (grep).
+  - Independent review: 0 high, 2 medium, 8 low. All fixed with tests except #9, which is now a doc note:
+    1. imapflow never sets `subscribed: false`, so "(hidden)" never showed → `subscribed === true`.
+    2. Gmail could sum or size a user label with a name-guessed `\Junk`/`\Trash` → only `roleSource: 'extension'` counts.
+    3. With a truncated list, the totals and the quota stand-in now say "(first 5,000 folders only)".
+    4. `--no-size` no longer prints a size on the quota line.
+    5. Gmail with All Mail hidden no longer FETCH-sizes Trash/Spam.
+    6. A folder missing from the LIST-STATUS reply now gets its own STATUS.
+    7. JSON `path`/`parent` are no longer cut to 200 characters.
+    8. XLIST `\Inbox` → inbox role.
+    9. The FETCH sum is approximate if messages are expunged mid-run (doc note).
+    10. Direct `withAccountSession` tests added.
+  - **Not verified:**
+    - The manual checks in the user's terminal (`mm folders` vs webmail counts, `--json | jq`, `--no-size`, `mm logs --since 10m`). They need the user's login and a TTY.
+    - Gmail and >5,000-folder behaviour against a real server (fakes only).
+    - Quota bytes vs the provider's storage page.
+    - A real `| head` pipe for `mm folders --json` (covered through `runCli` with a fake stream).
+- **Deviations:**
+  - TODO.md M2a boxes were **not** ticked: `/implement` leaves that to `/review-changes`.
+  - `folderLines` returns folder rows only; the column header comes from a separate `folderHeader`.
+  - `quotaLine` takes `{ sizes }`.
+  - `totals.sizeSource` replaces the plan's `sizeExact`.
+  - Totals of messages/unseen are null when any summed folder is unknown, like bytes.
+  - `mm folders ""` counts as no id.
+  - Review fixes #1–#8 go beyond the plan's literal text.
+  - Extra test file `m2a-review-fixes.test.ts`.
+  - Help text gained a step 5 (`mm folders [id]`).
+
+## C-022 — M2a follow-up: exact server sizes without "~", one "Quota: not available" text
+
+- **Status:** reviewed (2026-10-01)
+- **Review:** All criteria met: no "~" on server sizes, "~" plus a footer note for summed ones, one "Quota: not available" text, docs record the Websupport finding (verified by the reviewer offline). Follow-ups (LOW):
+  - Stale docs: the IMAP.md §4 QUOTA "If missing" cell still says to show the folder sum; LOGGING.md doesn't note that `folder-sum` no longer prints a stand-in.
+  - Texts: an empty folder on the summed path shows `~0 B`; when only bytes are unknown, the Total line has no "(some folders unknown)" hint; one unreadable folder makes "Total: — messages, — unread, —".
+- **Date:** 2026-10-01
+- **Type:** feature
+- **Source:** user decisions after the C-021 manual run: "for folder that cant be read show unknown" (already the behaviour, no change); "websupport dont has quotas from our side, but they are set on the hosting as whole … we can say something like not available quota for both options"; exact folder/mail sizes shown as exact.
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049 + the uncommitted C-021 work; files dirty before this run: everything listed in C-021, plus `TODO.md`
+- **Files:** `src/cli/folders-text.ts`, `src/cli/commands/folders.ts`, `src/cli/log-text.ts`, `tests/unit/folders-text.test.ts`, `tests/unit/cli-folders.test.ts`, `tests/unit/m2a-review-fixes.test.ts`, `docs/milestones/M2-insight.md`, `docs/IMAP.md`, `docs/PROVIDERS.md`
+- **Requirements:**
+  - A size the server reports (STATUS=SIZE) is shown without "~"; a size Mail Manager adds up from RFC822.SIZE keeps "~", and the footer explains "~".
+  - No quota from the server (QUOTA unsupported, or supported with no limit set) → one text: "Quota: not available from the mail server". The text is the same with `--no-size`, and no folder-sum stand-in is shown.
+  - Docs record the Websupport finding and both decisions.
+- **Summary:** `sizeText(bytes, source)` adds "~" only for `sum`. The folder rows and the Total line pass their `sizeSource`. The footer gets a "~ = added up from the message sizes" note when a summed size is shown. `quotaLine(tree)` drops its `sizes` option and the folder-sum stand-in. The `imap.capability-fallback` text for quota now reads "server reports no quota — quota not available"; the event enum (`folder-sum`) is unchanged. PROVIDERS.md notes Websupport's quota and that its STATUS=SIZE is exact.
+- **Grade / mode:** S — solo (texts, tests and docs only; no core or log schema change)
+- **Verification:**
+  - typecheck, lint, build, format:check green; 68 files / 3534 tests.
+  - Live probe (one read-only test login, scratchpad script, numbers only): Websupport answers `GETQUOTAROOT INBOX` with OK but no quota root and no QUOTA numbers; `GETQUOTA ""` is refused.
+  - Offline: the manifest's `totalBytes` equals the byte sum of the 150 generated messages and the server's STATUS=SIZE from the user's `--json` run (28,044,687).
+  - **Not verified:** the new texts in a real terminal (the user's next `mm folders` run).
+- **Deviations:** none.
+
+## C-023 — M2b-1 browser core: message paging, basket, state reducer, renderer (no visible change)
+
+- **Status:** reviewed (2026-10-02)
+- **Review:** All criteria met; checks green at the start of the review (72 files / 3,877 tests); no live IMAP (none by plan). Checked by the plan-auditor (per-criterion evidence), the bug-hunter (blast radius of `ImapClientLike`, `MailboxErrorCode` and the guards move; 8 mutations) and the app-tester (~25k fuzz steps through a fake-server controller loop: every lock read-only, NOOP before every snapshot, FETCH by sequence with the plan's fields only; built `mm --help` / `mm folders --help` unchanged). Non-blocking follow-ups:
+  - MEDIUM width: an emoji grapheme counts 2 whatever follows it (`src/cli/browser/width.ts:39`). Emoji + a run of spacing marks (`'😀' + 'ः'.repeat(400)`) passes `fit` whole and draws ~440 columns. Use `max(2, per-code-point sum)` and add the case to the hostile table, before M2b-2's terminal walk.
+  - LOW width: U+2329–232A, U+FE10–FE19 and U+FE50–FE6B are measured 1 but drawn 2 (`WIDE_RANGES`).
+  - LOW docs: imapflow reads UIDVALIDITY only on SELECT/EXAMINE; NOOP never brings it. So a UIDVALIDITY change on the selected folder shows only after a reconnect or after another folder is selected. The `noop()` comment (`src/core/imap/session.ts:89`), `messages.ts:7-9`, the M2 doc and the `mailbox-messages` fake all claim more. M4 must re-EXAMINE before acting.
+  - LOW tests: the duplicate/out-of-range seq filter (`messages.ts:244`) survives mutation; `listFolders` with `client.usable === false` has no test.
+  - LOW UX: the status bar hides `unknownSizes` ("3 mails, 0 B").
+  - LOW: a destroyed socket before imapflow's `close()` (`NoConnection` while `usable` is still true) maps to `folder-unavailable`, not `connection-lost`.
+  - LOW, for M2b-2: offline, the reconnect question comes back on every key while the cursor is on an unloaded page; `reconnecting` ignores `q` (M2b-2's Ctrl+C must cover it).
+  - LOW: multipart/related logos with `name=` and no disposition get `+`.
+- **Date:** 2026-10-02
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-02-m2b1-browser-core.md` + TODO.md → "M2 — Mailbox insight" → "### M2b — Interactive folder browser" → "#### M2b-1 — Browser core (no visible change yet)"
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049 + the uncommitted M2a work (C-021, C-022). Files dirty before this run: everything listed in C-021/C-022, plus `TODO.md` (the M2b split, written by `/next`; not changed by this run).
+- **Files:**
+  - new: `src/core/mailbox/messages.ts`, `src/core/mailbox/basket.ts`, `src/core/mailbox/guards.ts`, `src/cli/browser/state.ts`, `src/cli/browser/render.ts`, `src/cli/browser/width.ts`, `tests/unit/mailbox-messages.test.ts`, `tests/unit/mailbox-basket.test.ts`, `tests/unit/browser-state.test.ts`, `tests/unit/browser-render.test.ts`
+  - modified: `src/core/mailbox/errors.ts`, `src/core/mailbox/folders.ts` (`count`/`checkOpen` moved to `guards.ts`), `src/core/imap/session.ts` (`ImapClientLike`: `noop`, `mailbox.uidValidity`, widened `fetch`, `MessagePageQuery`, `FetchedMessage`), `src/cli/error-text.ts`, `src/core/log/event-schemas.ts`, `tests/unit/cli-error-text.test.ts`, `tests/unit/log-mailbox-events.test.ts`, `tests/unit/cli-folders.test.ts`, `tests/unit/imap-session.test.ts`, `tests/unit/test-ground-cli.test.ts` (fakes gain `noop`), `docs/milestones/M2-insight.md`, `docs/ARCHITECTURE.md`, `docs/LOGGING.md`, `CLAUDE.md`
+- **Requirements:** (the plan's acceptance criteria, verbatim)
+  - [ ] `openFolder`/`loadPage` only ever take a read-only lock (`getMailboxLock(path, { readOnly: true })`) and fetch `uid, envelope, internalDate, size, bodyStructure` by **sequence** range — never `source`, `bodyParts`, `flags` changes or anything that sets `\Seen` (asserted on the fake's recorded calls).
+  - [ ] Page `k` of a folder with `exists = n` covers sequences `max(1, n-200(k+1)+1) … n-200k`, rows ordered newest arrived first; a page past the end is empty; an empty folder has no pages and issues no FETCH.
+  - [ ] Every `openFolder`/`loadPage` sends `NOOP` under the lock before reading the snapshot (imapflow's `getMailboxLock` skips EXAMINE when the folder is already selected, and a non-UID FETCH may not carry EXPUNGE responses — without NOOP changes would go unseen).
+  - [ ] With an `expected` snapshot, a mismatch (UIDVALIDITY or message count) returns `{ kind: 'changed', snapshot }` without fetching; `expected === null` (fresh open) snapshots and fetches under one lock.
+  - [ ] Lock/fetch failure → `MailboxError('folder-unavailable')`; when the session closed → `MailboxError('connection-lost')`; missing UIDVALIDITY → `folder-unavailable`. No server text in either error.
+  - [ ] `folder-unavailable` is a user-facing `MailboxError` code with its own plain text and an allowlisted log reason (`ACCOUNT_FAILURE_REASONS`), documented in `docs/LOGGING.md`.
+  - [ ] Basket: toggling twice is a no-op; count/bytes are running totals (unknown sizes counted separately); a different UIDVALIDITY for a folder drops that folder's marks and reports how many.
+  - [ ] Reducer is pure (same input → same output, inputs not mutated) and covers every key in the confirmed item, the quit confirm, the reconnect states, the 5-page sliding cache and stale results (from a folder no longer open) being ignored.
+  - [ ] Renderer returns `{ lines, cursorLine }`: exactly `rows` lines of plain text (no escape codes — M2b-2 applies the cursor highlight), none wider than `cols` display columns (wide/combining characters measured), every server string sanitised; below 40×8 one "window too small" message.
+  - [ ] No command output changes (`mm folders` still prints the M2a tree; the `connection-lost` text is not reworded). Existing tests change only by additions: the `MailboxError` code lists, a `folder-unavailable` row in `cli-error-text.test.ts`, and a reason case in `log-mailbox-events.test.ts`.
+  - [ ] `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check` green.
+  - Plus the confirmed item's docs: the M2 doc (M2b-1/M2b-2 split, raw-mode loop instead of `@inquirer/core`, arrival order, quit confirm, cache/paging rules).
+- **Summary:**
+  - Core: `loadPage`/`openFolder` page a folder newest-arrived-first against a `{ path, uidValidity, exists }` snapshot. Each call takes a read-only lock, sends NOOP, then checks the snapshot. A mismatch → `changed`; a dead connection → `connection-lost`; any other failure → `folder-unavailable`.
+  - Core: an immutable `Basket` of `path + UIDVALIDITY + UID` marks.
+  - CLI: a pure reducer (keys/results → state + `load`/`reconnect`/`quit` effects) with a 5-page sliding cache, generations, offline/reconnect, and quit confirm.
+  - CLI: a pure renderer (`{ lines, cursorLine }`) with grapheme width measuring.
+  - No command uses any of it yet (M2b-2).
+- **Grade / mode:** M — solo + test writer. The test writer wrote the four new test files (314 tests) from a spec, without reading the implementation; the independent reviewer found no HIGH findings.
+- **Verification:**
+  - Baseline: 68 files / 3,534 tests; lint, typecheck, build and format:check green.
+  - Now: 72 files / 3,877 tests; `npm run lint`, `npm run typecheck`, `npm run build`, `npm run format:check` green.
+  - Mutation checks: removing the NOOP fails 21 messages tests; letting eviction remove a visible page fails a reducer test.
+  - Smoke run of reducer + renderer with hostile strings.
+  - The reviewer's fuzz scripts (20k random steps each: lines = rows, width ≤ cols, no ESC, cursor visible, one load in flight, ≤ 5 pages, purity) found no invariant failures, re-run after the review fixes.
+  - Width probes (Hindi, Tamil, Mc runs, Tangut, Kana Supplement) now fit (erring wide).
+  - Review findings: MED-1 width (fixed + tests), MED-2 status line (fixed + tests), LOW-1 non-finite screen (fixed + test), LOW-2 keys while too small (fixed + test), LOW-3 busy folder (capped at 3 + tests; cursor jump documented), LOW-4 expunge+arrival (documented), LOW-5 `usable` in `listFolders` (accepted, see Deviations), LOW-6 ambiguous-width glyphs (documented, check in M2b-2), LOW-7 attachment rule (fixed + tests), LOW-8 C-023/TODO (this entry; TODO left to `/review-changes`), LOW-9 quit-confirm edges (fixed + tests; `foldersOpened` documented).
+  - **Not verified:**
+    - Any live IMAP behaviour: no integration test in M2b-1 by plan. NOOP/EXAMINE/FETCH ordering against a real server is checked against imapflow's source only.
+    - Rendering in a real terminal (M2b-2's manual walk), including ambiguous-width glyphs.
+- **Deviations:**
+  - TODO.md boxes not ticked (left to `/review-changes`).
+  - `listFolders` also treats `client.usable === false` as `connection-lost` (shared guard; same race fix).
+  - Attachment rule widened (inline non-image with a name, `message/rfc822`).
+  - Status-line priority; shorter `folder-unavailable`/`page-failed` texts.
+  - Per-code-point width.
+  - New `folder-busy` message and `MAX_CHANGES` cap; `FolderView.changes`.
+  - Keys ignored below 40×8; `MIN_*` moved to `state.ts`.
+  - Connection loss keeps the quit question.
+  - Priority-based help line.
+  - Two test-setup edits in `browser-render.test.ts`: the "too small" cases build the state at a usable size, then resize, because keys no longer act when too small. Assertions unchanged.
+
+## C-024 — M2b-1 follow-up: ASCII-only browser screen text
+
+- **Status:** reviewed (2026-10-02)
+- **Review:** Passed together with C-025, which fixed the format failure and the test gaps.
+  - plan-auditor: all three requirements met.
+  - bug-hunter: no bugs. Its fuzz run (3,000 reducer walks plus `fit` at widths -1 to 8) found only ASCII lines, every one exactly `cols` wide.
+  - Its Verification line still says format:check was green, which was untrue when written.
+  - Follow-ups (LOW):
+    - `docs/milestones/M2-insight.md:91,102,110` and `TODO.md:245` still quote the old `—` texts. The code now uses `Connection closed - reconnect? (y/N)` and the like.
+    - At 40 columns the `...` marker leaves one character of the sender (`A... Invo...`). Either give the from column a minimum width or record the trade-off in the "ASCII screen text" note; check it in M2b-2's terminal walk.
+- **Date:** 2026-10-02
+- **Type:** feature
+- **Source:** user decision after C-023: "yeah sure switch to ASCII" (the browser's own glyphs `—`, `…`, `↑↓`, `←`, `×` take two columns in terminals set to "ambiguous = wide").
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049 + the uncommitted M2a/C-023 work; files dirty before this run: everything listed in C-021…C-023, plus `TODO.md`
+- **Files:** `src/cli/browser/render.ts`, `src/cli/browser/width.ts`, `tests/unit/browser-render.test.ts`, `docs/milestones/M2-insight.md`
+- **Requirements:**
+  - Everything the browser draws itself is plain ASCII (printable 0x20–0x7E):
+    - `-` for unknown values (dates, sizes, counts — also a folder's unknown size, which `sizeText` would show as `—`);
+    - `...` when text is cut (`fit`);
+    - help `Up/Down move` / `Left back`;
+    - a dash with a space on each side (`a - b`) in status texts and questions;
+    - `loading...` / `Loading...` / `Reconnecting...`;
+    - `40x8` in the "window too small" text.
+  - Server text (folder names, senders, subjects, the mailbox label) is unchanged: sanitised, measured by its real width.
+  - Every line still fits `cols`; `displayWidth(fit(s, w)) === w`.
+- **Summary:**
+  - `fit` cuts with a 3-column `...` (shortened to `.`/`..` below width 3).
+  - Render texts switched to ASCII.
+  - M2 doc: an "ASCII screen text" design note replaces the "known limit" about ambiguous-width glyphs.
+  - Test expectations in `browser-render.test.ts` that pinned the old glyphs were updated to the new texts (same checks), plus new tests that every rendered line and every status text is ASCII.
+- **Grade / mode:** S — solo (texts + one helper; no core change)
+- **Verification:**
+  - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run format:check` green.
+  - `npm test`: 72 files / 3,888 tests.
+  - The reviewer's fuzz scripts (20k random steps each) found no invariant failures after the change.
+  - Status-line probe: the y/N questions are whole at 40 columns, the messages are whole at 80.
+  - **Not verified:** a real terminal (M2b-2's manual walk).
+- **Deviations:** the existing `fit` and render test expectations changed (glyphs only), because the user changed the decision they pinned.
+
+## C-025 — C-024 review fixes: format check, ASCII test coverage, too-small text whole at 39 columns
+
+- **Status:** reviewed (2026-10-02)
+- **Review:** All six requirements met and all four C-024 findings resolved (plan-auditor).
+  - plan-auditor re-ran 4 of the mutations, which failed the expected tests.
+  - bug-hunter checked that none of the new assertions can pass vacuously.
+  - Checks green: 3,890 tests.
+  - Follow-up (LOW, user decision): at 36 columns or fewer the too-small line still loses `40x8`. A shorter fallback such as `Too small - need 40x8` would keep it visible down to 21 columns.
+- **Date:** 2026-10-02
+- **Type:** review-fix
+- **Source:** `.claude/review-output.md` (fixes C-024), plus one addition the user approved on 2026-10-02. At 39 columns the too-small text was cut to `make it at least ...`, so `40x8` never showed. It is now shortened.
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049 + the uncommitted M2a/C-023/C-024 work. Files dirty before this run: everything listed in C-021…C-024, plus `TODO.md` and `.claude/review-output.md`.
+- **Files:**
+  - `.claude/changes.md` (C-024 bullet reworded, this entry);
+  - `src/cli/browser/render.ts`;
+  - `tests/unit/browser-render.test.ts`;
+  - `.claude/review-output.md` (boxes ticked, status done).
+- **Requirements:**
+  - `npx prettier --check .claude/changes.md` and `npm run format:check` pass. Only the C-024 Requirements bullet about the spaced dash is reworded, and it still means "space, dash, space". No other entry is reformatted.
+  - The "fixed UI text is plain ASCII" coverage also renders these states at 40×8 and 80×24, and checks that each really shows its text and that every line is printable ASCII:
+    - the root view, including the `Unknown/` row with unknown count and size;
+    - `reconnect-ask`;
+    - `reconnecting`;
+    - the `Loading...` status;
+    - the `loading...` placeholder;
+    - the offline `not loaded (offline)` placeholder.
+  - The `Unknown/` row test checks that the count and the size are each `-`.
+  - The too-small test checks that `40x8` appears whole at 39×8, 40×7 and 39×7.
+  - The too-small text is `Window too small - need at least 40x8` (37 columns, built from `MIN_COLS`/`MIN_ROWS`), so it stays whole at 39 columns.
+  - Typecheck, lint, build and the full test suite stay green. No test is weakened.
+- **Summary:**
+  - C-024 bullet reworded to "a dash with a space on each side (`a - b`)".
+  - `render.ts` `tooSmall()`: "make it at least" → "need at least".
+  - `browser-render.test.ts`:
+    - the `Unknown/` row regex checks both cells;
+    - the too-small cases check `need at least 40x8`;
+    - a new `it.each` (40×8, 80×24) renders six states, each checked to show its text and to be ASCII.
+- **Grade / mode:** S — solo (user's choice)
+- **Agents:**
+  - Solo, no coder.
+  - bug-hunter: no bugs in this run's hunks. One LOW bookkeeping note (log the run, tick the boxes), handled by this entry and `review-output.md`.
+  - app-tester skipped: the renderer isn't connected to any command until M2b-2. The change is pure library code that the tests cover, and the screens were also rendered with a tsx script.
+  - No fix rounds.
+- **Verification:**
+  - Commands, all exit 0:
+    - `npx prettier --check .claude/changes.md`;
+    - `npm run format:check` (red at baseline, on C-024's bullet only);
+    - `npm run lint`, `npm run typecheck`, `npm run build`.
+  - `npm test`: 72 files / 3,890 tests (baseline 3,888, plus the 2 new `it.each` cases).
+  - Tests can fail. Each mutation was applied to `render.ts` alone, then the file was restored (diff hash matched):
+    - the old too-small text fails the 3 too-small cases;
+    - `…` in each of `Reconnecting...`, `Loading...`, `loading...` and `not loaded (offline)` fails the new `it.each`, while the old ASCII test still passes;
+    - so does `—` in the reconnect question and as a folder's unknown size;
+    - `?` as the unknown count, or as the unknown size, fails the `Unknown/` row test.
+  - Screens rendered with tsx:
+    - the 40×8 root shows `Unknown/  -  -`;
+    - the offline view shows `not loaded (offline)` rows;
+    - the too-small text is whole at 39, 38 and 37 columns.
+  - **Not verified:**
+    - A real terminal (M2b-2's manual walk).
+    - At 36 columns or fewer the too-small line is still cut (one line can't fit). Accepted as a known limit.
+- **Deviations:** the `render.ts` text change goes beyond the review list. The user approved it, because the requested `40x8` check would otherwise fail at 39 columns.
+
+## C-026 — M2b-2 terminal browser: `mm folders` opens a read-only fullscreen browser in a terminal, `--plain`, reconnect, `browse.finish`
+
+- **Status:** reviewed (2026-10-03)
+- **Review:** All 15 criteria met; typecheck, lint, build, format:check and 79 files / 4,464 tests green at the start of the review. No live IMAP; the manual walk in a real terminal stays the user's step. Checked by the plan-auditor (per-criterion evidence, criterion 12 widths run, docs against code, pty smoke), the bug-hunter (blast radius of `withAccountSession` / `openAccountSession`, the process hooks against `run.ts`, `guardedOpenSession` with a rejecting `onChallenge`, the `browse.finish` schema; a 16,250-combination width fuzz) and the app-tester (the real `bin.ts` in a pty over a fake IMAP client with the network blocked: switch, tree first, sessions, keys, reconnect success / failure / challenge, and every end path — `q` 0, Ctrl+C 130, SIGINT 130, SIGTERM 143, SIGHUP 129, crash 1 — with the screen and tty restored and `browse.finish` before `command.finish`). The reviewer re-ran the end-paths script and the width repro. Non-blocking follow-ups:
+  - MEDIUM width: a chain of skin-tone modifiers (U+1F3FB–1F3FF) counts 0 columns (`src/cli/browser/width.ts:31-32,46-51`). A sender or subject like `'a' + '🏽'.repeat(60)` measures 3 but draws ~120 columns (glibc `wcwidth`), so that mail's row runs off the right edge. The code follows criterion 12's rule as written; the gap is in the rule. Count a modifier as 0 only directly after an emoji modifier base, and pin `fit` on modifier chains.
+  - LOW: `browse.finish` is logged after the summary line is printed (`src/cli/commands/folders.ts:169-173`); a failed print would skip the log line. Call `finish` before printing.
+  - LOW: the offline status (49 characters) is cut at 40–48 columns to `(r =...` and the help line has no `r` entry (`src/cli/browser/render.ts:86`), so the reconnect key isn't shown at those widths.
+  - LOW: the "waiting 5 seconds" notice stays on screen during the login that follows the wait (`controller.ts:184-198`).
+  - LOW: an arrow key whose Esc byte arrives more than 500 ms before the rest is read as Esc and quits (`state.ts:183`); document as a known limit.
+  - LOW, product call: `q` / Esc do nothing while reconnecting although the help line shows `q quit`; only Ctrl+C ends it (up to ~30 s).
+  - LOW tests: the signal case in `tests/unit/cli-folders-browser.test.ts:890-906` orders `onExit` and `proc.exit` itself, so it passes without the prepended hook; nothing covers `resume()` / `write(ENTER_SCREEN)` failing in `terminal.ts:167-174`.
+  - INFO: Ctrl+C during an in-flight reconnect login exits at once; the new session isn't logged out (the process ends and the socket closes with it).
+  - Not verified: `setRawMode(true)` failing, SIGTSTP, a real terminal emulator, a `MailboxError` in the loop from outside (unit tests only), and the user's manual walk (idle-timeout reconnect, mails still unread in webmail).
+- **Date:** 2026-10-02
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-02-m2b2-terminal-browser.md` — TODO.md "#### M2b-2 — Terminal browser + `mm folders` switch (needs M2b-1)"
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049; files already dirty before the run: the reviewed, uncommitted C-021…C-025 work (modified: .claude/changes.md, CLAUDE.md, TODO.md, docs/ARCHITECTURE.md, docs/IMAP.md, docs/LOGGING.md, docs/PROVIDERS.md, docs/TESTING.md, docs/milestones/M2-insight.md, docs/milestones/M4-safe-delete.md, src/cli/commands/account.ts, src/cli/error-text.ts, src/cli/index.ts, src/cli/log-text.ts, src/core/accounts.ts, src/core/imap/session.ts, src/core/log/{event-schemas,events,index}.ts, several tests; untracked: src/cli/account-session.ts, src/cli/browser/, src/cli/commands/folders.ts, src/cli/folders-text.ts, src/core/log/mailbox-events.ts, src/core/mailbox/, tests/integration/folders-live.test.ts and the M2a/M2b-1 unit tests)
+- **Files:**
+  - created: src/cli/browser/terminal.ts, src/cli/browser/controller.ts, tests/unit/browser-terminal.test.ts, tests/unit/browser-controller.test.ts, tests/unit/cli-folders-browser.test.ts
+  - modified src: src/core/accounts.ts, src/cli/login-guard-text.ts, src/cli/browser/width.ts, src/cli/browser/state.ts, src/cli/browser/render.ts, src/core/log/events.ts, src/core/log/event-schemas.ts, src/core/log/mailbox-events.ts, src/cli/log-text.ts, src/cli/commands/folders.ts, src/cli/folders-text.ts, src/core/imap/session.ts (comment), src/core/mailbox/messages.ts (comment)
+  - modified docs: docs/LOGGING.md, docs/milestones/M2-insight.md, docs/milestones/M4-safe-delete.md, docs/ARCHITECTURE.md, docs/TESTING.md, TODO.md (M2b-1 line ASCII text; also the M2c rewrite/split confirmed by the user in `/next` the same day), CLAUDE.md
+  - modified tests: tests/unit/{m2a-review-fixes,cli-login-guard-text,browser-state,browser-render,log-mailbox-events,log-event-schemas,log-record,log-text,log-catalog,cli-folders}.test.ts
+- **Requirements:** (the plan's acceptance criteria, verbatim)
+
+1. **Switch.** `mm folders` opens the browser only when `process.stdin.isTTY` and `process.stdout.isTTY` are both `true`, `process.env.TERM !== 'dumb'`, and neither `--plain` nor `--json` is given. Otherwise stdout/stderr are exactly what M2a prints today and `openTerminal` is never called (asserted with the terminal module mocked).
+2. **Tree first.** In browser mode the M2a output (`Mailbox: …`, tree, blank line, totals, quota, footer) is printed to stdout before the terminal is opened. `--no-size` gives the M2a no-size tree and a browser without the folder size column.
+3. **Same session.** In browser mode there is exactly one guarded login before the listing, and the browser loads pages on that session. Every session that was opened is logged out: the old one before a reconnect, and the current one at the end, also after an error. The final logout may repeat on an already logged-out session (after a failed reconnect, or Ctrl+C while reconnecting). `ImapSession.logout` is idempotent and never throws (`session.ts:176-197`). Without a reconnect, the one session is logged out exactly once. On the exit-hook paths (SIGTERM, SIGHUP, external SIGINT, a crash) nothing is logged out: the process ends synchronously and the sockets close with it. Never try an async logout inside an exit hook.
+4. **Terminal.** `openTerminal` installs the process hooks first, then enables keypress events, sets raw mode on, resumes input and writes `ESC[?1049h ESC[?25l ESC[?7l ESC[2J` (alternate screen, cursor hidden, wrap off, clear).
+   - If `setRawMode(true)` throws, everything done so far is undone (hooks removed, screen restored if entered) and the error is rethrown. The browser never runs in cooked mode.
+   - Each frame is one `write`: `ESC[H` + the rendered lines joined by `\r\n`. Every line starts with `ESC[2K` (erase the whole line), and the cursor row is wrapped in `ESC[7m` … `ESC[27m` after it: `ESC[2K ESC[7m <line> ESC[27m`. Why: the width table can overestimate (e.g. `❤️` is 2 here, but 1 in wcwidth terminals), so a line can be drawn one column short. Without the erase, the previous frame's last column (the `+` attachment marker on mail rows) would stay on screen. Not a trailing `ESC[K`: with wrap off the cursor sits on the last column after a full-width line, so `ESC[K` would erase that cell.
+   - A resize writes `ESC[2J` and then a new frame at the new size.
+   - `restore()` writes `ESC[0m ESC[?7h ESC[?25h ESC[?1049l`, sets raw mode off and pauses input. It is idempotent, and a throwing `write`/`setRawMode`/`pause` is swallowed.
+   - `close()` = `restore()` plus removing every listener the terminal added (keypress, resize, process hooks).
+5. **Abnormal ends.** Until `close()`:
+   - a process `exit` restores the screen and calls `onExit(code)`, prepended so it runs before `runCli`'s `command.finish`;
+   - SIGINT (only from outside — raw mode turns Ctrl+C into a key) → `exit(130)`, prepended so `runCli`'s own SIGINT handler, which logs `command.finish` before exiting, never runs first;
+   - SIGTERM → `exit(143)`, SIGHUP → `exit(129)` (all three via the same exit path);
+   - `uncaughtException` / `unhandledRejection` restore the screen first (prepended, before `runCli` prints "Unexpected error").
+6. **Keys.**
+   - Ctrl+C ends the browser at once in every mode: browse, confirm-quit, reconnect-ask, reconnecting, and too small.
+   - Every other key goes through `keyOf` → `reduce`.
+   - Esc arrives from readline as `{ name: 'escape', meta: true }`. `keyOf` maps `name === 'escape'` (not ctrl) to `'quit'` before its Ctrl/Meta rule; other Meta keys stay `'other'`.
+   - `q`/Esc follow the reducer (it asks first when there are marks).
+   - `r`:
+     - in browse mode while offline → `reconnecting` + reconnect effect, with no y/N question;
+     - in browse mode online, or while too small → nothing;
+     - at the reconnect question (`reconnect-ask`) it counts as `y`;
+     - in confirm-quit it cancels the question like any other key;
+     - in `reconnecting` it is ignored.
+7. **Effects.** `load` → `loadPage(sessions.current, path, expected, page)`. The result → `page-loaded`; a `MailboxError` → `load-failed` with its code. Results from a session that is no longer current, and anything arriving after the browser ended, are dropped. Any other error ends `run()` with a rejection. `quit` ends `run()` with `end: 'quit'`.
+8. **Reconnect.** The old session is logged out first (best effort), then `reconnect(onChallenge)` runs once:
+   - success → `sessions.current` = the new session, then `reconnected`;
+   - failure → `reconnect-failed` with `RECONNECT_FAILED_TEXT`; the error is kept as `reconnectError` until a later reconnect succeeds; a non-user-facing error (`!isUserFacing(err)`) also calls `onUnexpected(err)`;
+   - the guard's challenge → a `notice` with `CHALLENGE_NOTICE`, then a wait of `CHALLENGE_DELAY_MS` (5,000);
+   - never retried automatically;
+   - **no login after the end:** `ended` is checked again after the old logout (it can take up to `LOGOUT_TIMEOUT_MS` = 5 s on a half-dead connection, which is exactly when Ctrl+C is likely). If the browser has ended, `reconnect` is never called;
+   - the challenge wait ends at the delay or when the browser ends, whichever comes first. If the browser has ended, `onChallenge` **rejects** (with an internal error that is never shown and never passed to `onUnexpected`), so `guardedOpenSession` (`guarded-session.ts:70-77`) never calls the opener. The timer is cleared on end;
+   - a reconnect that still resolves after the browser ended is logged out and ignored; one that rejects after the end is ignored (no `onUnexpected`, no `reconnectError`).
+9. **Summary.** After `q` or Ctrl+C the screen is restored, then one stdout line:
+   - no marks: `Folder browser closed — nothing was changed on the server.`
+   - otherwise: `Folder browser closed — N mark(s) (X) dropped, nothing was changed on the server.` (`plural`, `formatBytes` of the known sizes).
+
+   If `reconnectError` is set, stderr also gets `Reconnecting failed — ` + `accountErrorText(err, account)`. Exit code 0 for `q`, 130 for Ctrl+C (`process.exitCode`, so `command.finish` says `interrupted`). An error in the loop → screen restored, no summary, the error goes to `guarded` (its text or "Unexpected error" + `error.unexpected`), exit 1.
+
+10. **`browse.finish`.** Exactly one line per browser run, never when the browser didn't open (non-TTY, `--plain`, `--json`, failed login or listing).
+    - Fields in this order: `acct`, `folders` (= `stats.foldersOpened`), `mails` (= `stats.mailsLoaded`), `marked` (basket count), `bytes` (basket known bytes), `reconnects`, `ms`, `outcome`, `reason`.
+    - `outcome`: `ok` for `q`; `interrupted` for Ctrl+C and for an exit hook with code 130, 129 or 143; `failed` for an error in the loop and for an exit hook with **any other code** (1 = crash, or an unexpected `exit(0)`/`exit(2)` while the browser is open).
+    - `reason` (failed only): `accountFailureReason(err)` for an error in the loop, `unexpected` for an exit hook.
+    - App log; level info for ok/interrupted, warn for failed.
+    - Validated by the reader (reason present ⇔ failed).
+    - After SIGTERM/SIGHUP, `browse.finish` says `interrupted` while `command.finish` says `failed (exit 143/129)`, because `command.finish`'s outcome comes from the exit code and there only 130 counts as interrupted. This is intended, and LOGGING.md says so.
+    - `mm logs` text: `folder browser: 3 folders opened, 400 mails loaded, 12 marked, 1 reconnect in 2.3 s` (`folder browser interrupted: …` / `folder browser failed: <reason words>`).
+    - The canary test proves no folder name, subject, sender, address, host or password reaches the line.
+    - Listed in `docs/LOGGING.md` under a new `### Folder browser (M2b-2)` table, and removed from the "planned" table.
+11. **Reducer/renderer changes** (M2b-1 modules):
+    - `KEYS.r = 'reconnect'`;
+    - entering `reconnecting` (from y or `r`) and `reconnected` set `message: null`;
+    - offline, moving onto an unloaded row no longer asks, and neither does Back to a parent folder. Only Enter on a folder whose mails aren't loaded asks;
+    - `statusText('offline')` = `Offline - showing what is loaded (r = reconnect).`;
+    - in `reconnecting` the status line shows a `text` message when set, else `Reconnecting...`;
+    - an opened selectable folder with no snapshot shows `not loaded (offline)` in the body when offline (blank as today when online);
+    - `RenderOptions.sizes === false` leaves out the folder size cell;
+    - the sender column is at least 8 columns (`min(avail, max(8, current formula))`);
+    - below 37 columns the too-small text is `Too small - need 40x8`;
+    - all new texts are printable ASCII.
+12. **Width.** `graphemeWidth` of an emoji grapheme (one that matches `EMOJI`) = `2 +` the normal per-code-point width (`isWide ? 2 : 1`) of every code point in it that does **not** match `EMOJI_PART = /^[\p{Extended_Pictographic}\p{Emoji_Component}\p{Mn}\p{Me}‍︎️]$/u`. Spacing marks are not the only characters that take columns and can join an emoji grapheme: an extender like U+FF9E (halfwidth voiced mark) can too, and so can Prepend characters before the emoji (U+0D4E). The emoji parts themselves (pictographs, ZWJ, variation selectors, skin tones, regional indicators, keycap, tags) add nothing beyond the 2. Expected widths (checked in Node 22.22.1):
+    - `'😀' + 'ः'.repeat(400)` = exactly 402;
+    - `'😀' + 'ﾞ'.repeat(5)` = 7;
+    - `'ൎ'.repeat(3) + '😀'` = 5;
+    - `'❤️'` (U+2764 U+FE0F) = 2;
+    - a ZWJ family emoji `👨‍👩‍👧‍👦` = 2;
+    - keycap `1️⃣`, flag `🇸🇰`, skin tone `👍🏽` = 2 each;
+    - `'😀'` = 2.
+
+    `fit` keeps every line within `cols`.
+
+13. **Core.** `openAccountSession(deps, account)` returns the guarded session without logging out. Login errors propagate unchanged. `withAccountSession` behaves exactly as before (logout after `fn`, also when it throws).
+14. **Docs** match the code:
+    - M2 doc: M2b-2 design notes, logging, verification; stale texts fixed;
+    - LOGGING.md catalog;
+    - ARCHITECTURE.md browser paragraph;
+    - M4 doc: "re-EXAMINE before acting";
+    - `messages.ts` / `session.ts` NOOP comments;
+    - TODO.md M2b-1 line 245 ASCII text;
+    - CLAUDE.md current state.
+15. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check` green. A pty smoke run (fake session, no live login) shows the screen restored after `q` and Ctrl+C. The manual walk in a real terminal is the user's (see Verification).
+
+- **Summary:** `mm folders` in a terminal (stdin+stdout TTY, TERM not dumb, no `--plain`/`--json`) prints the M2a tree, then runs a fullscreen read-only browser on the same guarded session (new core `openAccountSession`). `terminal.ts` handles raw mode, the alternate screen, per-line `ESC[2K` frames and an idempotent restore with prepended exit/signal/crash hooks; `controller.ts` runs reducer effects (loads, reconnect with the challenge notice, quit; Ctrl+C in every mode; stale/late results dropped; no login after the end). Summary line after quit, exit 0/130, `browse.finish` once before `command.finish`. Reducer/renderer: `r` reconnect, no offline nagging, sender column ≥ 8, short too-small text, emoji width fix, `--no-size` column; too-small frames show the pending question (review fix).
+- **Grade / mode:** M — coder + test writer
+- **Agents:** coder (Opus/high, 3 iterations + 3 fix rounds), test-writer (Sonnet/high; 117 spec tests in the three new files; one static-check fix round, no assertion changes), bug-hunter (Opus/high; 1 MEDIUM + 3 LOW, re-review after fix round 1 clean), app-tester (Sonnet/high; real `bin.ts` in a pty with fake mailbox modules; 4 LOW, none needing a code fix)
+- **Verification:**
+  - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run format:check` green; `npm test` 75 files / 4143 tests (baseline 72 / 3890).
+  - The new spec tests fail without the code (modules removed / folders.ts reverted); 24 targeted mutations (width, keyOf Esc, offline ask, `r` at the question, sender min, too-small text, reconnecting text, ended re-check, timer clear, stale session, late-session logout, onUnexpected filter, ESC[2K, restore idempotence, close removes hooks, exitCode 130, exit-hook logging, TERM=dumb, close-before-error, listing logout, final logout, reason only when failed, openAccountSession no logout, CHALLENGE_DELAY_MS) each make tests fail; tree hash restored. Fix round 1 tests fail on the old renderer (12).
+  - pty smoke (orchestrator): q / Ctrl+C / Esc / SIGTERM (exit 143) / resize to 5x30 → screen left once after the last frame, raw mode off, `stty` icanon+echo back.
+  - app-tester: all end paths (q 0, Ctrl+C 130, external SIGINT 130, SIGTERM 143, SIGHUP 129, crash/unhandled rejection 1) restore the screen and log `browse.finish` before `command.finish`; switch, tree-first, sessions, reconnect texts, challenge, hostile strings width (wcwidth/pyte), resize storms, key fuzz.
+  - **Not verified:** `npm run test:integration` (live logins rationed; the plain listing path is unchanged), the manual walk in a real terminal with the test mailbox (idle-timeout reconnect, webmail still unread, real terminal emulators) — the user's step.
+- **Deviations:** `EMOJI_PART` alternation form (lint); `log/index.ts` unchanged (already `export *`); browser listing shares the plain path's try/catch. Addition beyond the confirmed item: the M4 doc note "Re-EXAMINE before acting" (follows from the NOOP correction). Review fixes: too-small frames show the pending question; the offline placeholder below subfolders. Fix round 3 (user decision 2026-10-03): `CHALLENGE_NOTICE` shortened to "Several wrong passwords - waiting 5 seconds before trying again." (64 chars, whole at 80 columns; TODO/M2 doc/plan updated; new 80x24 render test). Left open (LOW): raw-mode refusal → "Unexpected error" (as specified); external SIGTSTP unhandled; closed pty with no live handle → exit 0 / `browse.finish` failed.
+
+## C-027 — M2c-1 `mm stats`: read-only scan of envelopes/dates/sizes → totals, per folder, per year, top senders/domains, largest mails; `stats.finish`
+
+- **Status:** reviewed (2026-10-03)
+- **Review:** All 11 criteria met; typecheck, lint, build, format:check and 79 files / 4,464 tests green at the start of the review. Live: the reviewer ran `tests/integration/stats-live.test.ts` once (one read-only login, `mm-test`): 5/5 passed, totals / per year / per domain = manifest. Checked by the plan-auditor (per-criterion evidence, deviations, docs against code), the bug-hunter (M2a's size fallback equivalent to before, re-exports and ESM load, error-code allowlists, `stats.finish` schema and reader, option values never logged, sanitising; repro scripts) and the app-tester (the real `bin.ts` over a fake IMAP client with the network blocked: read-only trace, text and JSON, `--folder`, Gmail and virtual scope, failures, connection drop, Ctrl+C, hostile strings, the 50,000-key cap, time zones, log canaries). The reviewer reproduced both MEDIUM findings. Non-blocking follow-ups:
+  - MEDIUM undercount: `collectStats` ignores `scanFolder`'s `{ exists, read }` (`src/core/mailbox/stats.ts:375`). imapflow 2.0.5 gives up on a throttled FETCH after 4 retries without an error, so a range can come back empty and the folder is still reported as fully read (7,000 of 12,000, no `(partial)`, exit 0). Compare what was counted with `exists` and mark the folder partial; M2a's `sumSizes` has the same gap (older than this entry). Worth fixing before the M2c-2 large-mailbox run.
+  - MEDIUM `--folder`: the path is matched against the raw server path, but `mm folders --json` / `mm stats --json` print it sanitised (`stats.ts:306-312`, `src/cli/folders-text.ts:205`). A folder name with ZWNJ, a ZWJ emoji or a soft hyphen can't be selected with the copied path (`folder-not-found`, whose text points back to that JSON). Fall back to the unique folder whose sanitised path matches; the M2 doc's "can be passed to `--folder`" is wrong for these names.
+  - LOW: LARGEST MAILS shows `(no address)` for a blank or invisible display name although the address exists (`src/cli/stats-text.ts:157-160`).
+  - LOW: progress counts unsolicited and repeated responses and can exceed the total ("6/3 messages", `src/core/mailbox/scan.ts:63`).
+  - LOW: `--folder ""` or a path over 1,000 characters prints "Unexpected options — see `mm stats --help`." without saying what is wrong.
+  - LOW: table columns count code points, so CJK / emoji senders shift their row (same as the M2a table).
+  - LOW, hostile server only: a 2^32−1 EXISTS precomputes 858,994 ranges (181 MB); a byte sum past 2^53 logs `bytes: 0`.
+  - LOW tests: the position of `; first 5,000 folders only` after the unreadable / partial notes isn't pinned (`tests/unit/cli-stats.test.ts:1115-1135`).
+  - LOW docs: `CLAUDE.md` still says "live test pending" (it has passed twice); "no UID" holds for the query object only (imapflow always adds `UID` on the wire); criterion 9's example `41 s` is `41.0 s` in the code (`duration()`, as `folders.list`).
+  - Open: one `NO` mid-folder abandons every remaining range of that folder (documented, but lossy on a big folder); a non-Gmail server with a real `\All` / `\Flagged` folder would have it skipped; a group-syntax From lands under `(no address)`.
+  - Not verified: a real server under concurrent expunge or throttling, real Gmail, real GETQUOTA units, `pickAccount` with several mailboxes in this command, a large mailbox (M2c-2, the user).
+- **Date:** 2026-10-03
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-02-1528-m2c1-mm-stats.md` — TODO.md "#### M2c-1 — `mm stats` (read-only)" (M2c split into M2c-1/M2c-2 with the user in `/next` 2026-10-02; `--folder` full path only decided 2026-10-03)
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049; files already dirty before the run: all the uncommitted C-021…C-026 work (M2a, M2b-1, M2b-2: src/cli/browser/, src/core/mailbox/, src/cli/commands/folders.ts, src/cli/account-session.ts, src/cli/folders-text.ts, log/event changes, docs, TODO.md, CLAUDE.md and their tests). The exact pre-run tree was snapshotted for review.
+- **Files:**
+  - created: src/core/mailbox/scan.ts, src/core/mailbox/stats.ts, src/cli/stats-text.ts, src/cli/commands/stats.ts, tests/unit/mailbox-scan.test.ts, tests/unit/mailbox-stats.test.ts, tests/unit/cli-stats.test.ts, tests/unit/stats-text.test.ts, tests/integration/stats-live.test.ts
+  - modified src: src/core/imap/session.ts, src/core/mailbox/{folders,messages,errors}.ts, src/core/log/{events,event-schemas,mailbox-events}.ts, src/cli/{error-text,log-text,index,folders-text}.ts
+  - modified docs: docs/LOGGING.md, docs/milestones/M2-insight.md, docs/ARCHITECTURE.md, docs/TESTING.md, CLAUDE.md, README.md
+  - modified tests: tests/unit/{log-mailbox-events,log-event-schemas,log-record,log-text,log-catalog,cli-error-text}.test.ts
+- **Requirements:** (the plan's acceptance criteria, verbatim)
+
+1. **Scan helper** `scanFolder(session, path, query, onMessage, opts?)` (`src/core/mailbox/scan.ts`):
+   - takes the read-only lock `getMailboxLock(path, { readOnly: true })` and reads `client.mailbox.exists` (`mailbox === false` or an invalid count → 0, as `sumSizes` does today);
+   - fetches the sequence ranges of `sizeRanges(exists, batchSize)` (default `SIZE_BATCH` = 5,000) one after another, calling `onMessage(msg, { from, to })` for every message as it streams (no array of messages or batches kept);
+   - after each range, calls `opts.onProgress?.(done, exists)`, where `done` = messages streamed so far; a throwing `onProgress` is swallowed;
+   - releases the lock in `finally`; an error from `fetch` or from `onMessage` propagates unchanged; returns `{ exists, read }`;
+   - `sizeRanges` and `SIZE_BATCH` move to `scan.ts` and are re-exported from `folders.ts` (no import cycle).
+2. **M2a unchanged.** `listFolders`' size fallback (`sumSizes`) is rewritten on `scanFolder` with `{ size: true }` (it ignores the range argument). Every existing `mailbox-folders`, `m2a-review-fixes` and `cli-folders` test passes unchanged.
+3. **Fetch type.** `ImapClientLike.fetch` accepts a new `StatsQuery = { envelope: true; internalDate: true; size: true }` in its query union (`src/core/imap/session.ts`). No body, no flags, no BODYSTRUCTURE, no UID: nothing sets `\Seen`.
+4. **Scope** `statsScope(tree, gmail, folder?)` (pure, in `stats.ts`) → `{ folders: FolderInfo[]; notScanned: number }`:
+   - **No `folder`, not Gmail** → every selectable folder, in tree order (Trash/Spam/Junk included). Exception: a folder with `roleSource === 'extension'` and role `all` or `flagged`, which is a virtual folder duplicating other folders' mail; it is skipped.
+   - **No `folder`, Gmail** → the folders M2a sums: selectable, `roleSource === 'extension'`, role `all` / `trash` / `junk` (`gmailSummed`, exported from `folders.ts`). If `tree.gmailAllHidden` → throws `MailboxError('gmail-all-hidden')`.
+   - `notScanned` = selectable folders left out by those two rules.
+   - **`folder` given** → exactly the folder whose `path` equals it; `INBOX` is matched case-insensitively (IMAP rule). Not listed, or `selectable === false` → throws `MailboxError('folder-not-found')`. With Gmail, any listed selectable folder is allowed (a label scans just that label). `notScanned` = 0.
+5. **Aggregation** `createStatsAggregator({ timeZone, maxKeys?, topN? })` (pure, no I/O):
+   - **Calls.** `startFolder(path)` opens a folder row (0 messages, 0 bytes) and makes it current. `add(msg)` counts one message into the current folder and every global stat at once (no per-folder deltas). `folderFailed()` marks the current folder: if it counted 0 messages, its row becomes unreadable (`messages: null, bytes: null`); otherwise `partial: true`, keeping its counts. `result()` returns `MailboxStats`. `add` / `folderFailed` without a current folder throw an `Error` (programming error).
+   - **bytes** = `count(msg.size)`, or 0 when missing. Such a message still counts as 1 and never enters the largest list.
+   - **Totals** = the sum over all folder rows' counted messages (partial rows included).
+   - **Per year**:
+     - the year of `internalDate` (a `Date`, or an ISO string parsed with `new Date`) in `timeZone`, from one `Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric' })` created at construction;
+     - missing, invalid, or outside 1900–2200 → `'unknown'`;
+     - rows sorted by year numerically ascending, `'unknown'` last;
+     - an invalid `timeZone` falls back to `'UTC'`.
+   - **Sender key** = the first `envelope.from` entry's `address`, trimmed, lowercased, capped at 320 code points. Missing or empty → `null`.
+   - **Domain** = the part after the last `@` of the key when non-empty, else `null`.
+   - **Top lists** (senders by count, senders by size, domains by count, domains by size):
+     - each the top `topN` (default 10), rows `{ key, messages, bytes }`;
+     - ties broken by key ascending, `null` last.
+   - **Cap**:
+     - senders and domains are two maps, each with at most `maxKeys` (default 50,000) non-null keys, decided at `add` time;
+     - a key already in the map is counted;
+     - a new key is admitted while the map has fewer than `maxKeys` keys; otherwise it goes to that map's `others` (`{ messages, bytes }`) and sets `approximate: true`;
+     - the `null` key is always counted and doesn't count toward `maxKeys`.
+   - **Largest** = the `topN` largest messages by bytes, ties by first seen:
+     - rows `{ folder, received: Date | null, from, subject, bytes }`;
+     - `from` = the first From entry's name, else its address;
+     - `from` / `subject` are capped at `MAX_TEXT_CHARS` (500) code points;
+     - kept as a sorted array of at most `topN`.
+   - Never stores a per-message list; retained memory is bounded by `maxKeys` and `topN`.
+6. **Collect** `collectStats(session, tree, { folder?, timeZone, onProgress?, batchSize? })`:
+   - computes `statsScope`; for each scoped folder in order: `startFolder(path)`, then `scanFolder(session, path, STATS_QUERY, onMessage, …)`;
+   - **`onMessage` filter** (unsolicited or repeated FETCH responses, e.g. another client changing flags): a message counts only if all three hold:
+     1. `msg.seq` is a safe integer inside the current `{ from, to }`;
+     2. that seq hasn't been seen in the current range (a `Set` cleared on each new range, at most 5,000 entries);
+     3. it carries at least one of `envelope`, `internalDate`, `size`.
+   - **Errors from `scanFolder`**:
+     - an exception thrown by the aggregator itself is rethrown unchanged (a bug, not an unreadable folder): wrap `add` and remember the error;
+     - otherwise `checkOpen(session)` (a closed connection → `MailboxError('connection-lost')`, ending the run);
+     - otherwise `folderFailed()` and continue with the next folder (e.g. a server `NO` because a mail was expunged during the scan; that folder is partial).
+   - `checkOpen` also runs after each folder.
+   - `onProgress({ folder: i + 1, folders: n, done, total })` (`SizeProgress`).
+   - Returns `MailboxStats` (with `notScanned` from the scope).
+7. **Errors.** `MailboxErrorCode` gains `'folder-not-found'` and `'gmail-all-hidden'`. Each is added to `MAILBOX_ERROR_CODES`, gets a core message, joins `ACCOUNT_FAILURE_REASONS` (the reader allowlist), and gets its CLI text in `MAILBOX_ERROR_TEXT` (`src/cli/error-text.ts`):
+   - `folder-not-found`: `There is no folder with that path in this mailbox — use the full path from \`mm folders --json\` (e.g. "INBOX.Sent" or "[Gmail]/Sent Mail").`
+   - `gmail-all-hidden`: `Gmail hides "All Mail" from IMAP for this account, so the totals can't be counted without double counting labels. Turn on "Show in IMAP" for All Mail in Gmail's settings (Labels), or pick one folder with --folder.`
+8. **Command** `mm stats [id] [--folder <path>] [--json]` (`src/cli/commands/stats.ts`, registered in `src/cli/index.ts` after `folders`; the "Getting started" help gets `  6. mm stats [id]             where the space goes: senders, years, largest mails`):
+   - **Flow** = `mm folders`' plain path:
+     - zod options (`folder: z.string().min(1).max(1000).optional()`, `json`), `loadEnvFiles`, ref parsing, key check, `loggedIn`, `pickAccount(session, ref, 'stats')`;
+     - `Mailbox: <label>` (to stderr with `--json`);
+     - then one `withAccountSession`: `listFolders(s, { sizes: false, only: () => false })` (LIST + quota only, no STATUS), then `collectStats(s, tree, { folder, timeZone, onProgress })` with `timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone`.
+   - **Progress** on stderr only when stderr is a TTY and not `--json`: `Reading folder 3/12 … 5000/12345 messages` (rewritten line, cleared after; a local copy of `folders.ts`'s `progressLine` shape).
+   - **Text report** `statsLines(stats, tree, { wholeMailbox, timeZone })` on stdout. Sections in this order, separated by a blank line:
+     1. `Scanned N folder(s), M message(s), X — sizes are approx. (message sizes, not the quota)`, plus the suffixes that apply, in this order:
+        - `; K folder(s) couldn't be read`;
+        - `; K folder(s) read only partly`;
+        - `; first 5,000 folders only` (`tree.truncated`);
+        - then, on its own line when `notScanned > 0`: `Not scanned: K folder(s) (Gmail labels or virtual folders; their mail is counted in the folders above)`.
+     2. Header `FOLDER  MESSAGES  SIZE`; every scanned folder in order, the full path sanitised and capped (reuse `folders-text.ts`'s name sanitising); `—` for an unreadable row; ` (partial)` after a partial row's size.
+     3. `PER YEAR`, rows `2024  1,234  210.0 MB`.
+     4. `TOP SENDERS BY MESSAGES`, `TOP SENDERS BY SIZE`, `TOP DOMAINS BY MESSAGES`, `TOP DOMAINS BY SIZE`:
+        - rows `key  messages  size`; `(no address)` for a `null` key;
+        - when `others.messages > 0`, a last row `others  N  X`;
+        - a heading gets ` (approximate)` when `approximate`.
+     5. `LARGEST MAILS`, rows `YYYY-MM-DD  size  from  subject  (folder)`; the date in `timeZone`, `-` when unknown.
+
+     Then the quota line (`quotaLine(tree)`) when `wholeMailbox` (no `--folder`). Formatting:
+     - server strings through `sanitize` and capped;
+     - counts with `toLocaleString('en-US')`;
+     - sizes with `formatBytes` as it prints (e.g. `210.0 MB`), no `~` (the first line says they're approximate);
+     - an empty section prints its heading and `  (none)`.
+
+   - **`--json`**: `statsJson(stats, tree, account, scope)` → `StatsJson` (see Interfaces), pretty-printed with `JSON.stringify(…, null, 2)` like `mm folders`.
+     - Strings are sanitised and capped like `foldersJson`.
+     - `received` is an ISO UTC string or `null`.
+     - `quota` is `tree.quota` without `--folder` and `null` with it.
+     - Pure JSON on stdout; `jq` parses it.
+   - **Errors** go through `guarded` (texts from `error-text.ts` / `accountErrorText`), exit 1; a login failure gets the generic login text.
+9. **`stats.finish`** (app log):
+   - **Fields**, in order: `acct`, `folders` (scanned folder rows), `messages`, `bytes`, `ms`, `outcome` (`ok` / `failed`, the `AccountOutcome` set), `reason?` (failed only, an `AccountFailureReason`). Level info, warn when failed.
+   - **When**: emitted in the command's `finally` once the account is known, like `folders.list` (login, listing and scan failures included, with `accountFailureReason(err)`). On failure `folders` / `messages` / `bytes` are 0 (no partial result is returned).
+   - **Not logged:**
+     - nothing on Ctrl+C: `runCli`'s SIGINT exit ends the process, and `command.finish` says interrupted;
+     - no `imap.capability-fallback` from `mm stats`, deliberately: its listing skips STATUS, so `listFolders`' `list-status` / `quota` fallback flags don't describe a sizing path (documented in LOGGING.md).
+   - **Builder** `statsFinish` in `src/core/log/mailbox-events.ts` (copy `foldersList`), plus the event type, `EVENT_FIELDS`, `EVENT_KIND` (app), `eventLevel`, and `FIELD_SCHEMAS` with the reason ⇔ failed check.
+   - **`mm logs` text**: `mailbox stats: 12 folders, 45210 messages read in 41 s` (`plural`, `duration`; no bytes, because `log-text.ts` can't import `folders-text.ts` (cycle)); failed: `mailbox stats failed: <reason words>`.
+   - **Canary test**: no folder name, sender, domain, subject, address, host or password in any record.
+   - **`docs/LOGGING.md`**: a new `### Mailbox stats (M2c-1)` table + paragraph; the `M2c` row is removed from "Later milestones".
+10. **Docs:**
+    - **M2 doc M2c section:**
+      - the split;
+      - M2c-1 in scope;
+      - design notes: scope rules incl. virtual folders, scan helper + FETCH filter, partial folders under concurrent expunge, aggregation cap, time zone, text/JSON shape, Ctrl+C, the truncation and `--folder` path inherited from M2a;
+      - Logging;
+      - verification;
+      - M2c-2.
+    - **ARCHITECTURE.md**: the `stats.ts` row becomes `scan.ts` + `stats.ts` (M2c-1).
+    - **TESTING.md**: the new test files.
+    - **CLAUDE.md**: current state.
+    - **README.md command list** (~line 95): add `mm folders` and `mm stats`.
+11. `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm run format:check` green. `npm run test:integration` with the live env: `stats-live` passes once (one login), `mm-test` = manifest.
+
+- **Summary:** New shared `scanFolder` (EXAMINE + streamed FETCH in 5,000-message sequence ranges; M2a's size fallback now uses it). New core `stats.ts`: scope rules (non-Gmail all selectable minus server-reported virtual `\All`/`\Flagged`; Gmail All Mail/Trash/Spam; `--folder` exact path), FETCH filter (seq in range, de-dup, stats field present), bounded aggregation (50,000-key caps → others/approximate, top 10 lists, 10 largest, years in a time zone), partial/unreadable folders. `mm stats [id] [--folder] [--json]` with a text report, versioned JSON (`v: 1`), progress on a TTY, two new mailbox error codes with plain texts, and `stats.finish` (counts only).
+- **Grade / mode:** M — coder + test writer
+- **Agents:** coder (Opus/high, 2 iterations + 3 fix rounds), test-writer (Sonnet/high; mailbox-stats 124 + cli-stats 69 spec tests; 3 strengthening/fix requests: FLAGS-only assertions, TZ independence, TZ wiring test), bug-hunter (Opus/high; 1 MEDIUM + 1 LOW, re-review after fixes: 3 LOW, all fixed), app-tester (Sonnet/high; real bin.ts over a fake IMAP client incl. 1.5M-message memory runs; 6 LOW + 2 INFO — 3 fixed, 3 documented, INFO dropped)
+- **Verification:**
+  - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run format:check` green; `npm test` 79 files / 4464 tests (baseline 75 / 4143); the stats tests also pass under TZ=Pacific/Kiritimati, Pacific/Auckland, Pacific/Pago_Pago, America/Los_Angeles (whole unit suite under Kiritimati: 4464 passed).
+  - Live: `tests/integration/stats-live.test.ts` run once (one login, read-only, mm-test): 5/5 passed — totals, per year and all 10 domains = manifest.
+  - M2a tests (mailbox-folders, m2a-review-fixes, cli-folders, mailbox-messages) byte-identical to the pre-run snapshot and green.
+  - Tests can fail: 22 targeted mutations (FETCH filter seq/range/fields, cap, null key, partial vs unreadable, year range, virtual/Gmail scope, INBOX case, bug rethrow, largest ties, quota line, approximate heading, STATUS-free listing, JSON quota, progress swallow, lock release, sumSizes, hard-coded UTC) each make tests fail; 3 survivors are equivalent mutations (lexicographic = numeric for 4-digit years; a second checkOpen after the catch; counts already 0 on failure). The fix-round tests fail on the pre-fix stats-text.ts.
+  - app-tester: real CLI over a fake IMAP client: read-only trace (EXAMINE readOnly, FETCH envelope/internalDate/size only, no STATUS), text/JSON, Gmail and virtual scope, `--folder` cases, hostile strings, failures, connection drop, aggregator bug, Ctrl+C (exit 130, no stats.finish), logs canary clean; memory 185 MB / 213 MB / 332 MB peak RSS at 20k / 200k / 1.5M messages.
+  - **Not verified:** a real server under concurrent expunge (NO EXPUNGEISSUED → partial) and split FETCH responses; real GETQUOTA units; the real multi-account `pickAccount` path in this command (shared with `mm folders`); `mm stats` against a real Gmail or a large mailbox (M2c-2, the user).
+- **Deviations:** listed in the plan's Implementation notes: extra exports from messages.ts; wider bug rethrow; code-unit key order; `41.0 s`; JSON `scope.folder` = matched path; LARGEST cut widths 40/80; per-list `(approximate)` (criterion 8 refined after review); `(no domain)` / `(unreadable)` / `(no subject)` placeholders; ranked keys cut at 60. Known limits documented in the M2 doc (Ctrl+C progress line, all-unreadable run exits 0, split FETCH, look-alike keys). The app-tester's stray `trace-unsol.txt` was moved out of the repo root.
+
+## C-028 — M2-fix: review follow-ups from C-026 / C-027 — short reads in `mm stats` / `mm folders`, `--folder` matches the printed path, skin-tone width
+
+- **Status:** reviewed (2026-10-04)
+- **Review:** All criteria (1–6 and 2a) met; typecheck, lint, build, format:check and 79 files / 4,602 tests green at the start of the review. No live IMAP. Reviewed in one batch with C-029 by the plan-auditor (per-criterion evidence with its own fakes; the 19 widths run; docs against the pre-change copies; the three changed test fakes differ only in what they yield, no assertion touched), the bug-hunter (the real imapflow client against a localhost fake server: healthy folders, a Dovecot `NO`, FLAGS-only extras, split answers, socket drops, throttle give-up → partial; a 1.5M-sequence width fuzz; 37 mutations, 32 killed; the pre-change sources fail 81 of the new tests) and the app-tester (the real `bin.ts` over a fake IMAP client, network blocked: all 13 repeated-answer / stray-answer cases of the size fallback, the 12,000-message short read, `--folder` with printed paths, twins, exact wins, log privacy). The reviewer settled the auditor's one open point: `docs/LOGGING.md` and the log code were last modified on 2026-10-03, before this run. Non-blocking follow-ups:
+  - MEDIUM (older mechanism, not changed by this entry; confirmed by the bug-hunter with real imapflow): `checkOpen` (`src/core/mailbox/guards.ts:22`) only looks at `closed` / `client.usable`. When the server sends `* BYE` right after a tagged OK, imapflow's `serverBye` sets its state to LOGOUT and leaves `usable` true until the socket closes; later commands return without I/O. `mm stats` then ends with the current folder partial and every remaining folder unreadable, exit 0, `stats.finish ok`; `mm folders` shows the remaining sizes as `—` — no `connection-lost`. A BYE mid-command or a socket drop is reported correctly. Fix direction: treat the client's LOGOUT state as lost.
+  - LOW tests: moving `seen.add(seq)` before the size check in `sumSizes` (`src/core/mailbox/folders.ts:331-333`) survives all tests; pin "an answer without a size, then the real one for the same seq, in one range".
+  - LOW: a folder named `in` + U+00AD + `box` prints as `inbox`; `mm stats --folder inbox` then scans INBOX (the INBOX rule runs before the printed-path rule). As specified and pinned, but the M2 doc's known limit doesn't mention it.
+  - LOW docs: the `scan.ts` header, the comment at `stats.ts:403` and the M2 doc (~line 170) say a Dovecot `NO [EXPUNGEISSUED]` "ends the scan with that error"; imapflow turns that `NO` into success, so the folder becomes partial through the new short-read check, not the catch. Outcome right, mechanism described wrongly.
+  - Open: a server that lists a message in EXISTS but never returns it (or one imapflow can't parse) leaves its folder partial in `mm stats`, and its size and the totals `—` in `mm folders`, on every run — the "any shortfall" rule; needs a live server to judge.
+  - Not verified: any live server (real throttling, concurrent expunge, Gmail), the integration suites, a real terminal emulator.
+- **Date:** 2026-10-04
+- **Type:** feature
+- **Source:** `.claude/plans/2026-10-04-0501-m2-review-followups.md` — TODO.md "#### M2-fix — Review follow-ups from C-026 / C-027 (before M2c-2)" (the three MEDIUM findings of the 2026-10-03 review; item wording and the `mm folders` handling confirmed by the user in `/next` 2026-10-04)
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049; files already dirty before the run: all the reviewed, uncommitted C-021…C-027 work (M2a, M2b-1, M2b-2, M2c-1: `src/core/mailbox/`, `src/cli/browser/`, `src/cli/commands/{folders,stats}.ts`, `src/cli/{account-session,folders-text,stats-text}.ts`, log/event changes, docs, CLAUDE.md, their tests) plus TODO.md (the M2-fix section, added by `/next`). Most touched files are untracked, so `git diff` doesn't isolate this run; the pre-run versions were snapshotted for the run's own checks.
+- **Files:**
+  - modified src: src/core/mailbox/stats.ts, src/core/mailbox/folders.ts, src/cli/commands/stats.ts, src/cli/browser/width.ts, src/core/mailbox/scan.ts (header comment only)
+  - modified docs: docs/milestones/M2-insight.md, CLAUDE.md
+  - modified tests: tests/unit/mailbox-stats.test.ts, tests/unit/mailbox-folders.test.ts, tests/unit/cli-stats.test.ts, tests/unit/browser-render.test.ts (spec tests appended; fake options added), tests/unit/cli-folders.test.ts, tests/unit/m2a-review-fixes.test.ts (fakes yield `seq`; no assertion changed)
+- **Requirements:** (the plan's acceptance criteria, verbatim; criterion 2a was added in fix round 1)
+
+1. **`mm stats` short read** (`collectStats`, `src/core/mailbox/stats.ts`).
+   - [ ] Per folder, `collectStats` counts the messages that passed its FETCH filter
+         (`wanted()`), and after `scanFolder` resolves **without an error** compares that number
+         with the `exists` that `scanFolder` returned. Fewer counted than `exists` →
+         `agg.folderFailed()` — exactly what the `catch` path does today.
+   - [ ] So: 12,000-message folder, range `5001:10000` yields nothing, no error → row
+         `{ messages: 7000, bytes: <sum of the 7,000>, partial: true }`, `stats.partial === 1`.
+   - [ ] A folder with `exists > 0` where nothing was counted and no error → unreadable row
+         (`messages: null, bytes: null, partial: false`), `stats.unreadable === 1`.
+   - [ ] A range that yields some but not all of its messages (no error) → partial, counts kept.
+   - [ ] A fully read folder, an empty folder (`exists` 0), and a folder whose FETCH also
+         streams unsolicited / repeated responses on top of every real message are **not** marked
+         (as today).
+   - [ ] The scan goes on with the next folder; `checkOpen(session)` still runs after every
+         folder; an aggregator bug is still rethrown unchanged; a thrown FETCH error still gives
+         the same result as today.
+   - [ ] CLI (`mm stats`): the short folder's row shows ` (partial)` (or `—`), the first line
+         gets `; 1 folder read only partly` (or `; 1 folder couldn't be read`), exit code 0,
+         `stats.finish` `ok` — no new text, no new log field.
+2. **`mm folders` size fallback short read** (`sumSizes` / `listFolders`,
+   `src/core/mailbox/folders.ts`).
+   - [ ] `sumSizes` counts the responses that carry a valid size and gets `exists` from
+         `scanFolder`. Fewer sized responses than `exists` (no error) → the folder is handled like
+         a failed sizing today: `bytes = null`, `sizeSource` stays `null`, `unreadable++`. The
+         folder keeps its message and unread counts (from STATUS); only the size is unknown.
+   - [ ] A fully sized folder is unchanged (`bytes` = the sum, `sizeSource: 'sum'`), as are
+         `exists` 0 folders and the thrown-error path. `checkOpen(session)` still runs after it.
+   - [ ] Text / JSON need no change: a `null` size already prints `—`, and `unreadable`
+         already feeds the footer note `N folder(s) could not be read (shown as —).`
+         (`src/cli/folders-text.ts:164-166`; "couldn't be read" is `mm stats`' wording).
+3. **`mm stats --folder` path match** (`statsScope`, `src/core/mailbox/stats.ts`;
+   `src/cli/commands/stats.ts`).
+   - [ ] `statsScope(tree, gmail, folder?, displayPath?)` — new optional 4th parameter
+         `displayPath?: (path: string) => string`. `CollectStatsOptions` gains
+         `displayPath?: (path: string) => string`, passed through by `collectStats`.
+   - [ ] Order when `folder` is given: (1) the folder whose `path === folder`; (2) INBOX in any
+         case, as today; (3) only when `displayPath` is given and (1) and (2) found nothing: the
+         folders with `displayPath(f.path) === folder` — exactly one → it is the match; none or two
+         and more → no match. Then, as today: no match or `selectable === false` →
+         `MailboxError('folder-not-found')`; `notScanned` 0.
+   - [ ] Without `displayPath` the function behaves exactly as today.
+   - [ ] `mm stats` passes `displayPath: sanitize` (`src/cli/log-text.ts`). A folder named
+         `Caf` + U+00AD + `e`, U+0646 U+0627 U+0645 U+0647 U+200C U+0647 U+0627, or
+         `Family ` + 👨 U+200D 👩 U+200D 👧 is scanned when `--folder` gets the path as
+         `mm folders --json` prints it; `--json` `scope.folder` is that same sanitised path.
+   - [ ] Two folders whose sanitised paths are equal and neither equals the value exactly →
+         the `folder-not-found` text, exit 1. When one of them equals the value exactly, that one
+         is scanned (exact wins).
+   - [ ] The `folder-not-found` text is unchanged.
+4. **Browser width** (`src/cli/browser/width.ts`).
+   - [ ] In an emoji grapheme (the existing `EMOJI.test(g)` branch) a skin-tone modifier
+         (`\p{Emoji_Modifier}`, U+1F3FB–1F3FF) adds 2 columns unless the code point directly before
+         it in the grapheme matches `\p{Emoji_Modifier_Base}`; every other code point is measured
+         as today.
+   - [ ] `displayWidth` values (computed with a prototype of this rule on Node 22.22.1; `T` =
+         U+1F3FD):
+     - unchanged: `'😀' + 'ः'.repeat(400)` = 402, `'😀' + 'ﾞ'.repeat(5)` = 7,
+       `'ൎ'.repeat(3) + '😀'` = 5, `'❤️'` = 2, `'👨‍👩‍👧‍👦'` = 2, `'1️⃣'` = 2, `'🇸🇰'` = 2,
+       `'👍' + T` = 2, `'😀'` = 2, `('👋' + T).repeat(3)` = 6,
+       `'🧑' + T + '\u200d🤝\u200d🧑\u{1F3FB}'` = 2;
+     - new: `'a' + T.repeat(60)` = 123, `'👍' + T.repeat(60)` = 120,
+       `('1' + T).repeat(60)` = 240, `'👍' + T + T` = 4, `'👍️' + T` = 4, `T` alone = 4,
+       `'😀' + T` = 4, `'日' + T` = 6.
+   - [ ] `fit('a' + T.repeat(60), 8)` and `fit('👍' + T.repeat(60), 8)` = `'...     '` (the
+         grapheme is wider than the room, so it is cut; no modifier is left in the output).
+   - [ ] A mail whose sender is `'a' + T.repeat(60)` and whose subject is
+         `'👍' + T.repeat(60)`, rendered at 80×12: no rendered line contains U+1F3FD, and every
+         line still measures ≤ 80 by `displayWidth`.
+   - [ ] Every existing `displayWidth` / `fit` / render test passes unchanged.
+5. **Docs.**
+   - [ ] `docs/milestones/M2-insight.md`: the M2c "Scope" note (the `--folder` rule + the
+         known limit for two folders that differ only in invisible characters), the M2c "Failures
+         per folder" note (a short read without an error is partial / unreadable; why: imapflow's
+         throttle give-up), the M2a size-fallback text (a short read → size unknown), and the
+         M2b "Width" note (line ~113; the skin-tone rule).
+   - [ ] `CLAUDE.md` "Current state": this fix named (with its `C-0xx` id), and the stale
+         "live test pending" for M2c-1 corrected (the live test passed 2026-10-03).
+   - [ ] No `docs/LOGGING.md` change: no event, field or text changes.
+6. **Checks.** `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`,
+   `npm run format:check` green. No live IMAP run is needed (nothing changes for a mailbox
+   that answers every FETCH; `npm run test:integration` is not part of this assignment).
+
+2a. **Size fallback counts each message once** (added in fix round 1, after both reviewers showed criterion 2's check could be defeated).
+
+- [ ] In `sumSizes` an answer counts only when `msg.seq` is a safe integer inside the range asked for, wasn't counted in that range yet and carries a valid size. Repeated answers (imapflow reissues a throttled FETCH) can't make up for missing messages: a range streamed twice + another range empty, or every answer repeated + one message missing → size unknown. Repeats with nothing missing → the sum of one copy.
+
+- **Summary:** `collectStats` compares the messages that passed its FETCH filter with the folder's EXAMINE count and marks a short folder like a failed one (partial, or unreadable when nothing was counted). `sumSizes` (the `mm folders` size fallback) counts each sequence number of the asked range once and returns no size when fewer messages were sized than the folder holds (size `—`, counted in "could not be read"). `statsScope` takes an optional `displayPath` and, when nothing matches exactly, uses the single folder whose printed (sanitised) path equals `--folder`; `mm stats` passes `sanitize`. In the browser's width measure a skin-tone modifier counts 2 columns unless it directly follows an emoji that takes one. M2 doc and CLAUDE.md updated; no event, log field, error text or IMAP command changed.
+- **Grade / mode:** M — coder + test writer
+- **Agents:** coder (Opus/high; Iterations 1+2 as one work item, Iteration 3, 1 fix round), test-writer (Sonnet/high; 106 spec tests across four files, three fakes made to yield `seq`), bug-hunter (Opus/high; 2 MEDIUM + 1 LOW: one MEDIUM and the LOW fixed, one MEDIUM older than this change and left out; second pass on the fix: see Verification), app-tester (Sonnet/high; 142 runs of the real `bin.ts` over a fake IMAP client; no failure in the four changes, 1 LOW = the same `sumSizes` gap, fixed)
+- **Verification:**
+  - Baseline before the run: `npm run typecheck`, `lint`, `build`, `format:check` green; `npm test` 79 files / 4464 tests. After the run (orchestrator, after the last edit): all five green; `npm test` 79 files / 4570 tests.
+  - Tests can fail: with the five changed source files swapped back to the pre-run snapshot, 58 of the new tests fail (short reads in `collectStats` / `listFolders` / `mm stats`, the de-duplication block, `--folder` through `displayPath`, skin-tone widths, `fit`, the render case); the three test files whose fakes changed pass fully on the old source too; files restored, content hash identical.
+  - Orchestrator re-runs: the 12,000-message repro (range `5001:10000` empty) → `{ messages: 7000, partial: true }`; `listFolders` → size `null`, `unreadable 1`; `statsScope(…, 'Cafe', sanitize)` finds the soft-hyphen folder, throws without the 4th argument. No line removed from an existing test file except the three fake `yield` lines; no literal invisible characters added to the tests.
+  - app-tester (real CLI, fakes, network blocked, own HOME per run): `mm stats` partial / unreadable rows and first-line notes, exit 0, `stats.finish` ok; `mm folders` size `—` with counts kept and the footer note; `--folder` with the printed path of soft-hyphen / ZWNJ / ZWJ-emoji folders (text + `--json`), exact wins, twins / non-selectable / unknown → not found, INBOX, Gmail label; nothing private in the logs; browser rows at 80x24 … 20x6: overshoot 0 once valid tone / flag pairs are exempted (the old code: up to 238 columns).
+  - Second bug-hunter pass on the fix round (the `sumSizes` change only): clean — 12 variants against a fake client (a range streamed twice + an empty one, a partial then full re-stream, a range answered with another range's seqs → size unknown; repeats with nothing missing → one copy; healthy folders at batch boundaries, `exists` 1, reverse order, size-0 messages stay sized); imapflow sets a numeric `seq` on every FETCH response (`tools.js`); the set never exceeds one batch.
+  - **Not verified:** any live server — real throttling (whether a server sends data before a throttle refusal), concurrent expunge, real Gmail; `npm run test:integration` (not run: live logins are rationed; `stats-live` / `folders-live` read a fully answered folder through imapflow, which always sets `seq`); a real terminal emulator (widths were checked against a per-code-point `wcwidth` measure and pyte).
+- **Deviations:** Iterations 1 and 2 were given to the coder as one work item (same files, a few lines each). De-duplication in `sumSizes` was listed as out of scope in the plan and was done in fix round 1 (criterion 2a). Comment-only edits beyond the plan: `scan.ts` header, `StatsFolderRow` comments, the `EMOJI_PART` comment as a block; "skin tones" removed from the M2b Width note's "add nothing" list; M2 doc lines 154 / 160 / 162 / 170 corrected. Left out, for the reviewer: `WIDE_RANGES` lacks U+2329–232A, U+4DC0–4DFF, U+FE10–FE19, U+FE50–FE6B (70 × U+FE50 draws 140 columns; older than this change, a LOW of the C-023 review); unconfirmed: one message imapflow can't parse would make its folder partial on every run; a `* BYE` right after a tagged OK could end as partial + exit 0.
+
+## C-029 — Browser width: wide symbols outside the CJK blocks counted as 1 column (angle brackets, Yijing symbols, vertical and small forms, Tai Xuan Jing, counting rods)
+
+- **Status:** reviewed (2026-10-04)
+- **Review:** All four requirements met: root cause (the table is the only source of wide non-emoji characters and the fix is there), minimal (eight table rows + tests), nothing measures narrower than before (228 code points changed, all 1 → 2). Reviewed in one batch with C-028; checks green at the start of the review (79 files / 4,602 tests). The plan-auditor re-ran the repro (140; `fit` keeps 38), the neighbours and the fails-without-the-fix check (23 of 32). The bug-hunter compared every code point with glibc and the Unicode 16 data (0 under-measured after `sanitize`, apart from seven combining marks drawn 0) and fuzzed `fit`. The app-tester ran the four Unicode 16 ranges — not exercised in the real browser before — plus U+FE50 / U+4DC0 runs as senders, subjects and folder names at 80x24, 60x16 and 40x8: every frame line within the terminal, the size column and `+` on screen. Non-blocking follow-ups:
+  - LOW: on a terminal whose width table predates Unicode 16 (this machine's glibc 2.35), U+2630–2637, U+268A–268F, U+1D300–1D356 and U+1D360–1D376 are drawn 1 column and measured 2, so such a row ends a column early per symbol. Cosmetic and allowed by the module's rule; inferred, not observed in a terminal.
+  - LOW wording in this entry's Summary: "wide in every width table checked" holds for glibc 2.35 and Unicode 16; Python's Unicode 13 data lists U+4DC0–4DFF as narrow.
+  - LOW: the table is kept by hand with endpoint-only tests; two unassigned upper bounds (U+FE6C–FE6F, U+1D357–1D35F) are unpinned. A later Unicode version can add wide ranges again.
+  - Not verified: a real terminal emulator; width data newer than Unicode 16.
+- **Date:** 2026-10-04
+- **Type:** bugfix
+- **Source:** the user's `/fix` of 2026-10-04, picking up the finding left out of C-028 (bug-hunter, 2026-10-04; first recorded as a LOW in the C-023 review): "`WIDE_RANGES` in `width.ts` lacks U+2329–232A, U+4DC0–4DFF, U+FE10–FE19, U+FE50–FE6B — 70 × U+FE50 measures 70 and draws 140 columns on an 80-column screen." No TODO.md item.
+- **Base:** bd5eeeefeb48804e1ac11e84ca2a5f450528e049; files already dirty before the run: the uncommitted C-021…C-028 work (55 entries in `git status --short`, both files of this fix among them and untracked). Checks before the fix: typecheck, lint, build, format:check green; `npm test` 79 files / 4570 tests.
+- **Files:** modified src/cli/browser/width.ts (eight ranges added to `WIDE_RANGES`), tests/unit/browser-render.test.ts (32 regression tests appended)
+- **Requirements:**
+  1. The bug is fixed at the root cause: the wide-character table `WIDE_RANGES` (the only source of wide non-emoji characters; JS regex has no East_Asian_Width) lacked East Asian Wide ranges outside the CJK blocks, so those symbols were measured 1 column and drawn 2.
+  2. The repro passes: `displayWidth` of 70 × U+FE50 is 140 (was 70), and `fit(…, 80)` keeps 38 of them + `...` (was all 70).
+  3. The regression tests at the end of `tests/unit/browser-render.test.ts` ("wide symbols outside the CJK blocks (C-029)") fail without the fix.
+  4. Sibling cases still behave: the neighbours of each range stay narrow (U+2328, U+232B, U+2638, U+2690, U+303F, U+FE1A, U+FE20 combining, U+FE70, U+1D377); every other code point keeps its width; the widths pinned by C-026 / C-028 are unchanged.
+- **Summary:** added to `WIDE_RANGES`: `[0x2329, 0x232a]`, `[0x4dc0, 0x4dff]`, `[0xfe10, 0xfe19]`, `[0xfe50, 0xfe6b]` (wide in every width table checked), and `[0x2630, 0x2637]`, `[0x268a, 0x268f]`, `[0x1d300, 0x1d356]`, `[0x1d360, 0x1d376]` (wide since Unicode 16; a terminal on older tables draws them 1, which the module's rule allows — overestimating never widens the screen). U+FE53 and U+FE67 (unassigned) fall inside a range and count 2. No other code changed.
+- **Agents:** solo fix (`/fix`); bug-hunter (Opus/high) and app-tester (Sonnet/high) on the first four ranges; the second four came from the bug-hunter's finding and were checked by the orchestrator only (see Verification).
+- **Verification:**
+  - Repro before the fix: every code point from U+0020 to U+3FFFF that survives `sanitize`, measured with `displayWidth` and compared with glibc 2.35 `wcwidth` (python ctypes, `C.UTF-8`): 102 code points measured narrower, in exactly the runs U+2329–232A, U+4DC0–4DFF, U+FE10–FE19, U+FE50–FE52, U+FE54–FE66, U+FE68–FE6B. After the fix: 0.
+  - Second comparison, against `EastAsianWidth-16.0.0.txt` (downloaded from unicode.org): after the first four ranges, the only Wide/Fullwidth code points still measured under 2 were U+2630–2637, U+268A–268F, U+1D300–1D356, U+1D360–1D376 (and seven combining marks, correctly 0). Those four ranges were added; in total 228 code points changed width, every one from 1 to 2.
+  - Regression tests: 23 of the 32 new tests fail on the pre-fix `width.ts` (20 single symbols, the 70-comma width, the `fit` case, the 80x12 render case, which counts columns itself); the 9 narrow-neighbour rows pass both ways by design. File restored byte-identical after the check.
+  - `npm run typecheck`, `lint`, `build`, `format:check` green; `npm test` 79 files / 4602 tests (4570 + 32). The test file's diff is additions only; the new block is ASCII with `\u` escapes.
+  - Blast radius: `displayWidth` / `fit` are used only by `src/cli/browser/render.ts`.
+  - bug-hunter (first four ranges): root cause fixed in the table, minimal, nothing narrower than before, 300k-string `fit` fuzz always the asked width, pinned widths hold; one finding — the Unicode 16 siblings above (suspected by it, then confirmed here against the 16.0 data file and fixed).
+  - app-tester (first four ranges; real `bin.ts` in a pty over a fake IMAP client, network blocked): overshoot 0 at 80x24 / 60x16 / 40x8 and through a chain of resizes for subjects, senders, folder names, the header path and the mailbox title; the size column and `+` stay on screen; plain ASCII / CJK / emoji rows and `mm folders --plain` identical to before; no findings.
+  - **Not verified:** the second four ranges were not re-run through the bug-hunter or the app-tester (same table, same mechanism; covered by the unit tests and the full code-point comparison); a real terminal emulator; width tables newer than Unicode 16.
+- **Deviations:** the fix grew from four ranges to eight after the bug-hunter's sibling finding was confirmed — same table, same cause. One correction during the run: the first version of the appended tests held the symbols as literal characters and one render test passed without the fix; the block was rewritten with escapes and that test now counts columns itself. The bug-hunter's first scan wrote a scratch file into the repo root and moved it out at once (no trace in `git status`).

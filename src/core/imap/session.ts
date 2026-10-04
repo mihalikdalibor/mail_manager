@@ -1,6 +1,18 @@
 import { Resolver } from 'node:dns/promises';
 import { inspect } from 'node:util';
-import { ImapFlow, type ImapFlowOptions } from 'imapflow';
+import {
+  ImapFlow,
+  type FetchOptions,
+  type ImapFlowOptions,
+  type ListOptions,
+  type ListResponse,
+  type MailboxLockObject,
+  type MailboxLockOptions,
+  type MessageEnvelopeObject,
+  type MessageStructureObject,
+  type StatusObject,
+  type StatusQuery,
+} from 'imapflow';
 import { hostFromUserInput } from '../providers/email.js';
 import type { ImapSettings } from '../providers/settings.js';
 import {
@@ -27,17 +39,74 @@ import {
 // - the password is removed from the client options as soon as connect() settles;
 // - every failure becomes an ImapSessionError (reason + safe code, never server text).
 
-/** The part of ImapFlow this module uses (a fake implements it in tests). */
+/**
+ * What GETQUOTA returns. imapflow sets `usage` (bytes: it multiplies the server's KiB by 1024);
+ * its d.ts wrongly names the field `used`, so this reads only what the code really sets.
+ */
+export interface QuotaInfo {
+  storage?: { usage?: number; limit?: number } | undefined;
+}
+
+/** What the message list (M2b) fetches: no body, no flags — nothing that sets `\Seen`. */
+export interface MessagePageQuery {
+  uid: true;
+  envelope: true;
+  internalDate: true;
+  size: true;
+  bodyStructure: true;
+}
+
+/** What `mm stats` (M2c) fetches: no body, no flags, no UID — nothing that sets `\Seen`. */
+export interface StatsQuery {
+  envelope: true;
+  internalDate: true;
+  size: true;
+}
+
+/** A fetched message as the mailbox code reads it: every field optional (server data). */
+export interface FetchedMessage {
+  seq?: number | undefined;
+  uid?: number | undefined;
+  size?: number | undefined;
+  envelope?: MessageEnvelopeObject | undefined;
+  internalDate?: Date | string | undefined;
+  bodyStructure?: MessageStructureObject | undefined;
+}
+
+/** The part of ImapFlow this module and the mailbox code use (a fake implements it in tests). */
 export interface ImapClientLike {
   options: ImapFlowOptions;
   capabilities: Map<string, boolean | number>;
   enabled: Set<string>;
   serverInfo: unknown;
   usable: boolean;
+  /** The selected folder (after getMailboxLock), or false. */
+  readonly mailbox: { readonly exists: number; readonly uidValidity?: bigint } | false;
   connect(): Promise<void>;
   logout(): Promise<void>;
   close(): void;
   on(event: 'error' | 'close', listener: (arg?: unknown) => void): unknown;
+  /** LIST (+ LIST-STATUS or one STATUS per folder when `statusQuery` is given). */
+  list(options?: ListOptions): Promise<ListResponse[]>;
+  /** STATUS of one folder; false (or a throw) when the server refused it. */
+  status(path: string, query: StatusQuery): Promise<StatusObject | false>;
+  getQuota(path: string): Promise<QuotaInfo | false | undefined>;
+  /** `{ readOnly: true }` = EXAMINE. Skipped by imapflow when the folder is already selected. */
+  getMailboxLock(path: string, options?: MailboxLockOptions): Promise<MailboxLockObject>;
+  /**
+   * NOOP: lets pending EXISTS / EXPUNGE updates of the selected folder arrive (UIDVALIDITY is
+   * read only on SELECT/EXAMINE).
+   */
+  noop(): Promise<void>;
+  /**
+   * Narrowed to what the mailbox code reads, streamed: RFC822.SIZE (size fallback) or the
+   * message list fields (M2b), or the stats fields (M2c). Sequence numbers unless `options.uid`.
+   */
+  fetch(
+    range: string,
+    query: { size: true } | MessagePageQuery | StatsQuery,
+    options?: FetchOptions,
+  ): AsyncIterable<FetchedMessage>;
 }
 
 export interface OpenSessionOptions {

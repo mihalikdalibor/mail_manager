@@ -18,10 +18,13 @@ import {
   authLogin,
   authLoginFailed,
   authLogout,
+  browseFinish,
+  capabilityFallback,
   commandFinish,
   commandStart,
   discoverFinish,
   doctorCheck,
+  foldersList,
   formatLine,
   guardBlock,
   guardChallenge,
@@ -29,6 +32,7 @@ import {
   imapLoginFailed,
   parseLogLine,
   renderEvent,
+  statsFinish,
   toRecord,
   unexpectedError,
   validateRecord,
@@ -481,9 +485,29 @@ describe('validateRecord: round trip over every builder', () => {
         outcome: 'ok',
       }),
       'account.remove': accountEvent('account.remove', { provider: 'gmail', outcome: 'ok' }),
+      'folders.list': foldersList({ acct: ACCT, folders: 12, ms: 340, outcome: 'ok' }),
+      'imap.capability-fallback': capabilityFallback('status-size'),
+      'browse.finish': browseFinish({
+        acct: ACCT,
+        folders: 3,
+        mails: 400,
+        marked: 12,
+        bytes: 4_300_000,
+        reconnects: 1,
+        ms: 2300,
+        outcome: 'ok',
+      }),
+      'stats.finish': statsFinish({
+        acct: ACCT,
+        folders: 12,
+        messages: 45_210,
+        bytes: 3_200_000_000,
+        ms: 41_000,
+        outcome: 'ok',
+      }),
     };
     expect(Object.keys(samples).sort()).toEqual([...LOG_EVENT_NAMES].sort());
-    expect(LOG_EVENT_NAMES).toHaveLength(18);
+    expect(LOG_EVENT_NAMES).toHaveLength(22);
     for (const name of LOG_EVENT_NAMES) roundTrip(samples[name]);
   });
 });

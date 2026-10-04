@@ -14,6 +14,7 @@ import { ImapSessionError } from './imap/errors.js';
 import type { CapabilityRecord, ServerFeatures } from './imap/features.js';
 import { guardedOpenSession } from './imap/guarded-session.js';
 import type { ImapSession, OpenSessionOptions } from './imap/session.js';
+import { MailboxError } from './mailbox/errors.js';
 import {
   accountEvent,
   cleanProvider,
@@ -139,12 +140,16 @@ export interface LoginCheck {
   features: ServerFeatures;
 }
 
-/** One guarded login, then logout. Errors (ImapSessionError, LoginBlockedError) propagate. */
-export async function checkLogin(
-  deps: LoginDeps,
-  o: { settings: ImapSettings; password: string; provider: string; acct?: string },
-): Promise<LoginCheck> {
-  const session = await guardedOpenSession({
+interface LoginTarget {
+  settings: ImapSettings;
+  password: string;
+  provider: string;
+  acct?: string;
+}
+
+/** One guarded login (no retry). Errors (ImapSessionError, LoginBlockedError) propagate. */
+async function guardedLogin(deps: LoginDeps, o: LoginTarget): Promise<ImapSession> {
+  return guardedOpenSession({
     settings: o.settings,
     password: o.password,
     clientVersion: deps.clientVersion,
@@ -156,8 +161,48 @@ export async function checkLogin(
     log: deps.log,
     ...(deps.open !== undefined && { open: deps.open }),
   });
+}
+
+/** One guarded login, then logout. Errors (ImapSessionError, LoginBlockedError) propagate. */
+export async function checkLogin(deps: LoginDeps, o: LoginTarget): Promise<LoginCheck> {
+  const session = await guardedLogin(deps, o);
   try {
     return { capabilities: session.capabilities, features: session.features };
+  } finally {
+    await session.logout();
+  }
+}
+
+/**
+ * One guarded login with the saved password; the caller logs out (the M2b browser keeps its
+ * session open, a reconnect is one more call). No retry: a failed login propagates.
+ */
+export async function openAccountSession(
+  deps: LoginDeps & { credentials: CredentialProvider },
+  account: MailAccount,
+): Promise<ImapSession> {
+  const settings = settingsOf(account);
+  const password = decryptFor(deps, account);
+  return guardedLogin(deps, {
+    settings,
+    password,
+    provider: account.provider,
+    acct: account.id,
+  });
+}
+
+/**
+ * One guarded login with the saved password → `fn(session)` → logout (also when fn throws).
+ * The read-only mailbox commands (M2) run inside it. No retry: a failed login propagates.
+ */
+export async function withAccountSession<T>(
+  deps: LoginDeps & { credentials: CredentialProvider },
+  account: MailAccount,
+  fn: (session: ImapSession) => Promise<T>,
+): Promise<T> {
+  const session = await openAccountSession(deps, account);
+  try {
+    return await fn(session);
   } finally {
     await session.logout();
   }
@@ -169,6 +214,7 @@ export function accountFailureReason(err: unknown): AccountFailureReason {
   if (err instanceof LoginBlockedError) return 'blocked';
   if (err instanceof AccountError) return err.code;
   if (err instanceof RepoError) return 'database';
+  if (err instanceof MailboxError) return err.code;
   if (err instanceof CredentialError || err instanceof CryptoError) return 'secret-unreadable';
   return 'unexpected';
 }
@@ -320,7 +366,7 @@ export async function addAccount(
 }
 
 /** Decrypts the stored password; an unreadable secret never reaches a login. */
-function decryptFor(deps: AccountDeps, account: MailAccount): string {
+function decryptFor(deps: { credentials: CredentialProvider }, account: MailAccount): string {
   try {
     return deps.credentials.decryptPassword(account);
   } catch (err) {

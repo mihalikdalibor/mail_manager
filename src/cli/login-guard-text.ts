@@ -44,10 +44,13 @@ function until(err: LoginBlockedError, now: Date): string {
   return err.until === null ? 'a while' : formatUntil(err.until, now);
 }
 
+/** How long the CLI challenge waits (the M2b browser shows the same wait as a notice). */
+export const CHALLENGE_DELAY_MS = 5000;
+
 /** CLI challenge: a short, announced wait before the next attempt (server: Turnstile, M6a). */
 export function cliChallenge(
   write: (line: string) => void = (line) => console.error(line),
-  delayMs = 5000,
+  delayMs = CHALLENGE_DELAY_MS,
 ): Promise<void> {
   const seconds = Math.round(delayMs / 1000);
   write(

@@ -66,6 +66,17 @@ class FakeClient implements ImapClientLike {
   emit(event: Event, arg?: unknown): void {
     for (const l of this.listeners[event]) l(arg);
   }
+
+  // Mailbox operations (M2a) are not used by openSession: they must never be called here.
+  readonly mailbox = false as const;
+  list = vi.fn(() => Promise.reject(new Error('not used')));
+  status = vi.fn(() => Promise.reject(new Error('not used')));
+  getQuota = vi.fn(() => Promise.reject(new Error('not used')));
+  getMailboxLock = vi.fn(() => Promise.reject(new Error('not used')));
+  noop = vi.fn(() => Promise.reject(new Error('not used')));
+  fetch = vi.fn((): AsyncIterable<{ size?: number }> => {
+    throw new Error('not used');
+  });
 }
 
 const POST_AUTH_CAPS: [string, boolean | number][] = [

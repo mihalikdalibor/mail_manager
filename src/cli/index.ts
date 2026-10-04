@@ -4,8 +4,10 @@ import { registerAccount } from './commands/account.js';
 import { registerAuth } from './commands/auth.js';
 import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
+import { registerFolders } from './commands/folders.js';
 import { registerKeygen } from './commands/keygen.js';
 import { registerLogs } from './commands/logs.js';
+import { registerStats } from './commands/stats.js';
 import { VERSION } from './version.js';
 
 export { VERSION };
@@ -76,6 +78,8 @@ export function buildProgram(options: BuildOptions = {}): Command {
   registerDoctor(program, ctx);
   registerDiscover(program, ctx);
   registerAccount(program, ctx);
+  registerFolders(program, ctx);
+  registerStats(program, ctx);
   registerLogs(program, ctx);
   program.addHelpText(
     'after',
@@ -86,6 +90,8 @@ export function buildProgram(options: BuildOptions = {}): Command {
       '  2. mm discover <email>       find your mailbox settings (no password needed)',
       '  3. mm account add <email>    connect the mailbox (asks for its password)',
       '  4. mm account test <id>      check the login any time (ids: mm account list)',
+      '  5. mm folders [id]           see the folders: messages, unread, size, quota',
+      '  6. mm stats [id]             where the space goes: senders, years, largest mails',
     ].join('\n'),
   );
   return program;

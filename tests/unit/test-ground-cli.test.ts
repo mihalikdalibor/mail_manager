@@ -327,6 +327,17 @@ describe('TestFolder.fromSession', () => {
       logout: () => Promise.resolve(),
       close: () => undefined,
       on: () => undefined,
+      mailbox: false,
+      list: () => Promise.resolve([]),
+      status: () => Promise.resolve(false),
+      getQuota: () => Promise.resolve(false),
+      getMailboxLock: () => Promise.reject(new Error('not used')),
+      noop: () => Promise.reject(new Error('not used')),
+      fetch: () => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true, value: undefined }),
+        }),
+      }),
     };
     const session = new ImapSession(clientLike, CANARY_HOST, CANARY_ADDRESS);
     expect(() => TestFolder.fromSession(session)).toThrow(TestGroundError);

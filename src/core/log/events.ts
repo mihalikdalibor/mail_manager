@@ -2,6 +2,8 @@ import type { LogLevel } from '../config.js';
 import type { CheckStatus } from '../doctor.js';
 import type { ImapFailureReason } from '../imap/errors.js';
 import type { AuditAction } from '../db/repos.js';
+import type { MailboxErrorCode } from '../mailbox/errors.js';
+import type { FallbackFeature, FallbackKind } from '../mailbox/folders.js';
 import type { DiscoverySource, DomainProblem } from '../providers/discover.js';
 import type { BlockKind } from '../security/events.js';
 
@@ -158,6 +160,7 @@ export type AccountFailureReason =
   | 'secret-unreadable'
   | 'unsupported'
   | 'database'
+  | MailboxErrorCode
   | 'unexpected';
 
 /** `mm account …` (M1c-1): ids and codes only — never the address, host or username. */
@@ -170,6 +173,63 @@ export interface AccountEvent<N extends AccountEventName = AccountEventName> {
   outcome: AccountOutcome;
   /** Only when the outcome is `failed`. */
   reason?: AccountFailureReason;
+}
+
+/** `mm folders` (M2a): ids and counts only — never folder names, the address or host. */
+export interface FoldersListEvent {
+  event: 'folders.list';
+  /** Mail account UUID. */
+  acct?: string;
+  /** Number of folders listed. */
+  folders: number;
+  ms: number;
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: AccountFailureReason;
+}
+
+export type BrowseOutcome = 'ok' | 'interrupted' | 'failed';
+
+/** One `mm folders` browser run (M2b-2): ids, counts and bytes — never names, subjects or addresses. */
+export interface BrowseFinishEvent {
+  event: 'browse.finish';
+  /** Mail account UUID. */
+  acct?: string;
+  /** Folders opened with Enter. */
+  folders: number;
+  /** Mail rows loaded (a reloaded page counts again). */
+  mails: number;
+  /** Marks in the basket at the end (dropped: the browser is read-only). */
+  marked: number;
+  /** Bytes of the marked mails with a known size. */
+  bytes: number;
+  reconnects: number;
+  ms: number;
+  outcome: BrowseOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: AccountFailureReason;
+}
+
+/** One `mm stats` run (M2c-1): ids, counts and bytes — never names, senders, domains or subjects. */
+export interface StatsFinishEvent {
+  event: 'stats.finish';
+  /** Mail account UUID. */
+  acct?: string;
+  /** Folder rows scanned (0 on failure). */
+  folders: number;
+  messages: number;
+  bytes: number;
+  ms: number;
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: AccountFailureReason;
+}
+
+/** A missing server feature and the fallback that ran instead (app log; once per run). */
+export interface CapabilityFallbackEvent {
+  event: 'imap.capability-fallback';
+  feature: FallbackFeature;
+  fallback: FallbackKind;
 }
 
 export type LogEvent =
@@ -190,7 +250,11 @@ export type LogEvent =
   | AccountEvent<'account.add'>
   | AccountEvent<'account.test'>
   | AccountEvent<'account.password-update'>
-  | AccountEvent<'account.remove'>;
+  | AccountEvent<'account.remove'>
+  | FoldersListEvent
+  | CapabilityFallbackEvent
+  | BrowseFinishEvent
+  | StatsFinishEvent;
 
 export type LogEventName = LogEvent['event'];
 
@@ -218,6 +282,20 @@ export const EVENT_FIELDS: {
   'account.test': ['acct', 'provider', 'outcome', 'reason'],
   'account.password-update': ['acct', 'provider', 'outcome', 'reason'],
   'account.remove': ['acct', 'provider', 'outcome', 'reason'],
+  'folders.list': ['acct', 'folders', 'ms', 'outcome', 'reason'],
+  'imap.capability-fallback': ['feature', 'fallback'],
+  'browse.finish': [
+    'acct',
+    'folders',
+    'mails',
+    'marked',
+    'bytes',
+    'reconnects',
+    'ms',
+    'outcome',
+    'reason',
+  ],
+  'stats.finish': ['acct', 'folders', 'messages', 'bytes', 'ms', 'outcome', 'reason'],
 };
 
 export const EVENT_KIND: Record<LogEventName, LogKind> = {
@@ -239,6 +317,11 @@ export const EVENT_KIND: Record<LogEventName, LogKind> = {
   'account.test': 'app',
   'account.password-update': 'app',
   'account.remove': 'app',
+  'folders.list': 'app',
+  // Describes the server, not a login: app log, unlike the other imap.* events.
+  'imap.capability-fallback': 'app',
+  'browse.finish': 'app',
+  'stats.finish': 'app',
 };
 
 export const LOG_EVENT_NAMES = Object.keys(EVENT_FIELDS) as LogEventName[];
@@ -252,7 +335,11 @@ export function eventLevel(e: LogEvent): LogLevel {
     case 'account.test':
     case 'account.password-update':
     case 'account.remove':
+    case 'folders.list':
+    case 'stats.finish':
       return e.outcome === 'ok' ? 'info' : 'warn';
+    case 'browse.finish':
+      return e.outcome === 'failed' ? 'warn' : 'info';
     case 'doctor.check':
       return e.status === 'ok' ? 'info' : 'warn';
     case 'login-guard.block':
@@ -263,6 +350,7 @@ export function eventLevel(e: LogEvent): LogLevel {
     case 'auth.login-failed':
     case 'imap.login-failed':
     case 'login-guard.challenge':
+    case 'imap.capability-fallback':
       return 'warn';
     case 'command.start':
     case 'log.truncated':

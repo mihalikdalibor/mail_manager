@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M2 Mailbox insight (not started — needs the user's go-ahead)** — M1c account commands done: M1c-1 account commands 2026-10-01 (v0.7.0, C-019, reviewed), M1c-2 hardening 2026-10-01 (v0.8.0, C-020, reviewed, migration applied) — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M2 Mailbox insight — M2a folder tree + `mm folders` done 2026-10-01 (C-021, C-022, reviewed); M2b-1 browser core done 2026-10-02 (C-023, follow-ups C-024 ASCII screen text + C-025, all reviewed); M2b-2 terminal browser implemented 2026-10-02 (C-026, reviewed 2026-10-03; the manual walk in a real terminal is still open — the user); M2c-1 `mm stats` done 2026-10-03 (C-027, reviewed; live test passed); M2-fix review follow-ups done 2026-10-04 (C-028, reviewed; plus the browser width fix C-029, reviewed); M2a … M2-fix released as v0.9.0; next: M2c-2 large-mailbox measurement (the user)** (M2 split into M2a/M2b/M2c) — M1c account commands done: M1c-1 account commands 2026-10-01 (v0.7.0, C-019, reviewed), M1c-2 hardening 2026-10-01 (v0.8.0, C-020, reviewed, migration applied) — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -218,15 +218,79 @@ Decisions (2026-10-01): kept as **one** assignment (sliced: DB / run + login / `
 
 ## M2 — Mailbox insight → [doc](docs/milestones/M2-insight.md)
 
-- [ ] Folder listing with special-use roles
-- [ ] `mm folders`
-- [ ] Batched fetch helpers (sizes, envelopes) with bounded memory
-- [ ] `stats.ts` aggregations (folder, sender, domain, year, largest) + Gmail `\All` de-dup + tests
-- [ ] Quota (when supported)
-- [ ] `mm stats` (table + `--json`, progress)
-- [ ] Measure on a large mailbox; decide on local cache need
-- [ ] Logging: `stats.finish`, `imap.capability-fallback` (docs/LOGGING.md catalog + canary test)
-- **Acceptance:** counts match webmail; totals within rounding; Gmail not double-counted; memory bounded.
+Split 2026-10-01 (with the user): M2a folder tree → M2b interactive browser → M2c stats. Show all folders. The delete "double check" is a local basket that feeds the M4 flow; a server-side review folder may come later in M4 as an opt-in mode.
+
+### M2a — Folder tree + `mm folders` (read-only)
+
+- [x] Docs: M2 doc split into M2a/M2b/M2c; TODO; M4 basket note; LOGGING catalog (`folders.list`, `imap.capability-fallback` now; `browse.finish`, `stats.finish` planned); CLAUDE.md state
+- [x] Core `src/core/mailbox/folders.ts`: LIST (all folders, unsubscribed ones included and marked) + special-use role + `\Noselect` + tree by delimiter; counts via LIST-STATUS/STATUS (messages, unseen); size via `STATUS=SIZE`, otherwise read-only (EXAMINE) batched `UID FETCH RFC822.SIZE`, marked "approx."; at most 5,000 folders (note when cut)
+- [x] Quota via GETQUOTA when `QUOTA` is supported, otherwise none → "approx. sum of folders"
+- [x] Gmail: `\All` = total source, label folders flagged "overlapping", Trash/Spam shown separately; totals never double-count
+- [x] Folder names from the server are untrusted: control/bidi characters stripped on display; a folder whose STATUS fails shows "—" and the rest still lists
+- [x] `withAccountSession` in `src/core/accounts.ts` (one guarded login → fn → logout; reused by M2b/M2c)
+- [x] `mm folders [id] [--json] [--no-size]`: id optional when exactly one mailbox is saved (named in the output); indented tree (role, messages, unread, size, "(hidden)" for unsubscribed), totals + quota line; progress on stderr while sizing; versioned JSON
+- [x] Logging: `folders.list` (acct, folders, ms, outcome/reason), `imap.capability-fallback` (feature, fallback; once per run) + catalog + canary test
+- [x] Tests: fake-client unit tests (tree, roles, Gmail, size-fallback batches, quota missing, hostile names, folder cap, STATUS failure); integration: `mm-test` counts/bytes = manifest (assert on `mm-test` only)
+- **Acceptance:** counts match webmail; `mm-test` = manifest (150 messages, seen count, bytes); Gmail not double-counted; size-fallback memory bounded.
+
+### M2b — Interactive folder browser (needs M2a)
+
+A full-terminal view (like `less`/`htop`, inside the terminal — not a desktop or HTML app). Split 2026-10-01 (with the user): M2b-1 browser core → M2b-2 terminal. Decided: own raw-mode loop on `node:readline` (no new dependency; replaces the `@inquirer/core` idea), mails newest **arrived** first (sequence order; date sort stays in "Later"), quitting with marks asks first.
+
+#### M2b-1 — Browser core (no visible change yet)
+
+- [x] Docs: M2 doc (M2b-1/M2b-2 split, raw-mode loop instead of `@inquirer/core`, arrival order, quit confirm, cache/paging rules); TODO
+- [x] Core `src/core/mailbox/messages.ts`: `openFolder` (EXAMINE → UIDVALIDITY + message count snapshot) and `loadPage` (newest arrived first by sequence, 200 per page: UID, received date, envelope from/subject, RFC822.SIZE, attachment marker from BODYSTRUCTURE); never sets `\Seen`; folder changed on the server (count or UIDVALIDITY differs) → reported so the caller reloads; a folder that can't be opened → `MailboxError('folder-unavailable')`, connection drop → `connection-lost`
+- [x] Basket `src/core/mailbox/basket.ts`: marks = folder + UIDVALIDITY + UID + bytes, toggle, running count/size, UIDVALIDITY change clears that folder's marks (reported); M4 acts on it later
+- [x] State reducer `src/cli/browser/state.ts` (pure, returns effects for the shell to run): ↑/↓ PgUp/PgDn, Enter opens a folder, Backspace/← back, Space toggles the mark on a mail (on a folder: hint "only mails can be marked"), `a` toggles every mail on the visible screen, `q`/Esc quit (with marks: "Quit and drop N marks? (y/N)"); subfolders first, then mails; at most 5 pages (1,000 mails) of the open folder cached, sliding, evicted pages reloaded; going back drops the folder's mails; load errors → status message, connection lost → "Connection closed - reconnect? (y/N)" state (N keeps browsing what is loaded)
+- [x] Renderer `src/cli/browser/render.ts` (pure: state + rows/cols → lines): header path + folder total, folder rows (messages, size), mail rows (received date, from, subject, size, attachment marker, mark), status bar "marked: N mails, X MB" + key help; every server string sanitised and cut to the width; "window too small" below a minimum size. Mail data is displayed only — never stored or logged
+- [x] Tests: messages core with a fake client (paging ranges, newest first, short last page, empty folder, changed folder, open failure, connection drop, read-only lock, hostile strings untouched in core); basket; reducer (navigation, paging/eviction, marks, `a` toggle, UIDVALIDITY change, quit confirm, reconnect state); renderer (widths, truncation, sanitising, too small)
+- **Acceptance:** lint, typecheck, tests, build, format:check green; no command changes behaviour yet.
+
+#### M2b-2 — Terminal browser + `mm folders` switch (needs M2b-1)
+
+Rewritten 2026-10-02 with the user (`/next`): tree printed before the browser, no offline nagging (`r` reconnects), four review follow-ups folded in.
+
+- [x] Core `openAccountSession(deps, account)` in `src/core/accounts.ts`: one guarded login with the saved password, the caller logs out; `withAccountSession` built on it (the browser keeps its session open; a reconnect is one more call)
+- [x] Terminal `src/cli/browser/terminal.ts`: raw mode + alternate screen, cursor hidden, line wrap off, full-frame redraw (cursor row in reverse video), clear + redraw on resize; idempotent restore on `q`, Ctrl+C, an error, SIGTERM (exit 143), SIGHUP (exit 129) and any process exit; a crash restores the screen before "Unexpected error" is printed
+- [x] Controller `src/cli/browser/controller.ts`: keys → reducer → effects (load = `loadPage` on the current session; reconnect = log out the old session + one new guarded login, never automatic; quit); Ctrl+C (a key in raw mode) ends at once in every mode, also `reconnecting` and "window too small"
+- [x] Reconnect: the login guard's challenge wait is an ASCII status notice ("Several wrong passwords - waiting 5 seconds before trying again.") instead of stderr; a failed reconnect shows "Couldn't reconnect - showing what is loaded. Details after you quit." and the full login text (as `mm account test` prints it) goes to stderr after the screen is restored; entering `reconnecting` and `reconnected` clear the message, `reconnecting` shows a text message when one is set
+- [x] Offline (after N): moving over unloaded rows shows "not loaded (offline)" without asking again; only opening a folder asks; new key `r` reconnects (offline only); status "Offline - showing what is loaded (r = reconnect)."
+- [x] `mm folders`: stdin + stdout a terminal and neither `--plain` (new) nor `--json` → listing as today (progress, `folders.list`), the M2a tree printed, then the browser on the same session; `--no-size` hides the browser's folder size column; otherwise the M2a output unchanged. After `q`/Ctrl+C one line on stdout: "Folder browser closed — nothing was changed on the server." or "Folder browser closed — 12 marks (4.1 MB) dropped, nothing was changed on the server."; exit 0 (`q`), 130 (Ctrl+C); an error → screen restored, its text, exit 1
+- [x] Logging: `browse.finish` (app; `acct`, `folders` opened, `mails` loaded, `marked`, `bytes` (marked, known sizes), `reconnects`, `ms`, `outcome` ok/interrupted/failed, `reason?` failed only) — once per browser run, also on Ctrl+C, signals and failures, written before `command.finish`; none when the browser never opened — + LOGGING catalog + M2 doc + `mm logs` text + canary; no names, subjects or addresses
+- [x] Review follow-ups: emoji + spacing-marks width overflow (C-023 MEDIUM, `width.ts`); sender column at least 8 wide (C-024; the subject shrinks); short too-small text "Too small - need 40x8" below 37 columns (C-025); stale doc texts (old `—` screen texts in the M2 doc/TODO, the NOOP-refreshes-UIDVALIDITY claim, the M2a section's doubled bullet and quota stand-in line)
+- [x] Tests: terminal with fake streams/process (escape sequences, raw mode off, idempotent restore, signal/exit/crash paths, resize); controller with a fake terminal + fake session (loads, stale results, reconnect y/N/failure/challenge notice, `r`, Ctrl+C in every mode, an error → restore); `mm folders` (TTY → tree + browser + summary + exit codes + `browse.finish`; `--plain`, `--json`, no TTY → M2a output and the terminal never touched; existing tests pinned to non-TTY); reducer/renderer/width changes; `browse.finish` builder/schema/text/canary
+- **Acceptance:** manual walk in a real terminal (screen restored after `q`, Ctrl+C and `kill -TERM`; resize; reconnect after the 5-minute idle timeout; opened mails still unread in webmail; `mm logs` shows `browse.finish` without names); lint, typecheck, tests, build, format:check green.
+
+### M2c — `mm stats` (needs M2a)
+
+Split 2026-10-02 with the user (`/next`): M2c-1 the command, M2c-2 measuring on a large mailbox. Per-folder table kept; Trash/Spam included in every stat. Implement M2c-1 right after M2b-2 is done (agreed 2026-10-02).
+
+#### M2c-1 — `mm stats` (read-only)
+
+- [x] Shared batched fetch `scanFolder` (`src/core/mailbox/scan.ts`): read-only lock (EXAMINE), sequence ranges of 5,000, each message streamed to a callback (no batch or message list kept); M2a's size fallback reuses it
+- [x] Core `src/core/mailbox/stats.ts`, one streaming pass (UID, ENVELOPE, INTERNALDATE, RFC822.SIZE): totals; per folder (messages, bytes); per year (INTERNALDATE in a given time zone, missing → "unknown"); top 10 senders (lowercased address; none → "(no address)") and top 10 domains, by count and by size; 10 largest mails (folder, date, from, subject, size). At most 50,000 distinct senders/domains kept: later new ones go to "others" and the lists say "approximate". An unreadable folder is skipped and counted; a dropped connection → `MailboxError('connection-lost')`
+- [x] Scope: all selectable folders incl. Trash/Spam; Gmail: All Mail + Trash + Spam only (labels are in All Mail → no double count); Gmail with All Mail hidden from IMAP → plain message + hint (show it in IMAP, or `--folder`); `--folder <path>` = that one folder (unknown / not selectable → error text)
+- [x] `mm stats [id] [--folder X] [--json]`: id optional with one saved mailbox; one guarded login; progress on stderr (TTY only); text report (sizes "approx.", RFC822.SIZE ≠ quota); versioned JSON
+- [x] Logging: `stats.finish` (`acct`, `folders`, `messages`, `bytes`, `ms`, `outcome`, `reason?`) + catalog + `mm logs` text + canary — never senders, domains, subjects or folder names
+- [x] Tests: scan helper (batches, M2a size fallback unchanged); aggregation fixtures (years + time zone, senders/domains, no address, cap → approximate, largest 10, Gmail scope); command (text, `--json`, `--folder`, errors, progress, nothing private in the log); integration: `mm-test` totals / per year / per domain = manifest
+- **Acceptance:** `mm-test` = manifest (150 messages, bytes, per year, per domain); Gmail not double-counted; memory bounded (no per-message list kept); `mm stats --json | jq` parses; lint, typecheck, tests, build, format:check green.
+
+#### M2-fix — Review follow-ups from C-026 / C-027 (before M2c-2)
+
+The three MEDIUM findings of the 2026-10-03 review (`.claude/changes.md`, Review notes of C-026 and C-027). Added 2026-10-04 with the user (`/next`).
+
+- [x] `mm stats` short read: a folder whose scan ends without an error but with fewer messages counted than the folder holds (imapflow gives up on a throttled FETCH after 4 retries and returns nothing) is marked like a failed one — "(partial)" with its counts kept, or `—` when nothing was counted — and the first line's "read only partly" / "couldn't be read" notes count it. `collectStats` compares the messages that passed its FETCH filter with the folder's message count from EXAMINE
+- [x] `mm folders` size fallback (same gap, M2a): a folder whose summed FETCH returns fewer sizes than it has messages gets size `—` and counts as "couldn't be read", instead of a too-small `~size`
+- [x] `mm stats --folder`: when no folder has exactly that path, take the one folder whose path without invisible characters (as `mm folders --json` / `mm stats --json` print it) equals the given value; none or more than one → the `folder-not-found` text as today; the exact path still wins. M2 doc updated
+- [x] Browser width (`src/cli/browser/width.ts`): a skin-tone modifier (U+1F3FB–1F3FF) counts 2 columns unless it directly follows an emoji that takes a skin tone (`👍🏽` stays 2), so a chain of modifiers is cut by `fit` like any long text
+- [x] Tests: `collectStats` with an empty range, a short range and nothing at all (no error); the size fallback's short read; `statsScope` / `mm stats --folder` with ZWNJ, a ZWJ emoji, a soft hyphen, an ambiguous pair and exact-wins; width pins for modifier chains, the existing width values unchanged
+- **Acceptance:** the three repros from the review no longer reproduce; lint, typecheck, tests, build, format:check green.
+
+#### M2c-2 — Measure on a large mailbox (the user runs it; needs M2c-1)
+
+- [ ] `mm stats` on a mailbox with ≥100k messages: time, peak memory (`/usr/bin/time -v`), totals vs. webmail/quota
+- [ ] Decide on the local metadata cache (SQLite, TODO "Later") from those numbers
 
 ## M3 — Filters & search → [doc](docs/milestones/M3-filters-search.md)
 
@@ -256,6 +320,8 @@ Decisions (2026-10-01): kept as **one** assignment (sliced: DB / run + login / `
 - [ ] Trash selection: candidate scan, root ranking, always shown, saved on account + migration (IMAP.md §6.5)
 - [ ] Decide: guarded plain EXPUNGE for servers without MOVE/UIDPLUS (IMAP.md §6.3 B; proposal: no)
 - [ ] Gmail handling (label vs delete, `\Trash`, plan = standard ∩ `X-GM-RAW`)
+- [ ] Basket from the M2b browser → delete plan (same notices → full list → two confirmations → Trash flow) — the default double check (confirmed 2026-10-01)
+- [ ] Optional review folder (opt-in, later in M4): move the planned mails to a dedicated server folder first; local record of each mail's origin + `mm restore`; MOVE + UIDPLUS servers only; not Gmail; emptying uses the same confirm flow (design: M4 doc)
 - **Acceptance:** exact UIDs only; abort on UIDVALIDITY change; no folder-wide expunge; resume works; audit correct.
 
 ## M5 — Backup / export → [doc](docs/milestones/M5-backup.md)
@@ -295,6 +361,8 @@ Decisions (2026-10-01): kept as **one** assignment (sliced: DB / run + login / `
 - `mm login` session check should fail closed (M1c-2 security audit, 2026-10-01): today a corrupt, unreadable (e.g. root-owned after `sudo mm login`) or non-JSON `session.json` counts as "no session" and login overwrites it without revoking anything. Only a missing file or `{}` should count as empty; anything else → "run `mm logout` first" (`logout` already clears it). Also re-check `isEmpty()` right before `signInWithPassword` (two parallel logins both pass the check). Related: `mm logout` while offline clears the local file but can't revoke the server token and still says "Logged out" — say so ("logged out on this computer only"); a relative `MM_CONFIG_DIR`/`XDG_CONFIG_HOME` should be refused (zod absolute path).
 - Database setup without getting stuck (from 2026-09-29): today `mm doctor` only reports a missing table ("run npm run db:push"); automate or guide it (e.g. detect pending migrations and explain the one command, or apply them from a setup step) so non-technical users never hit a missing-table error
 - Auth audit log retention: scheduled cleanup of `auth.audit_log_entries` older than 90 days (decided 2026-09-29; M6/M7 hosting)
+- App shell (after M3, decided 2026-10-01): plain `mm` opens a home screen (accounts → folders → mails → stats/search) reusing the M2b screens; scripted commands stay
+- Sort mails in the M2b browser (with M3 filters)
 - Local metadata index (SQLite) for instant filtering on huge mailboxes
 - Encrypted backup archives
 - Hosted beta (M7) — after GDPR prerequisites (see docs/SECURITY.md); hosted observability from docs/LOGGING.md: log service (Vercel Log Drain / VPS shipper), error tracking (EU region), uptime, alerting, logs in the GDPR record of processing

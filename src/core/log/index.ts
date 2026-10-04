@@ -8,6 +8,7 @@ export * from './file-event-log.js';
 export * from './files.js';
 export * from './guard-events.js';
 export * from './health.js';
+export * from './mailbox-events.js';
 export * from './reader.js';
 export * from './record.js';
 export * from './schema.js';

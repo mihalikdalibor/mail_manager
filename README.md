@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.8.0-blue?style=flat-square" alt="Version 0.8.0">
+  <img src="https://img.shields.io/badge/version-0.9.0-blue?style=flat-square" alt="Version 0.9.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.7.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist, plus local leak-free logging (every command leaves app log lines in `<config dir>/logs/`; logins and the login guard write security lines — see [docs/LOGGING.md](docs/LOGGING.md)); mailbox accounts (`mm account add / list / test / update-password / remove`) with the password encrypted and bound to the mailbox's server. See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.9.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist, plus local leak-free logging (every command leaves app log lines in `<config dir>/logs/`; logins and the login guard write security lines — see [docs/LOGGING.md](docs/LOGGING.md)); mailbox accounts (`mm account add / list / test / update-password / remove`) with the password encrypted and bound to the mailbox's server; and a read-only look inside a mailbox: `mm folders` (the folder tree with messages, unread, sizes and quota, plus a folder and mail browser in a terminal) and `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails). See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -29,6 +29,8 @@ Available today:
 - **`mm login` / `mm logout` / `mm whoami`** — sign in to the app (invite-only Supabase users, hidden password prompt); `mm login` while already signed in asks you to run `mm logout` first.
 - **`mm discover <email>`** — finds the IMAP settings for an address without logging in: built-in presets for 24 SK/CZ and global providers (by email domain or the domain's MX records), Mozilla ISPDB, the domain's autoconfig, DNS SRV; if nothing is found, pick your provider from the list or enter the IMAP host manually. Plain-language hints for typos, DNS problems and no internet.
 - **`mm account add | list | test | update-password | remove`** — connect a mailbox: settings are discovered (or picked), the password is tested through the login guard and saved encrypted, bound to that server; mailboxes are named by the short id `mm account list` shows. Nothing is saved when the login fails.
+- **`mm folders [id]`** — the folder tree of a saved mailbox: messages, unread, sizes and quota (`--json`, `--plain`, `--no-size`); in a terminal it then opens a read-only folder and mail browser — nothing on the server changes.
+- **`mm stats [id]`** — where the space goes: totals, per folder, per year, top senders and domains, the largest mails (`--folder <path>`, `--json`); read-only.
 - **`mm logs`** — what this computer's `mm` runs did, in plain words and local time (`--since 7d`, `--level warn`, `--security`, `--run <id>`); `--json` gives validated records that are safe to send to support. Tampered log lines are skipped and counted, never printed. `mm logs path` shows the folder, `mm logs clear` deletes the log files after a confirmation.
 
 What it looks like in the terminal (email, user ID and project ref replaced with placeholders):
@@ -92,7 +94,7 @@ npm run build && npm link
 mm --help
 ```
 
-Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`, `mm logs` (what this computer's runs did, in plain words: `mm logs --since 7d`, `--security`, `--json` for support; `mm logs path`, `mm logs clear`), `mm account add / list / test / update-password / remove` (connect and manage mailboxes; `mm --help` shows a getting-started list).
+Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`, `mm logs` (what this computer's runs did, in plain words: `mm logs --since 7d`, `--security`, `--json` for support; `mm logs path`, `mm logs clear`), `mm account add / list / test / update-password / remove` (connect and manage mailboxes; `mm --help` shows a getting-started list), `mm folders` (the folder tree with messages, unread, sizes and quota; in a terminal, a read-only folder and mail browser), `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails; `--folder <path>`, `--json`).
 
 ### Environment
 

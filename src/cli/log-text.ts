@@ -167,6 +167,45 @@ function accountText(r: LogRecord): string {
   return `${texts.failed} ${provider}: ${words(str(r, 'reason'))}`;
 }
 
+const FALLBACK_TEXT: Record<string, string> = {
+  'status-size': 'server reports no folder sizes — summed message sizes instead',
+  quota: 'server reports no quota — quota not available',
+  'list-status': 'server has no LIST-STATUS — asked each folder separately',
+};
+
+/** `folders listed: 12 in 0.3 s`, `folder listing failed: connection lost` — never names. */
+function foldersText(r: LogRecord): string {
+  if (str(r, 'outcome') === 'ok') {
+    return `folders listed: ${num(r, 'folders')} in ${duration(num(r, 'ms'))}`;
+  }
+  return `folder listing failed: ${words(str(r, 'reason'))}`;
+}
+
+/**
+ * `folder browser: 3 folders opened, 400 mails loaded, 12 marked, 1 reconnect in 2.3 s`
+ * (`folder browser interrupted: …`, `folder browser failed: connection lost`) — never names.
+ */
+function browseText(r: LogRecord): string {
+  const outcome = str(r, 'outcome');
+  if (outcome === 'failed') return `folder browser failed: ${words(str(r, 'reason'))}`;
+  const label = outcome === 'interrupted' ? 'folder browser interrupted' : 'folder browser';
+  const counts = [
+    `${plural(num(r, 'folders'), 'folder', 'folders')} opened`,
+    `${plural(num(r, 'mails'), 'mail', 'mails')} loaded`,
+    `${num(r, 'marked')} marked`,
+    plural(num(r, 'reconnects'), 'reconnect', 'reconnects'),
+  ];
+  return `${label}: ${counts.join(', ')} in ${duration(num(r, 'ms'))}`;
+}
+
+/** `mailbox stats: 12 folders, 45210 messages read in 41.0 s`, `mailbox stats failed: …` — never names. */
+function statsText(r: LogRecord): string {
+  if (str(r, 'outcome') !== 'ok') return `mailbox stats failed: ${words(str(r, 'reason'))}`;
+  const folders = plural(num(r, 'folders'), 'folder', 'folders');
+  const messages = plural(num(r, 'messages'), 'message', 'messages');
+  return `mailbox stats: ${folders}, ${messages} read in ${duration(num(r, 'ms'))}`;
+}
+
 /** One event in plain words, from its real fields only (never ids, IPs or targets). */
 function rawEventText(r: LogRecord, timeZone?: string): string {
   const event = r.event as LogEventName;
@@ -223,6 +262,14 @@ function rawEventText(r: LogRecord, timeZone?: string): string {
     case 'account.password-update':
     case 'account.remove':
       return accountText(r);
+    case 'folders.list':
+      return foldersText(r);
+    case 'imap.capability-fallback':
+      return FALLBACK_TEXT[str(r, 'feature')] ?? 'server feature missing — fallback used';
+    case 'browse.finish':
+      return browseText(r);
+    case 'stats.finish':
+      return statsText(r);
     default:
       return unknownEvent(event);
   }

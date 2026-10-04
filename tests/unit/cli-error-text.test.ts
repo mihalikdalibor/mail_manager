@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { errorText } from '../../src/cli/error-text.js';
+import { errorText, isUserFacing } from '../../src/cli/error-text.js';
 import { imapErrorText } from '../../src/cli/imap-errors.js';
 import { loginBlockedText } from '../../src/cli/login-guard-text.js';
 import { AuthError } from '../../src/core/auth.js';
@@ -8,6 +8,7 @@ import { CredentialError } from '../../src/core/credentials.js';
 import { CryptoError } from '../../src/core/crypto.js';
 import { RepoError } from '../../src/core/db/repos.js';
 import { IMAP_FAILURE_REASONS, ImapSessionError } from '../../src/core/imap/errors.js';
+import { MailboxError, type MailboxErrorCode } from '../../src/core/mailbox/errors.js';
 import { DiscoveryInputError } from '../../src/core/providers/email.js';
 import type { BlockKind } from '../../src/core/security/events.js';
 import { LoginBlockedError } from '../../src/core/security/login-guard.js';
@@ -100,5 +101,38 @@ describe('errorText — LoginBlockedError', () => {
 
   it('a look-alike LoginBlockedError (plain object) → Unexpected error', () => {
     expect(errorText({ name: 'LoginBlockedError', kind: 'permanent' })).toBe(UNEXPECTED);
+  });
+});
+
+describe('errorText — MailboxError (M2a)', () => {
+  it.each<[MailboxErrorCode, string]>([
+    [
+      'connection-lost',
+      'The connection to the mail server was lost while reading folders — try again.',
+    ],
+    ['list-failed', 'The mail server could not list the folders — try again later.'],
+    [
+      'folder-unavailable',
+      'The mail server could not open this folder — it may have been deleted or renamed. Go back and try again.',
+    ],
+    [
+      'folder-not-found',
+      'There is no folder with that path in this mailbox — use the full path from `mm folders --json` (e.g. "INBOX.Sent" or "[Gmail]/Sent Mail").',
+    ],
+    [
+      'gmail-all-hidden',
+      'Gmail hides "All Mail" from IMAP for this account, so the totals can\'t be counted without double counting labels. Turn on "Show in IMAP" for All Mail in Gmail\'s settings (Labels), or pick one folder with --folder.',
+    ],
+  ])('%s → its own text, never the generic login text', (code, text) => {
+    const err = new MailboxError(code);
+    expect(isUserFacing(err)).toBe(true);
+    expect(errorText(err)).toBe(text);
+    expect(errorText(err)).not.toBe(imapErrorText('auth-failed', { kind: 'this-computer' }));
+  });
+
+  it('a look-alike MailboxError (plain object with a code) → Unexpected error', () => {
+    const fake = { name: 'MailboxError', code: 'list-failed', message: CANARY };
+    expect(isUserFacing(fake)).toBe(false);
+    expect(errorText(fake)).toBe(UNEXPECTED);
   });
 });

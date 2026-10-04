@@ -33,6 +33,10 @@ const APP_EVENTS = [
   'account.test',
   'account.password-update',
   'account.remove',
+  'folders.list',
+  'imap.capability-fallback',
+  'browse.finish',
+  'stats.finish',
 ] as const;
 const SECURITY_EVENTS = [
   'auth.login',
@@ -83,7 +87,7 @@ describe('constants', () => {
     expect(SECURITY_PREFIX).toBe('mm-security ');
   });
 
-  it('lists exactly the M1b-4a, M1b-4b, M1b-4d and M1c-1 events', () => {
+  it('lists exactly the M1b-4a, M1b-4b, M1b-4d, M1c-1, M2a, M2b-2 and M2c-1 events', () => {
     expect([...LOG_EVENT_NAMES].sort()).toEqual([...APP_EVENTS, ...SECURITY_EVENTS].sort());
   });
 
@@ -102,6 +106,31 @@ describe('constants', () => {
     ] as const) {
       expect(EVENT_FIELDS[name]).toEqual(['acct', 'provider', 'outcome', 'reason']);
     }
+    expect(EVENT_FIELDS['folders.list']).toEqual(['acct', 'folders', 'ms', 'outcome', 'reason']);
+    expect(EVENT_FIELDS['imap.capability-fallback']).toEqual(['feature', 'fallback']);
+    expect(EVENT_KIND['imap.capability-fallback']).toBe('app');
+    expect(EVENT_FIELDS['browse.finish']).toEqual([
+      'acct',
+      'folders',
+      'mails',
+      'marked',
+      'bytes',
+      'reconnects',
+      'ms',
+      'outcome',
+      'reason',
+    ]);
+    expect(EVENT_KIND['browse.finish']).toBe('app');
+    expect(EVENT_FIELDS['stats.finish']).toEqual([
+      'acct',
+      'folders',
+      'messages',
+      'bytes',
+      'ms',
+      'outcome',
+      'reason',
+    ]);
+    expect(EVENT_KIND['stats.finish']).toBe('app');
     expect(EVENT_FIELDS['discover.finish']).toEqual([
       'outcome',
       'source',
