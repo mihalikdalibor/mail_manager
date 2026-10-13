@@ -45,6 +45,33 @@ export interface RunCliDeps {
   streams?: NodeJS.EventEmitter[];
   /** Package root for relative stack frames. */
   root?: string;
+  /** stdin and stdout are a terminal (TERM not `dumb`): plain `mm` then opens the app. */
+  interactive?: boolean;
+}
+
+/** The command plain `mm` runs in a terminal. */
+export const DEFAULT_COMMAND = 'app';
+
+/**
+ * True when the app can be shown: stdin and stdout are both a terminal and TERM isn't `dumb`.
+ * Only a strict `true` counts for `isTTY` (a pipe or a file leaves it undefined).
+ */
+export function isInteractive(
+  stdin: { isTTY?: unknown },
+  stdout: { isTTY?: unknown },
+  env: EnvSource,
+): boolean {
+  return stdin.isTTY === true && stdout.isTTY === true && env['TERM'] !== 'dumb';
+}
+
+/**
+ * The argv to parse: `mm` alone in a terminal becomes `mm app`. With any argument, or without
+ * a terminal, the argv is untouched - an unknown command, `--help` and plain `mm` in a script
+ * behave as they always did. (A commander root action would turn "unknown command" into "too
+ * many arguments".)
+ */
+export function withDefaultCommand(argv: readonly string[], interactive: boolean): string[] {
+  return interactive && argv.length === 2 ? [...argv, DEFAULT_COMMAND] : [...argv];
 }
 
 /** number → itself; numeric string → number; anything else → 0 (Node's default). */
@@ -188,7 +215,7 @@ export async function runCli(deps: RunCliDeps): Promise<void> {
   try {
     await deps
       .build({ log, run: deps.ctx.run, onCommandStart: (cmd, opts) => logger.start(cmd, opts) })
-      .parseAsync(deps.argv);
+      .parseAsync(withDefaultCommand(deps.argv, deps.interactive === true));
   } catch (err) {
     if (err instanceof CommanderError) {
       // Only with exitOverride: commander already printed its own message.

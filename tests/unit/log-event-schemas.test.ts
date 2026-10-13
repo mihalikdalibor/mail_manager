@@ -32,6 +32,7 @@ import {
   imapLoginFailed,
   parseLogLine,
   renderEvent,
+  searchFinish,
   statsFinish,
   toRecord,
   unexpectedError,
@@ -505,9 +506,17 @@ describe('validateRecord: round trip over every builder', () => {
         ms: 41_000,
         outcome: 'ok',
       }),
+      'search.finish': searchFinish({
+        acct: ACCT,
+        count: 3,
+        bytes: 300,
+        ms: 5,
+        criteria: ['from'],
+        outcome: 'ok',
+      }),
     };
     expect(Object.keys(samples).sort()).toEqual([...LOG_EVENT_NAMES].sort());
-    expect(LOG_EVENT_NAMES).toHaveLength(22);
+    expect(LOG_EVENT_NAMES).toHaveLength(23);
     for (const name of LOG_EVENT_NAMES) roundTrip(samples[name]);
   });
 });

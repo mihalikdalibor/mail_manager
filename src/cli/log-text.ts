@@ -1,5 +1,11 @@
 import type { LogLevel } from '../core/config.js';
-import type { InterruptedRun, LogEventName, LogRecord, ReadResult } from '../core/log/index.js';
+import type {
+  InterruptedRun,
+  LogEventName,
+  LogFolderStatus,
+  LogRecord,
+  ReadResult,
+} from '../core/log/index.js';
 
 // Plain text for `mm logs`. Records come from the reader already validated field by field;
 // every printed string still goes through sanitize() — a log file is untrusted input, and a
@@ -11,6 +17,14 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const CMD_WIDTH = 12;
 const CMD_WIDTH_MAX = 32;
+
+/** Why the log folder can't be read, for `mm logs` and the app (a missing one is "no logs yet"). */
+export const LOG_FOLDER_PROBLEM: Partial<Record<LogFolderStatus, string>> = {
+  'not-a-folder':
+    "The log folder is a link or a file, not a folder, so nothing is logged or read. Check it with 'mm logs path' and 'mm doctor'.",
+  unreadable:
+    "Can't read the log folder — check its permissions ('mm logs path' shows where it is).",
+};
 
 // C0/C1 controls and DEL, soft hyphen, the Arabic letter mark, the Mongolian vowel separator,
 // zero-width and bidi marks/embeddings/overrides/isolates, line/paragraph separators, word
@@ -206,6 +220,18 @@ function statsText(r: LogRecord): string {
   return `mailbox stats: ${folders}, ${messages} read in ${duration(num(r, 'ms'))}`;
 }
 
+/**
+ * `mail filter: 37 mails found in 1.2 s (from, larger)`, `mail filter failed: …` — never values.
+ */
+function searchText(r: LogRecord): string {
+  if (str(r, 'outcome') !== 'ok') return `mail filter failed: ${words(str(r, 'reason'))}`;
+  const v = r['criteria'];
+  const names = Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  const found = plural(num(r, 'count'), 'mail', 'mails');
+  const used = names.length > 0 ? names.join(', ') : 'no criteria';
+  return `mail filter: ${found} found in ${duration(num(r, 'ms'))} (${used})`;
+}
+
 /** One event in plain words, from its real fields only (never ids, IPs or targets). */
 function rawEventText(r: LogRecord, timeZone?: string): string {
   const event = r.event as LogEventName;
@@ -270,6 +296,8 @@ function rawEventText(r: LogRecord, timeZone?: string): string {
       return browseText(r);
     case 'stats.finish':
       return statsText(r);
+    case 'search.finish':
+      return searchText(r);
     default:
       return unknownEvent(event);
   }
@@ -319,6 +347,11 @@ export interface ReportOptions {
   /** `--level` as given; only used for wording (hint, empty message). */
   level?: LogLevel;
   timeZone?: string;
+  /**
+   * What the "older lines not shown" footer points to: the flags of `mm logs` (default), or the
+   * keys of the app's logs screen.
+   */
+  narrowWith?: 'flags' | 'keys';
 }
 
 /** `24 h`, `30 min`, `7 days`. */
@@ -339,16 +372,19 @@ export function reportFooters(result: ReadResult, opts: ReportOptions): string[]
     );
   }
   if (result.omitted > 0) {
-    // Only flags that would narrow further: not the ones already given.
-    const flags = ['--since'];
-    if (opts.level !== 'error') flags.push('--level');
-    if (opts.securityOnly !== true) flags.push('--security');
-    if (opts.run === undefined) flags.push('--run');
-    const list =
-      flags.length === 1 ? flags.join('') : `${flags.slice(0, -1).join(', ')} or ${flags.at(-1)}`;
-    lines.push(
-      `${plural(result.omitted, 'older line', 'older lines')} not shown — narrow with ${list}`,
-    );
+    const older = `${plural(result.omitted, 'older line', 'older lines')} not shown`;
+    if (opts.narrowWith === 'keys') {
+      lines.push(`${older} - choose a shorter time or a filter (s, w)`);
+    } else {
+      // Only flags that would narrow further: not the ones already given.
+      const flags = ['--since'];
+      if (opts.level !== 'error') flags.push('--level');
+      if (opts.securityOnly !== true) flags.push('--security');
+      if (opts.run === undefined) flags.push('--run');
+      const list =
+        flags.length === 1 ? flags.join('') : `${flags.slice(0, -1).join(', ')} or ${flags.at(-1)}`;
+      lines.push(`${older} — narrow with ${list}`);
+    }
   }
   if (result.skippedFiles > 0) {
     lines.push(

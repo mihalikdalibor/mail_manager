@@ -134,7 +134,7 @@ function rankedSections(what: 'SENDERS' | 'DOMAINS', r: RankedStats): string[][]
   ];
 }
 
-function dateFormatter(timeZone: string): Intl.DateTimeFormat {
+export function dateFormatter(timeZone: string): Intl.DateTimeFormat {
   const options: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit' };
   try {
     return new Intl.DateTimeFormat('en-US', { ...options, timeZone });
@@ -144,7 +144,7 @@ function dateFormatter(timeZone: string): Intl.DateTimeFormat {
 }
 
 /** `YYYY-MM-DD` in the zone; `-` when unknown or outside the years PER YEAR counts. */
-function dayText(date: Date | null, format: Intl.DateTimeFormat): string {
+export function dayText(date: Date | null, format: Intl.DateTimeFormat): string {
   if (date === null || !Number.isFinite(date.getTime())) return '-';
   const parts: Record<string, string> = {};
   for (const p of format.formatToParts(date)) parts[p.type] = p.value;

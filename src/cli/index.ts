@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { NullEventLog, type EventLog } from '../core/log/index.js';
 import { registerAccount } from './commands/account.js';
+import { registerApp } from './commands/app.js';
 import { registerAuth } from './commands/auth.js';
 import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
@@ -73,6 +74,7 @@ export function buildProgram(options: BuildOptions = {}): Command {
     log: options.log ?? new NullEventLog(),
     ...(options.run !== undefined && { run: options.run }),
   };
+  registerApp(program, ctx);
   registerAuth(program, ctx);
   registerKeygen(program);
   registerDoctor(program, ctx);
@@ -84,6 +86,8 @@ export function buildProgram(options: BuildOptions = {}): Command {
   program.addHelpText(
     'after',
     [
+      '',
+      'In a terminal, plain `mm` opens the app (sign in, your mailboxes). The commands above also work in scripts.',
       '',
       'Getting started:',
       '  1. mm login                  sign in to Mail Manager',

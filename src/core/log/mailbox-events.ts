@@ -12,12 +12,15 @@ import type {
   BrowseOutcome,
   CapabilityFallbackEvent,
   FoldersListEvent,
+  SearchFinishEvent,
   StatsFinishEvent,
 } from './events.js';
+import { CRITERIA } from '../filters/schema.js';
 import { FALLBACK_OF, type FallbackFeature } from '../mailbox/folders.js';
 
-// Builders for the mailbox insight events (M2a, M2b-2, M2c-1). Like the other builders they allowlist every
-// field: an account UUID, counts and fixed codes — never folder names, the address or host.
+// Builders for the mailbox insight events (M2a, M2b-2, M2c-1) and the filter search (M3a). Like the
+// other builders they allowlist every field: an account UUID, counts, criterion names and fixed
+// codes — never folder names, the address, the host or a value the user typed.
 
 export interface FoldersListFields {
   acct?: string | undefined;
@@ -96,6 +99,38 @@ export function statsFinish(f: StatsFinishFields): StatsFinishEvent {
     messages: count(f.messages),
     bytes: count(f.bytes),
     ms: Number.isFinite(f.ms) && f.ms >= 0 ? count(Math.round(f.ms)) : 0,
+    outcome,
+    ...(outcome === 'failed' && {
+      reason: oneOf(f.reason, ACCOUNT_FAILURE_REASONS, 'unexpected'),
+    }),
+  };
+}
+
+export interface SearchFinishFields {
+  acct?: string | undefined;
+  count: number;
+  bytes: number;
+  ms: number;
+  criteria: readonly string[];
+  outcome: AccountOutcome;
+  reason?: AccountFailureReason | undefined;
+}
+
+/**
+ * Once per filter search that ended: counts, bytes and the names of the criteria used. Only names
+ * from CRITERIA are kept, once each, in CRITERIA order: a value typed into the filter never lands
+ * here.
+ */
+export function searchFinish(f: SearchFinishFields): SearchFinishEvent {
+  const acct = uuidOrUndefined(f.acct);
+  const outcome = oneOf(f.outcome, ACCOUNT_OUTCOMES, 'failed');
+  return {
+    event: 'search.finish',
+    ...(acct !== undefined && { acct }),
+    count: count(f.count),
+    bytes: count(f.bytes),
+    ms: Number.isFinite(f.ms) && f.ms >= 0 ? count(Math.round(f.ms)) : 0,
+    criteria: CRITERIA.filter((name) => f.criteria.includes(name)),
     outcome,
     ...(outcome === 'failed' && {
       reason: oneOf(f.reason, ACCOUNT_FAILURE_REASONS, 'unexpected'),

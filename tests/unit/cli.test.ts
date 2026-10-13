@@ -53,6 +53,36 @@ describe('buildProgram', () => {
     expect(out.stdout).toContain('doctor');
   });
 
+  it('lists app in --help and says that plain mm opens it', async () => {
+    const { program, out } = captured();
+    await expect(program.parseAsync(['--help'], { from: 'user' })).rejects.toMatchObject({
+      code: 'commander.helpDisplayed',
+    });
+    expect(out.stdout).toMatch(/^ {2}app\b/m);
+    expect(out.stdout).toContain('Open the Mail Manager app');
+    const footer =
+      'In a terminal, plain `mm` opens the app (sign in, your mailboxes). The commands above also work in scripts.';
+    expect(out.stdout).toContain(`\n${footer}\n\nGetting started:\n`);
+    // The getting-started block itself is as it was.
+    for (const step of [
+      '  1. mm login                  sign in to Mail Manager',
+      '  2. mm discover <email>       find your mailbox settings (no password needed)',
+      '  3. mm account add <email>    connect the mailbox (asks for its password)',
+      '  4. mm account test <id>      check the login any time (ids: mm account list)',
+      '  5. mm folders [id]           see the folders: messages, unread, size, quota',
+      '  6. mm stats [id]             where the space goes: senders, years, largest mails',
+    ]) {
+      expect(out.stdout).toContain(`${step}\n`);
+    }
+  });
+
+  it('registers app as the first command, without arguments or options', () => {
+    const app = buildProgram({ exitOverride: true }).commands[0];
+    expect(app?.name()).toBe('app');
+    expect(app?.registeredArguments).toEqual([]);
+    expect(app?.options).toEqual([]);
+  });
+
   it('registers keygen and doctor subcommands', () => {
     const names = buildProgram({ exitOverride: true }).commands.map((c) => c.name());
     expect(names).toEqual(expect.arrayContaining(['keygen', 'doctor']));

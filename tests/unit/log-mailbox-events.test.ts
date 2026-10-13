@@ -85,6 +85,8 @@ const MAILBOX_CODES = [
   'folder-unavailable',
   'folder-not-found',
   'gmail-all-hidden',
+  'search-failed',
+  'too-many-matches',
 ] as const;
 
 function cast<T>(value: unknown): T {

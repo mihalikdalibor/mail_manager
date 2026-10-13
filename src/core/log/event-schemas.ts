@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { LOG_LEVELS } from '../config.js';
 import { AUDIT_ACTIONS } from '../db/repos.js';
 import type { CheckStatus } from '../doctor.js';
+import { CRITERIA, type Criterion } from '../filters/schema.js';
 import { IMAP_FAILURE_REASONS } from '../imap/errors.js';
 import { FALLBACK_OF, type FallbackFeature, type FallbackKind } from '../mailbox/folders.js';
 import type { DiscoverySource, DomainProblem } from '../providers/discover.js';
@@ -110,7 +111,31 @@ export const ACCOUNT_FAILURE_REASONS: Record<AccountFailureReason, true> = {
   'folder-unavailable': true,
   'folder-not-found': true,
   'gmail-all-hidden': true,
+  'search-failed': true,
+  'too-many-matches': true,
   unexpected: true,
+};
+/** The criterion names a `search.finish` line may list (never their values). */
+export const SEARCH_CRITERIA: Record<Criterion, true> = {
+  from: true,
+  to: true,
+  cc: true,
+  subject: true,
+  body: true,
+  text: true,
+  word: true,
+  since: true,
+  before: true,
+  olderThan: true,
+  newerThan: true,
+  larger: true,
+  smaller: true,
+  seen: true,
+  flagged: true,
+  answered: true,
+  hasAttachments: true,
+  any: true,
+  not: true,
 };
 export const FALLBACK_FEATURES: Record<FallbackFeature, true> = {
   'status-size': true,
@@ -287,6 +312,15 @@ const FIELD_SCHEMAS: {
     outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
     reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
   },
+  'search.finish': {
+    acct: uuid.optional(),
+    count: nonNegative,
+    bytes: nonNegative,
+    ms: nonNegative,
+    criteria: z.array(z.enum(keys(SEARCH_CRITERIA))).max(CRITERIA.length),
+    outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
+    reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
+  },
 };
 
 const RECORD_SCHEMAS = new Map<string, z.ZodType<Record<string, unknown>>>(
@@ -339,7 +373,8 @@ export function validateRecord(
       (name.startsWith('account.') ||
         name === 'folders.list' ||
         name === 'browse.finish' ||
-        name === 'stats.finish') &&
+        name === 'stats.finish' ||
+        name === 'search.finish') &&
       !accountConsistent(data)
     ) {
       return { skipped: 'unreadable' };
@@ -363,7 +398,10 @@ function finishConsistent(data: Record<string, unknown>): boolean {
   return data['outcome'] === expected;
 }
 
-/** The builder writes a reason only for a failed action (account, listing, browser, stats), and always for one. */
+/**
+ * The builder writes a reason only for a failed action (account, listing, browser, stats,
+ * search), and always for one.
+ */
 function accountConsistent(data: Record<string, unknown>): boolean {
   return (data['outcome'] === 'failed') === (data['reason'] !== undefined);
 }

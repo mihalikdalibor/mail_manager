@@ -1,5 +1,5 @@
 import type { ImapSession, MessagePageQuery, FetchedMessage } from '../imap/session.js';
-import { MailboxError } from './errors.js';
+import { MailboxError, SearchStopped } from './errors.js';
 import { checkOpen, count } from './guards.js';
 
 // The mails of one folder, page by page (M2b), read-only. Newest arrived first: sequence
@@ -46,7 +46,7 @@ export type PageResult =
 /** The part of ImapSession this module needs (tests pass a fake). */
 export type MessageSession = Pick<ImapSession, 'client' | 'closed'>;
 
-const PAGE_QUERY: MessagePageQuery = {
+export const PAGE_QUERY: MessagePageQuery = {
   uid: true,
   envelope: true,
   internalDate: true,
@@ -157,7 +157,7 @@ export function sender(envelope: unknown): string | null {
   return nonEmpty(first['address']) ? capped(first['address']) : null;
 }
 
-function toRow(msg: FetchedMessage): MessageRow | null {
+export function toRow(msg: FetchedMessage): MessageRow | null {
   const seq = positive(msg.seq);
   const uid = positive(msg.uid);
   if (seq === null || uid === null) return null;
@@ -188,7 +188,7 @@ function snapshotOf(session: MessageSession, path: string): FolderSnapshot {
  * Runs `fn` with the folder EXAMINEd and its snapshot read after a NOOP; the lock is released
  * afterwards. A closed connection → `connection-lost`; any other failure → `folder-unavailable`.
  */
-async function withFolder<T>(
+export async function withFolder<T>(
   session: MessageSession,
   path: string,
   fn: (snapshot: FolderSnapshot) => Promise<T>,
@@ -206,6 +206,7 @@ async function withFolder<T>(
     await client.noop();
     return await fn(snapshotOf(session, path));
   } catch (err) {
+    if (err instanceof SearchStopped) throw err;
     checkOpen(session);
     if (err instanceof MailboxError) throw err;
     throw new MailboxError('folder-unavailable');

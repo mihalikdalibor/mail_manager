@@ -1,11 +1,13 @@
 import { basketTotals, isMarked } from '../../core/mailbox/basket.js';
 import type { FolderInfo } from '../../core/mailbox/folders.js';
 import { formatBytes, sizeText } from '../folders-text.js';
+import { lineErrorText, orderText } from '../filter-text.js';
 import { sanitize } from '../log-text.js';
+import { columns, fitTail, helpLine, tooSmallFrame, type HelpItem } from './layout.js';
 import {
   MIN_COLS,
   MIN_ROWS,
-  bodyHeight,
+  listHeight,
   rowAt,
   rowCount,
   screenOf,
@@ -18,7 +20,8 @@ import { displayWidth, fit } from './width.js';
 // The browser screen (M2b) as plain-text lines: header, body rows, status line, key help. Pure:
 // no escape codes (the terminal shell highlights `cursorLine`). Every server string - mailbox
 // label, folder names, sender, subject - goes through sanitize() and is fitted to the width.
-// Mail data is only displayed.
+// Mail data is only displayed. Inside the app (M3a) a filter row shows the filter line being
+// typed, or the filter and order of a listing; the typed text is sanitised too.
 
 export { MIN_COLS, MIN_ROWS };
 
@@ -43,7 +46,7 @@ const SIZE_WIDTH = 9;
 /** The sender column never gets narrower than this; the subject shrinks instead. */
 const FROM_MIN = 8;
 /** Key help in display order; `rank` = which go first when the line is too narrow (0 = keep). */
-const HELP: readonly { text: string; rank: number }[] = [
+const HELP: readonly HelpItem[] = [
   { text: 'Up/Down move', rank: 0 },
   { text: 'PgUp/PgDn page', rank: 7 },
   { text: 'Enter open', rank: 3 },
@@ -53,7 +56,34 @@ const HELP: readonly { text: string; rank: number }[] = [
   { text: 'q quit', rank: 1 },
   { text: '+ = attachment', rank: 6 },
 ];
-const HELP_GAP = '  ';
+/**
+ * Inside the app (`state.embedded`): Esc goes back like Left, it doesn't quit; the filter, the
+ * order and the mark-all keys are the app's (M3a).
+ */
+const HELP_EMBEDDED: readonly HelpItem[] = [
+  { text: 'Up/Down move', rank: 0 },
+  { text: 'PgUp/PgDn page', rank: 10 },
+  { text: 'Enter open', rank: 5 },
+  { text: 'Esc/Left back', rank: 4 },
+  { text: '/ filter', rank: 2 },
+  { text: 'o order', rank: 6 },
+  { text: 'Space mark', rank: 3 },
+  { text: 'a mark screen', rank: 8 },
+  { text: 'm mark all', rank: 7 },
+  { text: 'q quit', rank: 1 },
+  { text: '+ = attachment', rank: 9 },
+];
+/** The filter line while it is typed (M3a): what the keys do there. */
+const HELP_EDIT: readonly HelpItem[] = [
+  { text: 'Enter apply', rank: 0 },
+  { text: 'Esc cancel', rank: 1 },
+  { text: 'e.g. shop.sk', rank: 2 },
+  { text: 'from:x', rank: 3 },
+  { text: 'older:1y', rank: 4 },
+  { text: 'larger:5mb', rank: 5 },
+  { text: 'unread', rank: 6 },
+  { text: 'att', rank: 7 },
+];
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -84,20 +114,36 @@ export function statusText(message: StatusMessage): string {
       return "Couldn't load some mails - reopen the folder to retry.";
     case 'offline':
       return 'Offline - showing what is loaded (r = reconnect).';
+    case 'search-failed':
+      return "The mail server couldn't run this filter - try a simpler one.";
+    case 'too-many-matches':
+      return 'More than 500,000 mails to go through - narrow the filter.';
+    case 'mark-all-needs-list':
+      return 'm marks every mail of a filtered list - press / and type a filter first.';
+    case 'too-many-to-mark':
+      return `Too many mails to mark at once (${String(message.count)}) - narrow the filter.`;
+    case 'marked-all':
+      return `Marked ${plural(message.count, 'mail', 'mails')}.`;
+    case 'unmarked-all':
+      return `Unmarked ${plural(message.count, 'mail', 'mails')}.`;
+    case 'search-partial':
+      return `${plural(message.count, 'mail', 'mails')} couldn't be read - the list may be incomplete (/ and Enter tries again).`;
     case 'text':
       return sanitize(message.text);
   }
 }
 
-/** `left` and a right-aligned `right` in exactly `cols` columns (`right` dropped if no room). */
-function columns(left: string, right: string, cols: number): string {
-  const rightWidth = displayWidth(right);
-  if (right === '' || rightWidth + 2 > cols) return fit(left, cols);
-  return `${fit(left, cols - rightWidth - 1)} ${right}`;
-}
-
 function folderName(folder: FolderInfo): string {
   return sanitize(folder.name);
+}
+
+/** A listing with its matches: "37 of 4521 mails, 49.2 MB" (the folder's count when searched). */
+function matchCount(state: BrowserState): string | null {
+  const listing = state.view?.listing;
+  const snapshot = state.view?.snapshot ?? null;
+  if (listing === undefined || listing.matches === null || snapshot === null) return null;
+  const shown = `${String(listing.matches.length)} of ${plural(snapshot.exists, 'mail', 'mails')}`;
+  return `${shown}, ${formatBytes(listing.bytes)}`;
 }
 
 function headerLine(state: BrowserState, cols: number): string {
@@ -115,12 +161,24 @@ function headerLine(state: BrowserState, cols: number): string {
   const open = chain[chain.length - 1];
   const total = state.view?.snapshot?.exists ?? (open === undefined ? null : open.messages);
   const right =
-    open === undefined
+    matchCount(state) ??
+    (open === undefined
       ? plural(state.folders.length, 'folder', 'folders')
       : total === null
         ? ''
-        : plural(total, 'mail', 'mails');
+        : plural(total, 'mail', 'mails'));
   return columns(segments.join(' / '), right, cols);
+}
+
+/** The filter row (M3a): the line while it is typed, else the filter and the order of the list. */
+function filterLine(state: BrowserState, cols: number): string | null {
+  if (state.mode === 'filter-edit') {
+    return fitTail(`Filter: ${sanitize(state.edit?.line ?? '')}_`, cols);
+  }
+  const listing = state.view?.listing;
+  if (listing === undefined) return null;
+  const text = listing.text === '' ? '(none)' : sanitize(listing.text);
+  return columns(`Filter: ${text}`, orderText(listing.order), cols);
 }
 
 function folderLine(folder: FolderInfo, cols: number, sizes: boolean): string {
@@ -179,17 +237,26 @@ function bodyLines(
   const lines: string[] = [];
   const total = rowCount(state);
   const view = state.view;
+  const listing = view?.listing;
   // Offline, an opened folder whose mails never loaded says so (after its subfolders, if any).
   const notLoaded = state.offline && view !== null && view.selectable && view.snapshot === null;
-  if (total === 0) {
+  if (listing !== undefined && listing.matches === null) {
+    const progress =
+      listing.progress === null
+        ? ''
+        : ` ${String(listing.progress.done)}/${String(listing.progress.total)}`;
+    lines.push(fit(`    Filtering...${progress}`, cols));
+  } else if (total === 0) {
     const empty =
-      view === null
-        ? 'No folders'
-        : notLoaded
-          ? NOT_LOADED
-          : view.selectable && view.snapshot === null
-            ? ''
-            : 'This folder is empty';
+      listing !== undefined
+        ? 'No mails match.'
+        : view === null
+          ? 'No folders'
+          : notLoaded
+            ? NOT_LOADED
+            : view.selectable && view.snapshot === null
+              ? ''
+              : 'This folder is empty';
     if (empty !== '') lines.push(fit(`    ${empty}`, cols));
   }
   for (let i = state.scrollTop; i < state.scrollTop + height && i < total; i++) {
@@ -231,29 +298,24 @@ function statusLine(state: BrowserState, cols: number): string {
             : state.offline
               ? statusText({ code: 'offline' })
               : '';
+      break;
+    case 'filter-edit': {
+      // The line's own error first; a result that arrives while the line is open is still said.
+      const error = state.edit?.error ?? null;
+      left =
+        error !== null
+          ? lineErrorText(error)
+          : state.message !== null
+            ? statusText(state.message)
+            : '';
+      break;
+    }
   }
   // The question or message comes first: "marked: ..." only when both fit whole.
   if (left === '') return columns('', right, cols);
   return displayWidth(left) + 1 + displayWidth(right) <= cols
     ? columns(left, right, cols)
     : fit(left, cols);
-}
-
-/** As many help items as fit, most important first, shown in their usual order. */
-function helpLine(cols: number): string {
-  const byRank = [...HELP].sort((a, b) => a.rank - b.rank);
-  const kept = new Set<string>();
-  let width = 0;
-  for (const item of byRank) {
-    const w = displayWidth(item.text) + (kept.size === 0 ? 0 : HELP_GAP.length);
-    if (width + w > cols) continue;
-    kept.add(item.text);
-    width += w;
-  }
-  const text = HELP.filter((item) => kept.has(item.text))
-    .map((item) => item.text)
-    .join(HELP_GAP);
-  return fit(text, cols);
 }
 
 /** The question the keys answer while only "too small" is shown (q, y and r still act). */
@@ -265,46 +327,36 @@ function pendingQuestion(state: BrowserState): string | null {
       return 'Reconnect? (y/N)';
     case 'reconnecting':
       return 'Reconnecting...';
+    case 'filter-edit':
+      return 'Filter - Esc cancels';
     case 'browse':
       return null;
   }
 }
 
-function centred(text: string, cols: number): string {
-  const indent = Math.max(0, Math.floor((cols - displayWidth(text)) / 2));
-  return fit(' '.repeat(indent) + text, cols);
-}
-
-function tooSmall(state: BrowserState, rows: number, cols: number): Rendered {
-  const lines: string[] = [];
-  const middle = Math.floor((rows - 1) / 2);
-  const long = `Window too small - need at least ${String(MIN_COLS)}x${String(MIN_ROWS)}`;
-  // Stays whole down to 21 columns; the long text needs 37.
-  const text =
-    cols < displayWidth(long) ? `Too small - need ${String(MIN_COLS)}x${String(MIN_ROWS)}` : long;
-  // A pending question goes on the next line, or replaces the text when there is no next line.
-  const question = pendingQuestion(state);
-  const questionLine = question === null ? -1 : middle + 1 < rows ? middle + 1 : middle;
-  for (let i = 0; i < rows; i++) {
-    if (i === questionLine && question !== null) lines.push(centred(question, cols));
-    else if (i === middle) lines.push(centred(text, cols));
-    else lines.push(fit('', cols));
-  }
-  return { lines, cursorLine: null };
+function helpItems(state: BrowserState): readonly HelpItem[] {
+  if (state.mode === 'filter-edit') return HELP_EDIT;
+  return state.embedded === undefined ? HELP : HELP_EMBEDDED;
 }
 
 export function render(state: BrowserState, opts: RenderOptions = {}): Rendered {
   const { rows, cols } = screenOf(state.screen);
-  if (rows < MIN_ROWS || cols < MIN_COLS) return tooSmall(state, rows, cols);
+  if (rows < MIN_ROWS || cols < MIN_COLS) return tooSmallFrame(rows, cols, pendingQuestion(state));
   const formatDate = opts.formatDate ?? localDate;
-  const height = bodyHeight(state.screen);
+  const height = listHeight(state);
+  const row = filterLine(state, cols);
   const lines = [
     headerLine(state, cols),
+    ...(row === null ? [] : [row]),
     ...bodyLines(state, height, cols, formatDate, opts.sizes ?? true),
     statusLine(state, cols),
-    helpLine(cols),
+    helpLine(helpItems(state), cols),
   ];
   const offset = state.cursor - state.scrollTop;
-  const cursorLine = rowCount(state) > 0 && offset >= 0 && offset < height ? 1 + offset : null;
+  // The cursor's row sits below the filter row; while the line is typed nothing is highlighted.
+  const cursorLine =
+    rowCount(state) > 0 && state.mode !== 'filter-edit' && offset >= 0 && offset < height
+      ? 1 + (row === null ? 0 : 1) + offset
+      : null;
   return { lines, cursorLine };
 }

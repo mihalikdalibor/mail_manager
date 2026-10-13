@@ -2,7 +2,7 @@
 
 Source of truth for progress. One milestone at a time — details, design notes and open questions live in `docs/milestones/`.
 
-**Current milestone: M2 Mailbox insight — M2a folder tree + `mm folders` done 2026-10-01 (C-021, C-022, reviewed); M2b-1 browser core done 2026-10-02 (C-023, follow-ups C-024 ASCII screen text + C-025, all reviewed); M2b-2 terminal browser implemented 2026-10-02 (C-026, reviewed 2026-10-03; the manual walk in a real terminal is still open — the user); M2c-1 `mm stats` done 2026-10-03 (C-027, reviewed; live test passed); M2-fix review follow-ups done 2026-10-04 (C-028, reviewed; plus the browser width fix C-029, reviewed); M2a … M2-fix released as v0.9.0; next: M2c-2 large-mailbox measurement (the user)** (M2 split into M2a/M2b/M2c) — M1c account commands done: M1c-1 account commands 2026-10-01 (v0.7.0, C-019, reviewed), M1c-2 hardening 2026-10-01 (v0.8.0, C-020, reviewed, migration applied) — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
+**Current milestone: M3 Filters & search — M3a filter core + filter line in the app implemented 2026-10-13 (C-034, reviewed 2026-10-13; live test on `mm-test` passed 2026-10-13; released as v0.10.0; the manual walk in a real terminal is pending — the user) — M2 Mailbox insight — M2a folder tree + `mm folders` done 2026-10-01 (C-021, C-022, reviewed); M2b-1 browser core done 2026-10-02 (C-023, follow-ups C-024 ASCII screen text + C-025, all reviewed); M2b-2 terminal browser implemented 2026-10-02 (C-026, reviewed 2026-10-03; the manual walk in a real terminal is still open — the user); M2c-1 `mm stats` done 2026-10-03 (C-027, reviewed; live test passed); M2-fix review follow-ups done 2026-10-04 (C-028, reviewed; plus the browser width fix C-029, reviewed); M2a … M2-fix released as v0.9.0; M2d app shell pulled ahead of M3 on 2026-10-04: M2d-1 app frame, sign-in page and Home implemented 2026-10-05 (C-030, reviewed 2026-10-05; the manual walk in a real terminal is still open — the user); M2d-2 mailbox screen implemented 2026-10-07 (C-031, reviewed 2026-10-07, not released yet; the manual walk in a real terminal is still open — the user); M2d-3 stats screen, M2d-5 logs screen and M2d-4 add a mailbox implemented 2026-10-08 as one assignment (C-032, docs and close-out 2026-10-12, reviewed 2026-10-12, not released yet; the manual walk in a real terminal is still open — the user); next: the M2c-2 / M2d-3 large-mailbox measurement (the user), then M3a** (M2 split into M2a/M2b/M2c) — M1c account commands done: M1c-1 account commands 2026-10-01 (v0.7.0, C-019, reviewed), M1c-2 hardening 2026-10-01 (v0.8.0, C-020, reviewed, migration applied) — M1b-4 logging foundation done (4a 2026-09-28, C-015; 4b 2026-09-29, C-016; 4d audit trail 2026-09-29, C-017, migration applied; 4c `mm logs` 2026-09-30, C-018; all reviewed) — M1b-3 test ground done: M1b-3a generator 2026-09-24 (C-013, reviewed), M1b-3b guard + seed/unseed + live test 2026-09-24 (C-014, reviewed 2026-09-28) — M0 done 2026-09-21 (C-001); M1a done 2026-09-22 (C-002, C-003); M1b-1 done 2026-09-22 (C-004…C-008, reviewed); M1b-2a done 2026-09-22 (C-009, C-010, reviewed); `mm logout` fix (C-011, reviewed); M1b-2b done 2026-09-23 (C-012, reviewed)
 
 ---
 
@@ -292,20 +292,127 @@ The three MEDIUM findings of the 2026-10-03 review (`.claude/changes.md`, Review
 - [ ] `mm stats` on a mailbox with ≥100k messages: time, peak memory (`/usr/bin/time -v`), totals vs. webmail/quota
 - [ ] Decide on the local metadata cache (SQLite, TODO "Later") from those numbers
 
+## M2d — App shell: plain `mm` opens the app → [doc](docs/milestones/M2d-app-shell.md)
+
+Pulled ahead of M3 on 2026-10-04 with the user (`/next`; was "Later: App shell (after M3)"). Decisions: plain `mm` in a terminal opens a full-screen app (the `mm folders` kind of screen); **every existing command stays as it is** (scripts, `--json`, tests); the first page is **sign in** — no account creation, no password reset; "remembered" = the signed-in user continues without a password until Log out, and the e-mail addresses of earlier sign-ins stay in a local list (addresses only — no passwords, no extra tokens); stats are read **automatically** when a mailbox opens, then measured (CPU, memory, time) and switched to on-demand if that slows things down; five slices, each planned, built and reviewed on its own. Screen text stays ASCII (C-024). Not in the app for now: test login, change password, remove mailbox, doctor, discover (they stay commands).
+
+Screens: Sign in → Home (mailboxes · Add a mailbox · Logs · Log out) → Mailbox (usage bar per folder, totals, quota) → Mails (the M2b browser) / Stats; Add a mailbox; Logs. Left/Esc = one screen back, `q` quits (asks when mails are marked), Ctrl+C ends at once.
+
+### M2d-1 — App frame, sign-in page, Home
+
+One assignment, built with the xhigh coder (decided 2026-10-04: it touches sign-in and stores a new local file).
+
+- [x] Docs: `docs/milestones/M2d-app-shell.md` (screens, keys, slices, decisions, Logging section); M2 doc note (the app shell is pulled ahead of M3); LOGGING (the `app` command writes the existing `auth.*` events, no new event); SECURITY (`users.json`); ARCHITECTURE; README; CLAUDE.md state
+- [x] Entry: plain `mm` with stdin + stdout a terminal (TERM not `dumb`) runs the new `mm app` command; without a terminal plain `mm` prints the help as today (exit 1, nothing logged); `mm app` without a terminal → "mm app needs a terminal", exit 1; `mm --help` lists `app`; an unknown command and `--help` behave as today
+- [x] Core `src/core/remembered-users.ts`: the e-mail addresses of earlier sign-ins in `<config dir>/users.json` (dir 700, file 600, atomic write, validated on read, corrupt or missing → empty; at most 10, newest first, lower-cased, no duplicates); list / add / remove — never passwords or tokens; a failed write never fails a sign-in
+- [x] App frame `src/cli/app/`: pure state reducers (sign-in, Home) + pure renderer + controller on the M2b terminal (`src/cli/browser/terminal.ts`); typed and hidden input fields; Left/Esc back, `q` quits (a plain letter inside a field), Ctrl+C ends at once (exit 130); resize; "Window too small" below 40x8; the screen is given back on quit, signals and crashes
+- [x] Sign-in page: rows = the signed-in user ("signed in" — Enter continues without a password), the remembered e-mails (Enter → password only), "Sign in as another user" (e-mail + password); nothing typed into the password field is shown, not even its length; wrong e-mail or password → "Wrong e-mail or password - try again." (the e-mail stays); Mail Manager unreachable → its own message, `r` tries again; choosing someone else while a user is signed in asks "Sign out <e-mail> first? (y/N)" and revokes that session first; `f` forgets a remembered e-mail (asks; not the signed-in one); no create-account and no forgot-password
+- [x] Home: the user's mailboxes (e-mail, provider, last checked), then "+ Add a mailbox", "Logs", "Log out"; no mailboxes → "No mailboxes yet"; loading and couldn't-load states (`r` retries; a sign-in that ended → back to the sign-in page with a message); Log out revokes the session and returns to the sign-in page (the e-mail stays remembered); the mailbox, Add and Logs rows say "Coming in a next step - for now quit and run `mm folders` / `mm account add` / `mm logs`." until M2d-2 / M2d-4 / M2d-5
+- [x] Logging: `command.start` / `command.finish` with `cmd: app` (automatic); `auth.login`, `auth.login-failed` (HMAC target) and `auth.logout` from the app exactly as `mm login` / `mm logout` write them; no new event; canary: the typed e-mail and password in no log line
+- [x] Tests: remembered-users store (modes, atomic write, corrupt file, cap, duplicates); reducers (keys, fields, every sign-in path, switch user, forget, Home rows, retry, stale results); renderer (widths, sanitising, the password never rendered, ASCII, too small); controller with a fake terminal + fake auth/accounts (effects, stale results, Ctrl+C in every mode, the password not kept after submit); command (terminal / no terminal, config error before the screen opens, exit codes, canary); `runCli` default command (only when interactive; unknown command and help unchanged)
+- **Acceptance:** manual walk in a real terminal (plain `mm` → sign-in page → Home and back; wrong password; switch user; forget; Log out; screen restored after `q`, Ctrl+C and `kill -TERM`; resize); every existing command behaves as before; no password or e-mail in any log line; lint, typecheck, tests, build, format:check green.
+
+### M2d-2 — Mailbox screen: usage bars + mail browser (needs M2d-1)
+
+One assignment, built with the xhigh coder (decided 2026-10-05 with the user in `/next`; a split into 2a bars / 2b mails was offered and declined). The bars stay out of the `mm folders` browser (decided 2026-10-05): `mm folders` and its tests are unchanged.
+
+Implemented 2026-10-07 (C-031, reviewed 2026-10-07); released as v0.10.0; the manual walk in a real terminal is still open — the user.
+
+- [x] Enter on a mailbox: one guarded login (one login guard for the whole app run), "Reading folders..." (+ "n/m" while the size fallback reports it), then the folders as rows with an ASCII usage bar (share of the summed mailbox size), percent, size and messages; header: the mailbox and the order; totals (messages, unread, size) on the first body line. Order: tree (default), `o` cycles tree → size → name. Quota line with its own bar when the server reports a limit, otherwise "Quota: not available from the mail server". Gmail label folders tagged "(overlapping)" without a bar; unknown size = `-` without a bar; Gmail with All Mail hidden = no bars + a note; a share that rounds to 0 still shows one cell
+- [x] Left/Esc on the bars goes back to Home and logs out the IMAP session (also while connecting or reading: the login or read is dropped, a session that still arrives is logged out); Ctrl+C logs out too and ends at once; `r` retries a failed read or login
+- [x] Enter on a folder opens the M2b browser embedded in the app, inside that folder (same keys, reconnect); Left/Esc at that entry folder returns to the bars (subfolders go back one level first); marks stay while the mailbox is open (the basket belongs to the mailbox screen, not to one browser visit); leaving the mailbox with marks asks "Drop N marks? (y/N)"; `q` with marks asks first
+- [x] Logging: `folders.list` once per mailbox open (`imap.capability-fallback` once per feature per app run); `browse.finish` once per mailbox visit in which the browser was opened (`imap.login*` as today); canary: no folder names, subjects or addresses in any line
+- [x] Docs: M2d milestone doc (screens, keys, decisions), LOGGING (wording of `folders.list` / `browse.finish` from the app), ARCHITECTURE, README, CLAUDE.md state; the stale "M2d-1 not reviewed yet" lines fixed (C-030 is reviewed; only the manual walk is open)
+
+### M2d-3 … M2d-5 — one assignment (decided 2026-10-07 with the user in `/next`)
+
+Stats, Logs and Add a mailbox are planned and built as **one combined plan** (one `/implement` run, one coder — the three share `state.ts`, `render.ts` and `controller.ts`, so they can't be built side by side; Opus max, chosen by the user), in this order. Items rewritten in `/next` on 2026-10-07.
+
+Implemented 2026-10-08 (C-032, reviewed 2026-10-12); released as v0.10.0; the manual walk in a real terminal and the large-mailbox measurement are still open — the user.
+
+### M2d-3 — Stats screen (needs M2d-2)
+
+Decided 2026-10-07: the read runs on a **second guarded login of its own** (the scan holds a folder lock for a whole folder; with its own session browsing stays responsive and stopping is one logout); it starts **always automatically** once the folders are shown, whatever the mailbox size (confirmed again 2026-10-07; the measurement below may change it).
+
+- [x] First (review follow-up of C-031): a mailbox login whose visit was left, or whose turn comes after the app ended, is no longer made — the logins of one mailbox run one after another in the app controller and each re-checks its visit right before it starts (the reconnect too); the challenge notice is cleared when its wait ends; the milestone doc's known limit corrected
+- [x] Stats are read on a second guarded login, started once the folders are shown; one login per read, never repeated by itself; scope as `mm stats` (every selectable folder incl. Trash/Spam; Gmail: All Mail + Trash + Spam; Gmail with All Mail hidden → its text, no login made)
+- [x] The bars' status line shows the read: `Stats: reading folder 3/12 - 5000/12345 messages`, then `Stats ready - press s`, or `Stats couldn't be read - press s`; the key help gains `s stats`
+- [x] `s` on the bars opens the stats screen: a summary line (folders, messages, size "approx.", folders not read / read only partly), then `1` years with a bar each, `2` top senders, `3` top domains, `4` largest mails; `o` switches by size / by messages (1–3); `r` reads again (one new login); while reading the progress, after a failure its text + `r try again`; Esc / Left back to the bars while the read goes on
+- [x] Kept while the mailbox is open (also across folders); stopped and dropped when the mailbox is left or the app ends — the stats session is logged out on every way out, also one that arrives late
+- [x] Logging: `stats.finish` once per read that ended (ok, or failed + reason), none for a read stopped by leaving (as `mm stats` on Ctrl+C); `imap.login*` of the second login; no new event; canary: no sender, domain, subject or folder name in any line
+- [x] Tests (reducer, renderer, controller with fake sessions and logout spies, canary) + docs (M2d doc, LOGGING, README, CLAUDE.md state)
+- [ ] (the user) Measure CPU, memory and time on a large mailbox (together with M2c-2); too slow → an automatic limit by message count, or on demand with `s`
+
+### M2d-5 — Logs screen (needs M2d-1)
+
+- [x] Enter on `Logs` → "Reading the logs..." → the `mm logs` report as a scrollable page: the same lines (time, command, text; date headers; "interrupted or still running" markers), newest at the bottom, opened at the bottom; long lines wrap; Up / Down, PgUp / PgDn scroll; `1` 24 h (default), `2` 7 days, `3` 30 days; `s` security only on/off; `w` warnings and errors only on/off; `r` reads again; the header names the window and the filters; Esc / Left back to Home as it was; `q` quits
+- [x] The lines of this app run are shown too (what just happened in the app), without an "interrupted" marker for itself
+- [x] Validated, sanitised records only (core `readLogs` + `formatReport`, never raw lines), in ASCII; "N older lines not shown" names keys, not `--flags`; a log folder that can't be read → its text; nothing found → "No log lines in the last 24 h."
+- [x] Nothing is logged for viewing and nothing can be deleted here (`mm logs clear`, `--run`, `--json`, `path` stay commands)
+- [x] Tests (reducer, renderer, controller with a fake reader) + docs
+
+### M2d-4 — Add a mailbox in the app (needs M2d-1)
+
+- [x] Enter on `+ Add a mailbox`: `MM_MASTER_KEY` missing or broken → its text, nothing asked; otherwise the address field (checked like `mm account add`; not an address → the message, the field stays)
+- [x] "Looking up settings..." (with "checking <source>..."); Esc cancels
+- [x] What was found: provider (tagged when unverified), server `host:993 (TLS)`, username, found via, the provider's hint and help link, warnings (notices, a domain problem, the off-domain SRV warning). Enter uses them — except an off-domain SRV result, which needs `y`; `c` picks a provider (grouped Slovakia/Czechia · Global; unsupported ones listed with the reason, not selectable); `m` enters the server (host; username, the address by default; both validated). Provider known but its host is per mailbox → the host field. Nothing found → what was tried + `c` / `m`. Not supported (OAuth-only) → the reason, Esc back
+- [x] The address + server already saved → its text before any password is asked
+- [x] Password (hidden as on the sign-in page) → "Checking the login..." → a rejected password → the generic login message and the password field again, limited by the login guard (its wait notice, its block text); any other failure → its text, Esc back
+- [x] Saved → Home with the list loaded again, the new mailbox under the cursor, "Added <address>."; Esc goes one step back and from the first step to Home; nothing is saved unless the login worked; the password is never drawn or logged and not kept after its attempt
+- [x] Logging: `account.add` (ok / failed) + its audit row from the core as today, `imap.login*`; no new event; canary: the typed address, server, username and password in no log line
+- [x] Tests (reducer, renderer, controller with fake discovery / duplicate check / add, the command wiring) + docs
+
+### M2d-6 — Stats: largest mails with / without attachments (needs M2d-3; after M3a)
+
+Added 2026-10-12 (user, `/next`). Today section `4` of the stats screen (and `mm stats`) lists the 10 largest mails of the whole mailbox, attachments or not. Inside one folder M3a already answers it (`/` `att` or `-att`, then `o` until "largest first").
+
+- [ ] Decide after the large-mailbox measurement (M2c-2): the stats read would also have to fetch BODYSTRUCTURE for every message — measure what that costs before it is on for every read
+- [ ] Core `collectStats`: the 10 largest mails with an attachment and the 10 largest without (the attachment rule of the mail list's `+`)
+- [ ] Stats screen: section `4` switches all / with attachments / without; `mm stats` text and `--json` (version bump)
+- [ ] Tests + docs; `stats.finish` unchanged
+
 ## M3 — Filters & search → [doc](docs/milestones/M3-filters-search.md)
 
-- [ ] Decide: received vs sent date default; saved filter scope
-- [ ] `filters/schema.ts` zod model (versioned)
-- [ ] `filters/compile.ts` → SearchObject + post-filters + tests
+Regrouped 2026-10-07 with the user (`/next`): filters are **first usable in the app** (a filter line in the app's mail list), the commands follow. Four slices, each planned on its own after M2d-3 … M2d-5; M3a was patched in its own `/next` run on 2026-10-12. (The M3 doc still puts any filter UI in M6 — updated with M3a.)
+
+### M3a — Filter core + filter line in the app (needs M2d-2)
+
+Rewritten 2026-10-12 with the user (`/next`); **one assignment**, built in sequence (core first, then the app; a split into core / line was offered and declined). Decisions: dates mean **received** (the server's internal date, in this computer's time zone — what the mail list and the stats show; sent date comes with `mm search`, M3b); the filter is **one typed line**; it searches **the open folder only**, with the standard IMAP search on every provider (Gmail `X-GM-RAW`: M3d); app only — `mm folders` and its tests are unchanged; no body search in the line (slow on servers without an index; `mm search --body`, M3b); added by the user: the list can be **ordered** (newest / oldest / largest — the "Later" sort item, done here; with `att` / `-att` this is "the biggest mails with / without attachments" of a folder), a **date from–to** key, and **one key marks every match**.
+
+- [x] Docs: M3 doc (four slices, received date decided, the filter line instead of "GUI in M6", the line's keys, what is exact and what the server decides), M2d doc (keys of the mail list), LOGGING (`search.finish`), IMAP.md (WITHIN note), ARCHITECTURE, README, CLAUDE.md state
+- [x] `src/core/filters/schema.ts` — zod model v1: `from` / `to` / `cc` (addresses, `@domain`s, or parts of the name or address), `subject`, `body`, `text`, `word` (sender or subject contains), `since` / `before` (days), `olderThan` / `newerThan` (`30d`, `2w`, `6m`, `2y`), `larger` / `smaller` (bytes), `seen`, `flagged`, `answered`, `hasAttachments`, `all` / `any` / `not`; limits on depth, number of nodes and text length; control characters refused
+- [x] `src/core/filters/compile.ts` — filter + "now" → imapflow SearchObject (objects only) + checks run on each candidate (exact address / domain on the parsed address, received date to the instant in local time, `hasAttachments` on BODYSTRUCTURE) + the criterion names used; a checked criterion inside `any` or a compound `not` → "not supported yet"
+- [x] `src/core/filters/line.ts` — the typed line → filter: a bare word or a quoted phrase = sender or subject contains it; `from:` `to:` `cc:` (comma list) `subject:` `older:` `newer:` `since:` `before:` `date:A..B` (also `date:2023`, `date:2023-05`) `larger:` `smaller:` (`500kb`, `5mb`, `1.5gb`); `unread` `read` `flagged` `att`; `-` in front = not; everything must match; a word it can't read → a typed reason naming it (the app says it in plain words)
+- [x] `src/core/mailbox/search.ts` — read-only (EXAMINE): `UID SEARCH`, then one streaming pass over the candidates in batches (size and received date; sender and structure only when a check needs them) → the matches (UID, size, received date) and their total size; progress after each batch, can be stopped between batches; at most 500,000 candidates; a page of 200 matches by UID; a reset folder and a lost connection reported as in the mail list
+- [x] Logging: `search.finish` (`acct`, `count`, `bytes`, `ms`, `criteria` = names only, `outcome`, `reason?`) — builder, schema, `mm logs` text, catalog, canary (no typed value in any line); once per search that ended (ok / failed), none for one that was stopped
+- [x] App, `/` in a folder's mail list: the filter line under the header (typed text, Backspace, Ctrl+U; Enter applies, Esc cancels; an empty line = no filter; the help line shows examples); "Filtering... n/m", then only the matching mails; the header says `37 of 4521 mails, 48.2 MB`; the line stays visible as `Filter: ...`; subfolders are hidden while a filter or an order is on
+- [x] App, `o`: order newest → oldest → largest first (by received date / by size), also without a filter (the whole folder is read once); the line names the order
+- [x] App, `m`: marks every mail of the filtered or ordered list (all marked already → unmarks them); more than 100,000 → a message, nothing marked; Space and `a` as today; marks stay when the filter changes or is cleared
+- [x] App: Esc / Left with a filter or an order on clears it first (the plain list again), the next one goes back; `/` edits the filter; leaving the folder drops it; Esc while filtering stops it; no match → "No mails match."; a filter the server refuses, too many mails, a folder reset on the server (filtered again), a lost connection (the reconnect question) → their texts
+- [x] Tests: schema, compile (every criterion, nesting, limits, the compiled IMAP text through imapflow's own compiler), line (every key, quotes, errors), search with a fake client, reducer, renderer, controller with a fake search, log event + canary; live on `mm-test`: each criterion = the set computed from the manifest
+- **Acceptance:** every criterion returns its manifest set on `mm-test`; manual walk in a real terminal on the test mailbox (a bare word, `from:`, `older:`, `date:`, `larger:`, `unread`, `att`, `o`, `m`; counts equal webmail's); opened mails still unread; nothing a user typed reaches a log line; `mm folders` unchanged; lint, typecheck, tests, build, format:check green.
+
+Implemented 2026-10-13 (C-034, reviewed 2026-10-13); released as v0.10.0. The live test on `mm-test` passed 2026-10-13; the manual walk in a real terminal on the test mailbox is still open — the user.
+
+### M3b — `mm search` (needs M3a)
+
 - [ ] CLI flag parsing → filter (sizes, durations, dates)
 - [ ] `mm search` (count, size, top senders, samples, `--json`)
+
+### M3c — Saved filters (needs M3b)
+
+- [ ] Decide: saved filter scope
+- [ ] `0002_saved_filters.sql` + `FiltersRepo`
+- [ ] `mm filter save/list/show/delete`, `--filter <name>`
+- [ ] Logging: `filter.save`/`filter.delete` → `audit_log`
+
+### M3d — Gmail search + test ground (needs M3b)
+
 - [ ] Gmail `X-GM-RAW` compile + cross-check vs standard search, `--gmail-only` (IMAP.md §5.6)
 - [ ] Gmail search equivalence integration test (one case per mapping row, expected-differences list)
 - [ ] Extend the M1b-3 test-ground generator with one seeded case per filter criterion (bump `SEED_VERSION`, then `npm run test:unseed` + `test:seed`)
-- [ ] `0002_saved_filters.sql` + `FiltersRepo`
-- [ ] `mm filter save/list/show/delete`, `--filter <name>`
-- [ ] Logging: `search.finish` (criterion names only, never values), `gmail.search-mismatch`, `filter.save`/`filter.delete` → `audit_log`
-- **Acceptance:** each criterion returns expected seeded set; nested logic tested; webmail counts match.
+- [ ] Logging: `gmail.search-mismatch`
+- **Acceptance (M3):** each criterion returns expected seeded set; nested logic tested; webmail counts match.
 
 ## M4 — Safe delete → [doc](docs/milestones/M4-safe-delete.md)
 
@@ -337,6 +444,17 @@ The three MEDIUM findings of the 2026-10-03 review (`.claude/changes.md`, Review
 - [ ] Logging: `backup.start` / `backup.finish` / `backup.verify` → `audit_log` action `backup` (paths stay in the manifest)
 - **Acceptance:** counts/hashes verify; opens in Thunderbird; re-run adds 0; expunge removes only verified messages.
 
+## M5b — Strip attachments: keep the mail, drop its attachments (needs M4 + M5)
+
+Added 2026-10-12 (user, `/next`; placed here on the planner's suggestion). Not possible earlier: IMAP can't edit a message, so cutting an attachment out means saving the original, building a copy without the attachment parts, uploading the copy and removing the original — a destructive operation that needs M4's plan → full list → two confirmations → audit flow and M5's verified local copy first.
+
+- [ ] Decide: where the removed attachments go (proposal: always saved locally first and verified by hash — never just dropped); what stays in the mail (proposal: a short text part naming each removed file and its size); signed and encrypted mails (proposal: skipped and listed — stripping breaks the signature); the original (proposal: moved to Trash, like every delete)
+- [ ] Core: fetch the full message → the same MIME tree without the chosen parts (headers, Message-ID, Date and the text parts untouched) → APPEND with the original flags and received date (APPENDLIMIT checked) → verify the copy → the original to Trash by UID (M4's MOVE / UIDPLUS rules); abort on a UIDVALIDITY change; nothing changes when any step fails
+- [ ] Selection: a filter (`att` + `larger:`) or the basket; the plan lists every mail with what would be removed and the space freed
+- [ ] Gmail: the original's labels carried over to the copy
+- [ ] Logging: `strip.plan` / `strip.finish` (counts, bytes) → `audit_log` (a new action, migration)
+- **Acceptance:** a stripped mail opens in webmail and Thunderbird with its text intact; the saved attachments match their hashes; flags and received date kept; a failed step leaves the original untouched.
+
 ## M6 — Beta → [doc](docs/milestones/M6-beta.md)
 
 - [ ] M6a Local HTML page (Fastify, localhost, CSP, CSRF)
@@ -361,8 +479,7 @@ The three MEDIUM findings of the 2026-10-03 review (`.claude/changes.md`, Review
 - `mm login` session check should fail closed (M1c-2 security audit, 2026-10-01): today a corrupt, unreadable (e.g. root-owned after `sudo mm login`) or non-JSON `session.json` counts as "no session" and login overwrites it without revoking anything. Only a missing file or `{}` should count as empty; anything else → "run `mm logout` first" (`logout` already clears it). Also re-check `isEmpty()` right before `signInWithPassword` (two parallel logins both pass the check). Related: `mm logout` while offline clears the local file but can't revoke the server token and still says "Logged out" — say so ("logged out on this computer only"); a relative `MM_CONFIG_DIR`/`XDG_CONFIG_HOME` should be refused (zod absolute path).
 - Database setup without getting stuck (from 2026-09-29): today `mm doctor` only reports a missing table ("run npm run db:push"); automate or guide it (e.g. detect pending migrations and explain the one command, or apply them from a setup step) so non-technical users never hit a missing-table error
 - Auth audit log retention: scheduled cleanup of `auth.audit_log_entries` older than 90 days (decided 2026-09-29; M6/M7 hosting)
-- App shell (after M3, decided 2026-10-01): plain `mm` opens a home screen (accounts → folders → mails → stats/search) reusing the M2b screens; scripted commands stay
-- Sort mails in the M2b browser (with M3 filters)
+- Sort mails in the `mm folders` browser (the app's mail list gets its order key in M3a)
 - Local metadata index (SQLite) for instant filtering on huge mailboxes
 - Encrypted backup archives
 - Hosted beta (M7) — after GDPR prerequisites (see docs/SECURITY.md); hosted observability from docs/LOGGING.md: log service (Vercel Log Drain / VPS shipper), error tracking (EU region), uptime, alerting, logs in the GDPR record of processing

@@ -29,6 +29,7 @@ import {
   imapLogin,
   imapLoginFailed,
   renderEvent,
+  searchFinish,
   statsFinish,
   toRecord,
   unexpectedError,
@@ -328,6 +329,23 @@ function samples(): Map<LogEventName, LogRecord[]> {
     browseFinish({ ...BROWSE, outcome: 'failed', reason: 'connection-lost' }),
     statsFinish({ ...STATS, outcome: 'ok' }),
     statsFinish({ ...STATS, outcome: 'failed', reason: 'gmail-all-hidden' }),
+    searchFinish({
+      acct: ACCT,
+      count: 37,
+      bytes: 5000,
+      ms: 1200,
+      criteria: ['from', 'larger'],
+      outcome: 'ok',
+    }),
+    searchFinish({
+      acct: ACCT,
+      count: 0,
+      bytes: 0,
+      ms: 80,
+      criteria: ['word'],
+      outcome: 'failed',
+      reason: 'search-failed',
+    }),
   ];
   const map = new Map<LogEventName, LogRecord[]>();
   for (const e of list) map.set(e.event, [...(map.get(e.event) ?? []), rec(e)]);
@@ -337,7 +355,7 @@ function samples(): Map<LogEventName, LogRecord[]> {
 describe('eventText', () => {
   const all = samples();
 
-  it('has samples for all 22 catalog events', () => {
+  it('has samples for all 23 catalog events', () => {
     expect([...all.keys()].sort()).toEqual([...LOG_EVENT_NAMES].sort());
   });
 
@@ -692,6 +710,88 @@ describe('formatReport', () => {
         timelineLine(one(), 'keygen', BRATISLAVA),
         ...footers,
       ]);
+    });
+
+    // M2d-5: the logs screen of the app has keys, not flags.
+    describe("narrowWith: 'keys'", () => {
+      const keys: ReportOptions = { ...base, narrowWith: 'keys' };
+      const CHOOSE = 'choose a shorter time or a filter (s, w)';
+
+      it.each<[number, string]>([
+        [1, `1 older line not shown - ${CHOOSE}`],
+        [5, `5 older lines not shown - ${CHOOSE}`],
+        [4999, `4999 older lines not shown - ${CHOOSE}`],
+      ])('%i omitted', (omitted, text) => {
+        const r = result([one()], { omitted });
+        expect(reportFooters(r, keys)).toEqual([text]);
+        expect(formatReport(r, keys)).toEqual([timelineLine(one(), 'keygen', BRATISLAVA), text]);
+        expect(text).toMatch(/^[\x20-\x7e]+$/);
+      });
+
+      it.each<Partial<ReportOptions>>([
+        { securityOnly: true },
+        { level: 'warn' },
+        { level: 'error' },
+        { securityOnly: true, level: 'warn' },
+        { sinceMs: 7 * 24 * 3_600_000 },
+        { run: RUN },
+        { run: RUN, securityOnly: true, level: 'error' },
+      ])('the same text whatever is asked for: %j', (opts) => {
+        const r = result([one()], { omitted: 2 });
+        expect(reportFooters(r, { ...keys, ...opts })).toEqual([
+          `2 older lines not shown - ${CHOOSE}`,
+        ]);
+      });
+
+      it('the other footers are those of `mm logs`, in the same places', () => {
+        const r = result([one()], {
+          unreadable: 2,
+          unknown: 1,
+          omitted: 4,
+          skippedFiles: 3,
+          runsCapped: true,
+        });
+        const withFlags = reportFooters(r, base);
+        const withKeys = reportFooters(r, keys);
+        expect(withFlags).toHaveLength(5);
+        expect(withKeys).toEqual([
+          withFlags[0],
+          withFlags[1],
+          `4 older lines not shown - ${CHOOSE}`,
+          withFlags[3],
+          withFlags[4],
+        ]);
+        expect(formatReport(r, keys)).toEqual([
+          timelineLine(one(), 'keygen', BRATISLAVA),
+          ...withKeys,
+        ]);
+      });
+
+      it('nothing was left out: no such footer', () => {
+        expect(reportFooters(result([one()]), keys)).toEqual([]);
+        expect(reportFooters(result([one()], { unreadable: 1 }), keys)).toEqual([
+          '1 unreadable line skipped',
+        ]);
+        expect(formatReport(result([one()]), keys)).toEqual(formatReport(result([one()]), base));
+      });
+
+      it("'flags' is what `mm logs` prints without the option", () => {
+        const flags: ReportOptions = { ...base, narrowWith: 'flags' };
+        for (const opts of [
+          {},
+          { securityOnly: true },
+          { level: 'error' as const },
+          { run: RUN },
+        ]) {
+          const r = result([one()], { omitted: 2 });
+          expect(reportFooters(r, { ...flags, ...opts })).toEqual(
+            reportFooters(r, { ...base, ...opts }),
+          );
+        }
+        const footer = reportFooters(result([one()], { omitted: 2 }), flags)[0];
+        expect(footer).toContain('narrow with --since, --level, --security or --run');
+        expect(footer).not.toContain(CHOOSE);
+      });
     });
   });
 

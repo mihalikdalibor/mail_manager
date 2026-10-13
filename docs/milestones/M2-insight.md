@@ -18,7 +18,7 @@ Shared decisions:
 - Unsubscribed folders are shown too, tagged "(hidden)".
 - The account id is optional when exactly one mailbox is saved (the output names the mailbox).
 - The delete "double check" is a **local basket** (folder + UIDVALIDITY + UIDs, in memory) that feeds the M4 plan/confirm flow (confirmed 2026-10-01). A server-side review folder may come later in M4 as an opt-in mode only (see [M4](M4-safe-delete.md#design-notes)).
-- The app shell (one long-running interactive program) comes after M3.
+- The app shell was pulled ahead of M3 on 2026-10-04: see [M2d](M2d-app-shell.md).
 - One guarded login per command (`openAccountSession` / `withAccountSession` in `src/core/accounts.ts`), reused by M2a/M2b/M2c; a browser reconnect (M2b-2) is one more, started by the user.
 
 ## M2a — Folder tree + `mm folders` (read-only)

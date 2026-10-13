@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -144,6 +145,23 @@ describe('src/cli/bin.ts', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('keygen');
     expect(existsSync(join(tmp, 'logs'))).toBe(false);
+  }, 60_000);
+
+  it('plain mm without a terminal prints the help, exits 1 and logs no run', () => {
+    // The child's stdin and stdout are pipes: not a terminal, so the app command must not run.
+    const r = mm([]);
+    expect(r.status).toBe(1);
+    const out = `${r.stdout}${r.stderr}`;
+    expect(out).toContain('Usage: mm');
+    expect(out).toContain('Getting started:');
+    expect(out).not.toContain('needs a terminal');
+    expect(out).not.toContain('Unexpected error');
+    const dir = join(tmp, 'logs');
+    const logged = existsSync(dir)
+      ? readdirSync(dir).map((f) => readFileSync(join(dir, f), 'utf8'))
+      : [];
+    expect(logged.join('\n')).not.toContain('command.start');
+    expect(logged).toEqual([]);
   }, 60_000);
 
   it('still works when MM_CONFIG_DIR is a regular file', () => {

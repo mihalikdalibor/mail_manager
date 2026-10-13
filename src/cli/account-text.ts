@@ -73,7 +73,7 @@ export function refAmbiguousText(ref: string, count: number): string {
 
 export const NO_ACCOUNTS_TEXT = 'No mailboxes yet — run `mm account add <email>`.';
 
-function lastChecked(date: Date | null, timeZone?: string): string {
+export function lastChecked(date: Date | null, timeZone?: string): string {
   if (date === null || Number.isNaN(date.getTime())) return 'never';
   const parts: Record<string, string> = {};
   const format = new Intl.DateTimeFormat('en-GB', {

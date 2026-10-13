@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.0-blue?style=flat-square" alt="Version 0.9.0">
+  <img src="https://img.shields.io/badge/version-0.10.0-blue?style=flat-square" alt="Version 0.10.0">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange?style=flat-square" alt="Status: pre-alpha">
   <img src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js >= 22.13">
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript strict">
   <img src="https://img.shields.io/badge/Supabase-Auth%20%2B%20Postgres-3FCF8E?style=flat-square&logo=supabase&logoColor=white" alt="Supabase">
 </p>
 
-> **Status: pre-alpha (v0.9.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist, plus local leak-free logging (every command leaves app log lines in `<config dir>/logs/`; logins and the login guard write security lines — see [docs/LOGGING.md](docs/LOGGING.md)); mailbox accounts (`mm account add / list / test / update-password / remove`) with the password encrypted and bound to the mailbox's server; and a read-only look inside a mailbox: `mm folders` (the folder tree with messages, unread, sizes and quota, plus a folder and mail browser in a terminal) and `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails). See [TODO.md](TODO.md) for progress.
+> **Status: pre-alpha (v0.10.0).** Project scaffold, setup checks (`mm doctor`), the Supabase database with row-level security, app login (`mm login` / `whoami` / `logout`), IMAP settings discovery (`mm discover`) and a secure IMAP login in the core library (verified TLS, no automatic retry, password-safe errors, plus a login guard against brute-force attempts) and a live IMAP test ground (a deterministic 150-message synthetic mailbox folder, filled and removed by guarded `npm run test:seed` / `test:unseed` scripts) exist, plus local leak-free logging (every command leaves app log lines in `<config dir>/logs/`; logins and the login guard write security lines — see [docs/LOGGING.md](docs/LOGGING.md)); mailbox accounts (`mm account add / list / test / update-password / remove`) with the password encrypted and bound to the mailbox's server; and a read-only look inside a mailbox: `mm folders` (the folder tree with messages, unread, sizes and quota, plus a folder and mail browser in a terminal) and `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails). See [TODO.md](TODO.md) for progress.
 
 ## What is this
 
@@ -24,6 +24,8 @@ Two decisions define it. **Email content never reaches the cloud**: Supabase hol
 
 Available today:
 
+- **`mm`** (the app) — plain `mm` in a terminal opens a full-screen app: sign in, see your mailboxes, add one (settings are looked up, the password is tested and saved encrypted), open one to see its folders with usage bars and quota, browse its mails read-only, see its stats (years, top senders and domains, largest mails — read in the background) and read the logs. Every command below still works for scripts.
+- **Filters** (in the app) — `/` in a folder filters its mails, `o` orders them, `m` marks every match. A line such as `shop.sk older:1y larger:1mb` or `from:@shop.example -att` says what to show; a term is turned around with `-`.
 - **`mm doctor`** — checks Node version, env config, master key, Supabase reachability, database schema and login session; never prints secrets.
 - **`mm keygen`** — generates a new `MM_MASTER_KEY` for credential encryption.
 - **`mm login` / `mm logout` / `mm whoami`** — sign in to the app (invite-only Supabase users, hidden password prompt); `mm login` while already signed in asks you to run `mm logout` first.
@@ -88,13 +90,14 @@ npm run db:push                 # creates the tables (RLS included)
 # users are invite-only: create one in the Supabase dashboard (Auth → Users → Add user)
 npm run dev -- login
 npm run dev -- whoami
+npm run dev                     # in a terminal: opens the app (sign in, your mailboxes, add one, folders, mails, stats, logs)
 
 # optional: install the `mm` command globally from this checkout
 npm run build && npm link
 mm --help
 ```
 
-Available commands so far: `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`, `mm logs` (what this computer's runs did, in plain words: `mm logs --since 7d`, `--security`, `--json` for support; `mm logs path`, `mm logs clear`), `mm account add / list / test / update-password / remove` (connect and manage mailboxes; `mm --help` shows a getting-started list), `mm folders` (the folder tree with messages, unread, sizes and quota; in a terminal, a read-only folder and mail browser), `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails; `--folder <path>`, `--json`).
+Available commands so far: `mm` / `mm app` (the app: sign-in page, Home, add a mailbox, a mailbox's folders with usage bars, quota, a read-only mail browser and its stats, and the logs — plain `mm` in a terminal opens it), `mm login`, `mm logout`, `mm whoami`, `mm keygen`, `mm doctor`, `mm discover`, `mm logs` (what this computer's runs did, in plain words: `mm logs --since 7d`, `--security`, `--json` for support; `mm logs path`, `mm logs clear`), `mm account add / list / test / update-password / remove` (connect and manage mailboxes; `mm --help` shows a getting-started list), `mm folders` (the folder tree with messages, unread, sizes and quota; in a terminal, a read-only folder and mail browser), `mm stats` (where the space goes: per folder, per year, top senders and domains, the largest mails; `--folder <path>`, `--json`).
 
 ### Environment
 
@@ -145,7 +148,7 @@ src/
     db/         repository interfaces (repos.ts); Supabase code only in db/supabase/
     providers/  IMAP settings discovery + provider presets (presets.json)
     imap/       secure IMAP session, server features, typed connection errors
-    filters/    placeholder for M3
+    filters/    filter model, compiler, the app's filter line
   server/       placeholder for the M6 web UI
 supabase/migrations/   SQL migrations (applied with npm run db:push)
 tests/unit/            Vitest unit tests

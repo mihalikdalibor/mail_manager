@@ -9,7 +9,14 @@ import { isUserFacing } from '../../src/cli/error-text.js';
 import { buildProgram } from '../../src/cli/index.js';
 import type { BuildOptions } from '../../src/cli/index.js';
 import { reportError } from '../../src/cli/report-error.js';
-import { createRunLog, runCli, RunLogger } from '../../src/cli/run.js';
+import {
+  DEFAULT_COMMAND,
+  createRunLog,
+  isInteractive,
+  runCli,
+  RunLogger,
+  withDefaultCommand,
+} from '../../src/cli/run.js';
 import type { ProcLike } from '../../src/cli/run.js';
 import { ConfigError } from '../../src/core/config.js';
 import type { EnvSource } from '../../src/core/config.js';
@@ -149,6 +156,7 @@ async function run(
     proc?: FakeProc;
     flush?: () => Promise<void>;
     streams?: NodeJS.EventEmitter[];
+    interactive?: boolean;
   } = {},
 ): Promise<{ log: EventLog; proc: FakeProc }> {
   const log = options.log ?? new MemoryEventLog(CTX);
@@ -161,6 +169,7 @@ async function run(
     proc,
     flush: options.flush ?? (() => Promise.resolve()),
     ...(options.streams ? { streams: options.streams } : {}),
+    ...(options.interactive !== undefined ? { interactive: options.interactive } : {}),
     root: REPO_ROOT,
   });
   return { log, proc };
@@ -189,6 +198,7 @@ describe('runCli: every command logs start and finish', () => {
   it('finds the known commands', () => {
     expect(all.map((l) => l.path)).toEqual(
       expect.arrayContaining([
+        'app',
         'login',
         'logout',
         'whoami',
@@ -373,6 +383,161 @@ describe('runCli: commander exits write nothing', () => {
   it('--help still prints the help', async () => {
     await run(['--help']);
     expect(out.stdout).toContain('keygen');
+  });
+});
+
+describe('isInteractive', () => {
+  const TTY = { isTTY: true };
+
+  it('stdin and stdout a terminal, TERM not dumb: the app can be shown', () => {
+    expect(isInteractive(TTY, TTY, { TERM: 'xterm-256color' })).toBe(true);
+    expect(isInteractive(TTY, TTY, { TERM: 'linux' })).toBe(true);
+    // TERM missing or empty is not "dumb".
+    expect(isInteractive(TTY, TTY, {})).toBe(true);
+    expect(isInteractive(TTY, TTY, { TERM: '' })).toBe(true);
+    expect(isInteractive(TTY, TTY, { TERM: undefined })).toBe(true);
+  });
+
+  it.each([
+    ['a pipe (isTTY missing)', {}],
+    ['isTTY undefined', { isTTY: undefined }],
+    ['isTTY false', { isTTY: false }],
+    ['isTTY null', { isTTY: null }],
+    ['isTTY the text "true"', { isTTY: 'true' }],
+    ['isTTY 1', { isTTY: 1 }],
+  ])('%s on either side is not a terminal', (_label, stream) => {
+    expect(isInteractive(stream, TTY, { TERM: 'xterm' })).toBe(false);
+    expect(isInteractive(TTY, stream, { TERM: 'xterm' })).toBe(false);
+    expect(isInteractive(stream, stream, { TERM: 'xterm' })).toBe(false);
+  });
+
+  it('TERM=dumb is not a terminal for the app, whatever the streams say', () => {
+    expect(isInteractive(TTY, TTY, { TERM: 'dumb' })).toBe(false);
+    expect(isInteractive({}, {}, { TERM: 'dumb' })).toBe(false);
+  });
+
+  it('reads nothing but isTTY and TERM', () => {
+    const env = { TERM: 'xterm', MM_MASTER_KEY: 'x', NO_COLOR: '1', CI: 'true' };
+    expect(isInteractive({ isTTY: true }, { isTTY: true }, env)).toBe(true);
+    expect(env).toEqual({ TERM: 'xterm', MM_MASTER_KEY: 'x', NO_COLOR: '1', CI: 'true' });
+  });
+
+  it('what it says decides whether plain mm becomes `mm app`', () => {
+    const argv = ['node', 'mm'];
+    expect(withDefaultCommand(argv, isInteractive(TTY, TTY, { TERM: 'xterm' }))).toEqual([
+      'node',
+      'mm',
+      'app',
+    ]);
+    expect(withDefaultCommand(argv, isInteractive({}, TTY, { TERM: 'xterm' }))).toEqual(argv);
+    expect(withDefaultCommand(argv, isInteractive(TTY, TTY, { TERM: 'dumb' }))).toEqual(argv);
+  });
+});
+
+describe('withDefaultCommand', () => {
+  it('the default command is a registered command', () => {
+    expect(DEFAULT_COMMAND).toBe('app');
+    const names = buildProgram({ exitOverride: true }).commands.map((c) => c.name());
+    expect(names).toContain(DEFAULT_COMMAND);
+  });
+
+  it('in a terminal, nothing after the program name: the default command is added', () => {
+    expect(withDefaultCommand(['node', 'mm'], true)).toEqual(['node', 'mm', 'app']);
+    expect(withDefaultCommand(['/usr/bin/node', '/opt/mm/dist/cli/bin.js'], true)).toEqual([
+      '/usr/bin/node',
+      '/opt/mm/dist/cli/bin.js',
+      'app',
+    ]);
+  });
+
+  it('without a terminal the argv is untouched', () => {
+    expect(withDefaultCommand(['node', 'mm'], false)).toEqual(['node', 'mm']);
+  });
+
+  it.each([
+    [['nosuchcmd']],
+    [['--help']],
+    [['-h']],
+    [['--version']],
+    [['-V']],
+    [['app']],
+    [['keygen']],
+    [['account', 'list']],
+    [['login', '--email', ADDRESS]],
+    [['']],
+  ])('with arguments (%j) it is never changed, terminal or not', (args) => {
+    const argv = ['node', 'mm', ...args];
+    expect(withDefaultCommand(argv, true)).toEqual(argv);
+    expect(withDefaultCommand(argv, false)).toEqual(argv);
+  });
+
+  it('gives back a copy and leaves the input alone', () => {
+    const argv = ['node', 'mm'];
+    const out1 = withDefaultCommand(argv, true);
+    const out2 = withDefaultCommand(argv, false);
+    expect(argv).toEqual(['node', 'mm']);
+    expect(out1).not.toBe(argv);
+    expect(out2).not.toBe(argv);
+    const frozen: readonly string[] = Object.freeze(['node', 'mm', 'keygen']);
+    expect(withDefaultCommand(frozen, true)).toEqual(['node', 'mm', 'keygen']);
+  });
+});
+
+describe('runCli: plain mm', () => {
+  const VERSION_TEXT = buildProgram({ exitOverride: true }).version() ?? '';
+
+  it('interactive and no arguments: the app command runs and is logged as `app`', async () => {
+    const action = vi.fn();
+    const { log, proc } = await run([], { interactive: true, build: stubbed(action) });
+    expect(action).toHaveBeenCalledTimes(1);
+    const recs = records(log);
+    expect(recs.map((r) => r.event)).toEqual(['command.start', 'command.finish']);
+    expect(recs[0]).toMatchObject({ cmd: DEFAULT_COMMAND, opts: [] });
+    expect(recs[1]).toMatchObject({ cmd: DEFAULT_COMMAND, outcome: 'ok', exit: 0 });
+    expect(out.stdout).not.toContain('Usage:');
+    expect(proc.exits).toHaveLength(1);
+  });
+
+  it.each([
+    ['not interactive', { interactive: false }],
+    ['interactive not given', {}],
+  ])(
+    '%s: the help as before, exit code 1, no log line, no command run',
+    async (_label, options) => {
+      const action = vi.fn();
+      const { log } = await run([], { ...options, build: stubbed(action) });
+      expect(action).not.toHaveBeenCalled();
+      expect(records(log)).toEqual([]);
+      expect(`${out.stdout}${out.stderr}`).toContain('Usage: mm');
+      expect(`${out.stdout}${out.stderr}`).toContain('Getting started:');
+      expect(process.exitCode).toBe(1);
+    },
+  );
+
+  it.each([
+    ['an unknown command', ['nosuchcmd'], "unknown command 'nosuchcmd'"],
+    ['--help', ['--help'], 'Usage: mm'],
+    ['--version', ['--version'], VERSION_TEXT],
+    ['a missing argument', ['discover'], "missing required argument 'email'"],
+  ])('interactive with %s behaves as without a terminal', async (_label, argv, text) => {
+    const action = vi.fn();
+    const withTerminal = await run(argv, { interactive: true, build: stubbed(action) });
+    const seen = `${out.stdout}${out.stderr}`;
+    const exit = process.exitCode;
+    expect(seen).toContain(text);
+    expect(records(withTerminal.log)).toEqual([]);
+    out = { stdout: '', stderr: '' };
+    process.exitCode = undefined;
+    const without = await run(argv, { interactive: false, build: stubbed(action) });
+    expect(`${out.stdout}${out.stderr}`).toBe(seen);
+    expect(process.exitCode).toBe(exit);
+    expect(records(without.log)).toEqual([]);
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('interactive with a command runs that command, not the app', async () => {
+    const { log } = await run(['keygen'], { interactive: true });
+    expect(records(log).map((r) => r['cmd'])).toEqual(['keygen', 'keygen']);
   });
 });
 

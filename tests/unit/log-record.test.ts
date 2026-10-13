@@ -37,6 +37,7 @@ const APP_EVENTS = [
   'imap.capability-fallback',
   'browse.finish',
   'stats.finish',
+  'search.finish',
 ] as const;
 const SECURITY_EVENTS = [
   'auth.login',
@@ -87,7 +88,7 @@ describe('constants', () => {
     expect(SECURITY_PREFIX).toBe('mm-security ');
   });
 
-  it('lists exactly the M1b-4a, M1b-4b, M1b-4d, M1c-1, M2a, M2b-2 and M2c-1 events', () => {
+  it('lists exactly the M1b-4a, M1b-4b, M1b-4d, M1c-1, M2a, M2b-2, M2c-1 and M3a events', () => {
     expect([...LOG_EVENT_NAMES].sort()).toEqual([...APP_EVENTS, ...SECURITY_EVENTS].sort());
   });
 

@@ -10,6 +10,7 @@ import {
   type MailboxLockOptions,
   type MessageEnvelopeObject,
   type MessageStructureObject,
+  type SearchObject,
   type StatusObject,
   type StatusQuery,
 } from 'imapflow';
@@ -63,6 +64,15 @@ export interface StatsQuery {
   size: true;
 }
 
+/** What a filter's pass over its candidates fetches (M3a): no body, no flags. */
+export interface SearchPassQuery {
+  uid: true;
+  size: true;
+  internalDate: true;
+  envelope?: true;
+  bodyStructure?: true;
+}
+
 /** A fetched message as the mailbox code reads it: every field optional (server data). */
 export interface FetchedMessage {
   seq?: number | undefined;
@@ -104,9 +114,15 @@ export interface ImapClientLike {
    */
   fetch(
     range: string,
-    query: { size: true } | MessagePageQuery | StatsQuery,
+    query: { size: true } | MessagePageQuery | StatsQuery | SearchPassQuery,
     options?: FetchOptions,
   ): AsyncIterable<FetchedMessage>;
+  /**
+   * UID SEARCH (`{ uid: true }`): the matching UIDs; false / undefined when the server refused.
+   * Optional only so that test fakes which never search need not implement it - a real ImapFlow
+   * always has it.
+   */
+  search?(query: SearchObject, options?: { uid?: boolean }): Promise<number[] | false | undefined>;
 }
 
 export interface OpenSessionOptions {

@@ -68,9 +68,12 @@ export function foundVia(source: DiscoverySource, via: string | undefined): stri
   return via === undefined ? SOURCE_LABEL[source] : `${SOURCE_LABEL[source]} — ${via}`;
 }
 
+/** One source that gave no settings: `Mozilla ISPDB: failed (HTTP 500)`. */
+export function triedText(t: Tried): string {
+  const detail = t.detail === undefined ? '' : ` (${t.detail})`;
+  return `${SOURCE_LABEL[t.source]}: ${OUTCOME_LABEL[t.outcome]}${detail}`;
+}
+
 export function printTried(tried: Tried[]): void {
-  for (const t of tried) {
-    const detail = t.detail === undefined ? '' : ` (${t.detail})`;
-    line('  tried', `${SOURCE_LABEL[t.source]}: ${OUTCOME_LABEL[t.outcome]}${detail}`);
-  }
+  for (const t of tried) line('  tried', triedText(t));
 }

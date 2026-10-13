@@ -153,6 +153,14 @@ export function createBrowser(deps: BrowserDeps): Browser {
       case 'quit':
         finish('quit');
         return;
+      case 'leave':
+        // Only an embedded browser (the app) leaves; this one is never embedded.
+        return;
+      case 'search':
+      case 'load-matches':
+      case 'stop-search':
+        // Only the app's mail list filters; this browser never asks for these.
+        return;
     }
   }
 

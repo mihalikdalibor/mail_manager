@@ -34,6 +34,8 @@ const MAILBOX_ERROR_TEXT: Record<MailboxErrorCode, string> = {
     'There is no folder with that path in this mailbox — use the full path from `mm folders --json` (e.g. "INBOX.Sent" or "[Gmail]/Sent Mail").',
   'gmail-all-hidden':
     'Gmail hides "All Mail" from IMAP for this account, so the totals can\'t be counted without double counting labels. Turn on "Show in IMAP" for All Mail in Gmail\'s settings (Labels), or pick one folder with --folder.',
+  'search-failed': "The mail server couldn't run this search — try a simpler filter.",
+  'too-many-matches': 'Too many mails match (more than 500,000) — narrow the filter.',
 };
 
 /** true for errors with a text written for users; anything else is unexpected. */

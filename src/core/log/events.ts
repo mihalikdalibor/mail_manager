@@ -2,6 +2,7 @@ import type { LogLevel } from '../config.js';
 import type { CheckStatus } from '../doctor.js';
 import type { ImapFailureReason } from '../imap/errors.js';
 import type { AuditAction } from '../db/repos.js';
+import type { Criterion } from '../filters/schema.js';
 import type { MailboxErrorCode } from '../mailbox/errors.js';
 import type { FallbackFeature, FallbackKind } from '../mailbox/folders.js';
 import type { DiscoverySource, DomainProblem } from '../providers/discover.js';
@@ -225,6 +226,23 @@ export interface StatsFinishEvent {
   reason?: AccountFailureReason;
 }
 
+/** One filter search that ended (M3a): counts, bytes and criterion names — never a value. */
+export interface SearchFinishEvent {
+  event: 'search.finish';
+  /** Mail account UUID. */
+  acct?: string;
+  /** Mails that matched (0 on failure). */
+  count: number;
+  /** Sum of their known sizes (0 on failure). */
+  bytes: number;
+  ms: number;
+  /** The names of the criteria used, e.g. `from`, `olderThan`, `larger`: never their values. */
+  criteria: Criterion[];
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: AccountFailureReason;
+}
+
 /** A missing server feature and the fallback that ran instead (app log; once per run). */
 export interface CapabilityFallbackEvent {
   event: 'imap.capability-fallback';
@@ -254,7 +272,8 @@ export type LogEvent =
   | FoldersListEvent
   | CapabilityFallbackEvent
   | BrowseFinishEvent
-  | StatsFinishEvent;
+  | StatsFinishEvent
+  | SearchFinishEvent;
 
 export type LogEventName = LogEvent['event'];
 
@@ -296,6 +315,7 @@ export const EVENT_FIELDS: {
     'reason',
   ],
   'stats.finish': ['acct', 'folders', 'messages', 'bytes', 'ms', 'outcome', 'reason'],
+  'search.finish': ['acct', 'count', 'bytes', 'ms', 'criteria', 'outcome', 'reason'],
 };
 
 export const EVENT_KIND: Record<LogEventName, LogKind> = {
@@ -322,6 +342,7 @@ export const EVENT_KIND: Record<LogEventName, LogKind> = {
   'imap.capability-fallback': 'app',
   'browse.finish': 'app',
   'stats.finish': 'app',
+  'search.finish': 'app',
 };
 
 export const LOG_EVENT_NAMES = Object.keys(EVENT_FIELDS) as LogEventName[];
@@ -337,6 +358,7 @@ export function eventLevel(e: LogEvent): LogLevel {
     case 'account.remove':
     case 'folders.list':
     case 'stats.finish':
+    case 'search.finish':
       return e.outcome === 'ok' ? 'info' : 'warn';
     case 'browse.finish':
       return e.outcome === 'failed' ? 'warn' : 'info';

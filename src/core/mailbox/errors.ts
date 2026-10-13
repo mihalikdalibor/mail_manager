@@ -7,7 +7,9 @@ export type MailboxErrorCode =
   | 'connection-lost'
   | 'folder-unavailable'
   | 'folder-not-found'
-  | 'gmail-all-hidden';
+  | 'gmail-all-hidden'
+  | 'search-failed'
+  | 'too-many-matches';
 
 export const MAILBOX_ERROR_CODES: readonly MailboxErrorCode[] = [
   'list-failed',
@@ -15,6 +17,8 @@ export const MAILBOX_ERROR_CODES: readonly MailboxErrorCode[] = [
   'folder-unavailable',
   'folder-not-found',
   'gmail-all-hidden',
+  'search-failed',
+  'too-many-matches',
 ];
 
 const MAILBOX_ERROR_MESSAGES: Record<MailboxErrorCode, string> = {
@@ -23,6 +27,8 @@ const MAILBOX_ERROR_MESSAGES: Record<MailboxErrorCode, string> = {
   'folder-unavailable': 'The mail server could not open this folder',
   'folder-not-found': 'There is no folder with that path',
   'gmail-all-hidden': 'Gmail hides All Mail from IMAP',
+  'search-failed': 'The mail server could not run this search',
+  'too-many-matches': 'Too many messages match this search',
 };
 
 export class MailboxError extends Error {
@@ -32,5 +38,13 @@ export class MailboxError extends Error {
     super(MAILBOX_ERROR_MESSAGES[code]);
     this.name = 'MailboxError';
     this.code = code;
+  }
+}
+
+/** A search the caller stopped (`shouldStop`): not a failure, never shown or logged. */
+export class SearchStopped extends Error {
+  constructor() {
+    super('The search was stopped');
+    this.name = 'SearchStopped';
   }
 }

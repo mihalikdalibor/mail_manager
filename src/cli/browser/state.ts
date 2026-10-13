@@ -1,3 +1,5 @@
+import { EMPTY_FILTER, type Filter } from '../../core/filters/schema.js';
+import { MAX_FILTER_LINE, parseFilterLine, type LineError } from '../../core/filters/line.js';
 import type { MailboxErrorCode } from '../../core/mailbox/errors.js';
 import type { FolderInfo } from '../../core/mailbox/folders.js';
 import {
@@ -15,6 +17,8 @@ import {
   type Basket,
   type Mark,
 } from '../../core/mailbox/basket.js';
+import type { Match, SearchResult } from '../../core/mailbox/search.js';
+import { erased, typed } from './field.js';
 
 // State of the interactive folder browser (M2b): a pure reducer. Every input (a key, a page
 // that arrived, a failure, a resize) gives a new state plus effects — loads, a reconnect, quit
@@ -24,6 +28,14 @@ import {
 // Rows of the current place: its subfolders first, then its mails newest arrived first. Mail
 // rows are virtual: index m ↔ sequence `exists - m`, page `floor(m / PAGE_SIZE)`; at most
 // MAX_PAGES pages are held.
+//
+// Inside the app (M2d-2) the same reducer runs with `embedded` set (`openEmbedded`): the browser
+// starts in one folder, and Back there - or its first page failing - gives a `leave` effect
+// instead of climbing to the parent. Without `embedded` nothing differs.
+//
+// Inside the app (M3a) the mail list can also be a listing: the matches of a filter line, in an
+// order, with their rows read by UID (`view.listing`). The reducer says what to search and what
+// to read; the shell runs it. The typed filter line is held for display only and never logged.
 
 export type BrowserKey =
   | 'up'
@@ -38,6 +50,9 @@ export type BrowserKey =
   | 'yes'
   | 'no'
   | 'reconnect'
+  | 'filter'
+  | 'order'
+  | 'mark-all'
   | 'other';
 
 /** The shape of a `node:readline` keypress. */
@@ -60,6 +75,27 @@ export const MAX_CHANGES = 3;
 /** Below this size only "window too small" is shown and only quit acts. */
 export const MIN_COLS = 40;
 export const MIN_ROWS = 8;
+/** Marks made at once by `m` on a listing: more matches than this are not marked. */
+export const MARK_ALL_MAX = 100_000;
+
+export type MailOrder = 'newest' | 'oldest' | 'largest';
+
+/** One key of the filter line: a typed character, or an edit / end key. */
+export type LineKey =
+  { type: 'char'; text: string } | { type: 'backspace' | 'clear' | 'enter' | 'escape' };
+
+/** A filtered and / or ordered list of the open folder (the app only). */
+export interface Listing {
+  /** The filter line as applied; '' = every mail. */
+  text: string;
+  filter: Filter;
+  order: MailOrder;
+  /** In display order; null while the search runs. */
+  matches: readonly Match[] | null;
+  /** Sum of the matches' known sizes (0 while searching). */
+  bytes: number;
+  progress: { done: number; total: number } | null;
+}
 
 export interface FolderView {
   path: string;
@@ -72,6 +108,8 @@ export interface FolderView {
   loading: number | null;
   /** `changed` results in a row (reset by a page): capped at MAX_CHANGES. */
   changes: number;
+  /** Absent = the plain list of the folder. */
+  listing?: Listing | undefined;
 }
 
 export type StatusMessage =
@@ -84,10 +122,13 @@ export type StatusMessage =
         | 'page-failed'
         | 'offline';
     }
+  | { code: 'search-failed' | 'too-many-matches' | 'mark-all-needs-list' }
+  | { code: 'too-many-to-mark' | 'marked-all' | 'unmarked-all' | 'search-partial'; count: number }
   | { code: 'marks-cleared'; count: number }
   | { code: 'text'; text: string };
 
-export type BrowserMode = 'browse' | 'confirm-quit' | 'reconnect-ask' | 'reconnecting';
+export type BrowserMode =
+  'browse' | 'confirm-quit' | 'reconnect-ask' | 'reconnecting' | 'filter-edit';
 
 /** What `browse.finish` reports (M2b-2). */
 export interface BrowserStats {
@@ -117,6 +158,10 @@ export interface BrowserState {
   /** The user declined to reconnect: only what is loaded is shown. */
   offline: boolean;
   stats: BrowserStats;
+  /** Inside the app only: the folder the browser was opened in - Back there leaves it. */
+  embedded?: { entry: string };
+  /** The filter line while it is open (mode `filter-edit`); removed when it closes. */
+  edit?: { line: string; error: LineError | null } | undefined;
 }
 
 export type MailRowStatus = 'loaded' | 'loading' | 'failed' | 'pending' | 'unreadable';
@@ -134,9 +179,13 @@ export type Row =
 
 export type BrowserAction =
   | { type: 'key'; key: BrowserKey }
+  | { type: 'line'; key: LineKey }
   | { type: 'resize'; screen: Screen }
   | { type: 'page-loaded'; generation: number; path: string; page: number; result: PageResult }
   | { type: 'load-failed'; generation: number; path: string; page: number; code: MailboxErrorCode }
+  | { type: 'search-progress'; generation: number; path: string; done: number; total: number }
+  | { type: 'search-done'; generation: number; path: string; result: SearchResult }
+  | { type: 'search-failed'; generation: number; path: string; code: MailboxErrorCode }
   | { type: 'reconnected' }
   | { type: 'reconnect-failed'; text: string }
   | { type: 'notice'; text: string };
@@ -149,8 +198,20 @@ export type BrowserEffect =
       page: number;
       expected: FolderSnapshot | null;
     }
+  | {
+      type: 'load-matches';
+      generation: number;
+      path: string;
+      page: number;
+      expected: FolderSnapshot;
+      uids: number[];
+    }
+  | { type: 'search'; generation: number; path: string; filter: Filter }
+  | { type: 'stop-search' }
   | { type: 'reconnect' }
-  | { type: 'quit' };
+  | { type: 'quit' }
+  /** Embedded only: out of the browser, with why when the entry folder couldn't be opened. */
+  | { type: 'leave'; message: 'folder-unavailable' | null };
 
 export interface Reduced {
   state: BrowserState;
@@ -208,9 +269,48 @@ export function initialState(
   };
 }
 
+/**
+ * The browser inside the app: opened in the folder `entry` (counted as opened), with the marks
+ * and stats of the mailbox visit so far; the effect loads its first page. `entry` must be a path
+ * of `folders`.
+ */
+export function openEmbedded(
+  title: string,
+  folders: readonly FolderInfo[],
+  screen: Screen,
+  entry: string,
+  basket: Basket,
+  stats: BrowserStats,
+): Reduced {
+  const folder = folders.find((f) => f.path === entry);
+  // A bug in the caller, not a user case; the name stays out of the message.
+  if (folder === undefined) throw new Error('openEmbedded: the entry folder is not in the tree');
+  const start: BrowserState = {
+    ...initialState(title, folders, screen),
+    basket,
+    stats: { ...stats, foldersOpened: stats.foldersOpened + 1 },
+    embedded: { entry },
+  };
+  return nextLoad(enterFolder(start, folder));
+}
+
 /** Body lines between the header and the status + help lines. */
 export function bodyHeight(screen: Screen): number {
   return Math.max(1, screenOf(screen).rows - 3);
+}
+
+function listingOf(state: BrowserState): Listing | undefined {
+  return state.view?.listing;
+}
+
+/** The filter row is shown while the line is open and while a listing is on. */
+function filterRow(state: BrowserState): boolean {
+  return state.mode === 'filter-edit' || listingOf(state) !== undefined;
+}
+
+/** Rows of the list: the body minus the filter row when one is shown. */
+export function listHeight(state: BrowserState): number {
+  return Math.max(1, bodyHeight(state.screen) - (filterRow(state) ? 1 : 0));
 }
 
 function size(n: number): number {
@@ -222,11 +322,15 @@ export function screenOf(screen: Screen): Screen {
   return { rows: size(screen.rows), cols: size(screen.cols) };
 }
 
+/** A listing shows the matches only: the subfolders of the folder are left out. */
 export function childFolders(state: BrowserState): readonly FolderInfo[] {
+  if (listingOf(state) !== undefined) return [];
   return state.folders.filter((f) => f.parentPath === state.path);
 }
 
 function mailCount(state: BrowserState): number {
+  const listing = listingOf(state);
+  if (listing !== undefined) return listing.matches?.length ?? 0;
   return state.view?.snapshot?.exists ?? 0;
 }
 
@@ -241,8 +345,27 @@ function mailStatus(view: FolderView, page: number, mail: MessageRow | null): Ma
   return 'pending';
 }
 
+/** The i-th match of a listing; its mail when its page is loaded. Nothing while the search runs. */
+function listedRowAt(state: BrowserState, listing: Listing, i: number): Row | null {
+  const view = state.view;
+  const match = listing.matches?.[i];
+  if (view === null || match === undefined) return null;
+  const page = Math.floor(i / PAGE_SIZE);
+  const mail = view.pages.get(page)?.find((r) => r.uid === match.uid) ?? null;
+  return {
+    kind: 'mail',
+    index: i,
+    seq: mail?.seq ?? 0,
+    page,
+    mail,
+    status: mailStatus(view, page, mail),
+  };
+}
+
 export function rowAt(state: BrowserState, i: number): Row | null {
   if (!Number.isSafeInteger(i) || i < 0) return null;
+  const listing = listingOf(state);
+  if (listing !== undefined) return listedRowAt(state, listing, i);
   const children = childFolders(state);
   const folder = children[i];
   if (folder !== undefined) return { kind: 'folder', folder };
@@ -263,7 +386,7 @@ function folderAt(state: BrowserState, path: string | null): FolderInfo | undefi
 /** Cursor clamped to the rows and kept on screen. */
 function placed(state: BrowserState, cursor: number): BrowserState {
   const total = rowCount(state);
-  const body = bodyHeight(state.screen);
+  const body = listHeight(state);
   const c = total === 0 ? 0 : Math.min(Math.max(0, cursor), total - 1);
   let top = state.scrollTop;
   if (c < top) top = c;
@@ -285,7 +408,7 @@ function visiblePages(state: BrowserState): number[] {
   const n = childFolders(state).length;
   const exists = mailCount(state);
   const first = Math.max(0, state.scrollTop - n);
-  const last = Math.min(exists - 1, state.scrollTop + bodyHeight(state.screen) - 1 - n);
+  const last = Math.min(exists - 1, state.scrollTop + listHeight(state) - 1 - n);
   const pages: number[] = [];
   for (
     let p = Math.floor(first / PAGE_SIZE);
@@ -301,24 +424,41 @@ function withView(state: BrowserState, view: FolderView): BrowserState {
   return { ...state, view };
 }
 
+/**
+ * A page of the listing (its UIDs in display order) when there is one; else a page of the folder.
+ */
 function startLoad(state: BrowserState, view: FolderView, page: number): Reduced {
-  return {
-    state: withView(state, { ...view, loading: page }),
-    effects: [
-      {
-        type: 'load',
-        generation: state.generation,
-        path: view.path,
-        page,
-        expected: view.snapshot,
-      },
-    ],
-  };
+  const matches = view.listing?.matches ?? null;
+  const effect: BrowserEffect =
+    matches !== null && view.snapshot !== null
+      ? {
+          type: 'load-matches',
+          generation: state.generation,
+          path: view.path,
+          page,
+          expected: view.snapshot,
+          uids: matches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((m) => m.uid),
+        }
+      : {
+          type: 'load',
+          generation: state.generation,
+          path: view.path,
+          page,
+          expected: view.snapshot,
+        };
+  return { state: withView(state, { ...view, loading: page }), effects: [effect] };
+}
+
+/** A search of the open folder is under way: its matches are not in yet. */
+function searching(view: FolderView | null): boolean {
+  const listing = view?.listing;
+  return listing !== undefined && listing.matches === null;
 }
 
 /** The next page to load (nothing in flight): cursor's page first, then the visible ones. */
 function nextLoad(state: BrowserState): Reduced {
   const view = state.view;
+  if (searching(view)) return { state, effects: [] };
   if (
     state.offline ||
     view === null ||
@@ -355,20 +495,25 @@ function enterFolder(state: BrowserState, folder: FolderInfo, cursorPath?: strin
   const opened: BrowserState = {
     ...state,
     path: folder.path,
-    view: {
-      path: folder.path,
-      selectable: folder.selectable,
-      snapshot: null,
-      pages: new Map(),
-      failed: new Set(),
-      loading: null,
-      changes: 0,
-    },
+    view: freshView(folder),
     generation: state.generation + 1,
     cursor: 0,
     scrollTop: 0,
   };
   return cursorOn(opened, cursorPath);
+}
+
+/** The plain view of a folder, nothing read yet (no listing). */
+function freshView(folder: FolderInfo): FolderView {
+  return {
+    path: folder.path,
+    selectable: folder.selectable,
+    snapshot: null,
+    pages: new Map(),
+    failed: new Set(),
+    loading: null,
+    changes: 0,
+  };
 }
 
 function cursorOn(state: BrowserState, path: string | undefined): BrowserState {
@@ -391,6 +536,77 @@ function goBack(state: BrowserState): BrowserState {
     scrollTop: 0,
   };
   return cursorOn(root, left);
+}
+
+/** Compares two values, either of which may be missing: a missing one sorts last. */
+function nullsLast(
+  a: number | null,
+  b: number | null,
+  compare: (x: number, y: number) => number,
+): number {
+  if (a === null || b === null) return (a === null ? 1 : 0) - (b === null ? 1 : 0);
+  return compare(a, b);
+}
+
+/** A new array: newest first, oldest first or largest first; ties by UID. */
+export function sortMatches(matches: readonly Match[], order: MailOrder): Match[] {
+  const sorted = [...matches];
+  sorted.sort((a, b) => {
+    if (order === 'largest') return nullsLast(a.bytes, b.bytes, (x, y) => y - x) || b.uid - a.uid;
+    if (order === 'oldest') {
+      return nullsLast(a.received, b.received, (x, y) => x - y) || a.uid - b.uid;
+    }
+    return nullsLast(a.received, b.received, (x, y) => y - x) || b.uid - a.uid;
+  });
+  return sorted;
+}
+
+/** The plain list of the open folder again; a search under way is stopped. */
+function plainList(state: BrowserState): Reduced {
+  const folder = folderAt(state, state.path);
+  if (folder === undefined) return { state, effects: [] };
+  const stop: BrowserEffect[] = searching(state.view) ? [{ type: 'stop-search' }] : [];
+  const out = nextLoad(enterFolder(state, folder));
+  return { state: out.state, effects: [...stop, ...out.effects] };
+}
+
+/**
+ * The open folder listed by `filter` in `order`: a search is started. Without a filter and with
+ * the order "newest" it is the plain list.
+ */
+function applyListing(
+  state: BrowserState,
+  text: string,
+  filter: Filter,
+  order: MailOrder,
+): Reduced {
+  if (text === '' && order === 'newest') return plainList(state);
+  const folder = folderAt(state, state.path);
+  if (folder === undefined) return { state, effects: [] };
+  const stop: BrowserEffect[] = searching(state.view) ? [{ type: 'stop-search' }] : [];
+  const opened = enterFolder(state, folder);
+  const listing: Listing = { text, filter, order, matches: null, bytes: 0, progress: null };
+  return {
+    state: { ...opened, view: { ...freshView(folder), listing }, message: null },
+    effects: [
+      ...stop,
+      { type: 'search', generation: opened.generation, path: folder.path, filter },
+    ],
+  };
+}
+
+/** The app's list keys act only inside the app, online, in a folder that can be listed. */
+function canList(state: BrowserState): boolean {
+  return (
+    state.embedded !== undefined && state.view !== null && state.view.selectable && !state.offline
+  );
+}
+
+/** The state with the filter line closed: no `edit`, back to the browse mode. */
+function closeLine(state: BrowserState): BrowserState {
+  const closed: BrowserState = { ...state, mode: 'browse' };
+  delete closed.edit;
+  return closed;
 }
 
 function markOf(snapshot: FolderSnapshot, mail: MessageRow): Mark {
@@ -416,7 +632,7 @@ function toggleScreen(state: BrowserState): BrowserState {
   const snapshot = state.view?.snapshot;
   if (snapshot === null || snapshot === undefined) return state;
   const marks: Mark[] = [];
-  const end = state.scrollTop + bodyHeight(state.screen);
+  const end = state.scrollTop + listHeight(state);
   for (let i = state.scrollTop; i < end; i++) {
     const row = rowAt(state, i);
     if (row?.kind === 'mail' && row.mail !== null) marks.push(markOf(snapshot, row.mail));
@@ -424,6 +640,91 @@ function toggleScreen(state: BrowserState): BrowserState {
   if (marks.length === 0) return state;
   const allMarked = marks.every((m) => isMarked(state.basket, m));
   return { ...state, basket: setMarks(state.basket, marks, !allMarked) };
+}
+
+/** `m` on a listing: marks every match, or unmarks them when all are marked already. */
+function markAll(s: BrowserState): Reduced {
+  if (s.embedded === undefined) return { state: s, effects: [] };
+  const listing = listingOf(s);
+  if (listing === undefined) {
+    return { state: { ...s, message: { code: 'mark-all-needs-list' } }, effects: [] };
+  }
+  const snapshot = s.view?.snapshot;
+  const matches = listing.matches;
+  if (matches === null || snapshot === null || snapshot === undefined) {
+    return { state: s, effects: [] };
+  }
+  if (matches.length === 0) return { state: s, effects: [] };
+  if (matches.length > MARK_ALL_MAX) {
+    return {
+      state: { ...s, message: { code: 'too-many-to-mark', count: matches.length } },
+      effects: [],
+    };
+  }
+  const marks: Mark[] = matches.map((m) => ({
+    path: snapshot.path,
+    uidValidity: snapshot.uidValidity,
+    uid: m.uid,
+    bytes: m.bytes,
+  }));
+  const all = marks.every((m) => isMarked(s.basket, m));
+  return {
+    state: {
+      ...s,
+      basket: setMarks(s.basket, marks, !all),
+      message: { code: all ? 'unmarked-all' : 'marked-all', count: marks.length },
+    },
+    effects: [],
+  };
+}
+
+/** `/`: the filter line opens with the text of the listing (empty on the plain list). */
+function openLine(s: BrowserState): Reduced {
+  const opened: BrowserState = {
+    ...s,
+    mode: 'filter-edit',
+    edit: { line: listingOf(s)?.text ?? '', error: null },
+  };
+  return { state: placed(opened, opened.cursor), effects: [] };
+}
+
+const NEXT_ORDER: Record<MailOrder, MailOrder> = {
+  newest: 'oldest',
+  oldest: 'largest',
+  largest: 'newest',
+};
+
+/**
+ * `o`: the next order. A result on screen is ordered again here, with no search; a search still
+ * running takes the order when its result arrives.
+ */
+function cycleOrder(s: BrowserState): Reduced {
+  const view = s.view;
+  const listing = view?.listing;
+  const next = NEXT_ORDER[listing?.order ?? 'newest'];
+  if (view === null || listing === undefined) return applyListing(s, '', EMPTY_FILTER, next);
+  if (listing.text === '' && next === 'newest') return plainList(s);
+  if (listing.matches === null) {
+    return {
+      state: { ...s, view: { ...view, listing: { ...listing, order: next } } },
+      effects: [],
+    };
+  }
+  const reordered: FolderView = {
+    ...view,
+    listing: { ...listing, order: next, matches: sortMatches(listing.matches, next) },
+    pages: new Map(),
+    failed: new Set(),
+    loading: null,
+  };
+  return nextLoad({ ...s, view: reordered, generation: s.generation + 1, cursor: 0, scrollTop: 0 });
+}
+
+/** `/` and `o` act only inside the app, online, in a folder that can be listed. */
+function listKey(s: BrowserState, act: (state: BrowserState) => Reduced): Reduced {
+  if (s.embedded === undefined) return { state: s, effects: [] };
+  if (s.offline) return { state: { ...s, message: { code: 'offline' } }, effects: [] };
+  return canList(s) ? act(s) : { state: s, effects: [] };
 }
 
 function tooSmall(screen: Screen): boolean {
@@ -434,7 +735,7 @@ function browseKey(state: BrowserState, key: BrowserKey): Reduced {
   // Nothing is shown but "window too small": only quit acts (no marking unseen mails).
   if (key !== 'quit' && tooSmall(state.screen)) return { state, effects: [] };
   const s: BrowserState = state.message === null ? state : { ...state, message: null };
-  const body = bodyHeight(s.screen);
+  const body = listHeight(s);
   switch (key) {
     case 'up':
       return loadsAfterKey(placed(s, s.cursor - 1), false);
@@ -454,6 +755,11 @@ function browseKey(state: BrowserState, key: BrowserKey): Reduced {
       );
     }
     case 'back':
+      // A listing first goes back to the plain list of its folder (a search under way stops).
+      if (listingOf(s) !== undefined) return plainList(s);
+      if (s.embedded !== undefined && s.path === s.embedded.entry) {
+        return { state: s, effects: [{ type: 'leave', message: null }] };
+      }
       return s.path === null ? { state: s, effects: [] } : loadsAfterKey(goBack(s), false);
     case 'space':
       return { state: toggleCursor(s), effects: [] };
@@ -467,6 +773,12 @@ function browseKey(state: BrowserState, key: BrowserKey): Reduced {
       return s.offline
         ? { state: { ...s, mode: 'reconnecting', message: null }, effects: [{ type: 'reconnect' }] }
         : { state: s, effects: [] };
+    case 'filter':
+      return listKey(s, openLine);
+    case 'order':
+      return listKey(s, cycleOrder);
+    case 'mark-all':
+      return markAll(s);
     default:
       return { state: s, effects: [] };
   }
@@ -490,8 +802,57 @@ function onKey(state: BrowserState, key: BrowserKey): Reduced {
           };
     case 'reconnecting':
       return { state, effects: [] };
+    // The line takes text and Enter / Esc (`line` actions): named keys do nothing meanwhile.
+    case 'filter-edit':
+      return { state, effects: [] };
     case 'browse':
       return browseKey(state, key);
+  }
+}
+
+/** Enter in the line: an unreadable line stays open with its message; otherwise it is applied. */
+function enterLine(state: BrowserState, line: string): Reduced {
+  const parsed = parseFilterLine(line);
+  if (!parsed.ok) return { state: { ...state, edit: { line, error: parsed.error } }, effects: [] };
+  const closed = closeLine(state);
+  const order = listingOf(state)?.order ?? 'newest';
+  const text = line.trim();
+  // Offline nothing can be searched: the line closes and the reconnect question is asked.
+  if (state.offline && (text !== '' || listingOf(state) !== undefined)) {
+    return { state: { ...placed(closed, closed.cursor), mode: 'reconnect-ask' }, effects: [] };
+  }
+  if (text !== '') return applyListing(closed, text, parsed.filter, order);
+  // A blank line: with nothing on it changes nothing; with a filter on, the filter goes.
+  if (listingOf(state) === undefined) return { state: placed(closed, closed.cursor), effects: [] };
+  return applyListing(closed, '', EMPTY_FILTER, order);
+}
+
+/** A key of the filter line (mode `filter-edit`): typed text, an edit, Enter or Esc. */
+function onLine(state: BrowserState, key: LineKey): Reduced {
+  const edit = state.edit;
+  if (state.mode !== 'filter-edit' || edit === undefined) return { state, effects: [] };
+  // Nothing is shown but "window too small": only Esc acts.
+  if (tooSmall(state.screen) && key.type !== 'escape') return { state, effects: [] };
+  switch (key.type) {
+    case 'char':
+      return {
+        state: {
+          ...state,
+          edit: { line: typed(edit.line, key.text, MAX_FILTER_LINE), error: null },
+        },
+        effects: [],
+      };
+    case 'backspace':
+      return { state: { ...state, edit: { line: erased(edit.line), error: null } }, effects: [] };
+    case 'clear':
+      return { state: { ...state, edit: { line: '', error: null } }, effects: [] };
+    case 'escape': {
+      // What was shown stays; the list may be a row taller again.
+      const closed = closeLine(state);
+      return { state: placed(closed, closed.cursor), effects: [] };
+    }
+    case 'enter':
+      return enterLine(state, edit.line);
   }
 }
 
@@ -552,12 +913,63 @@ function evicted(state: BrowserState, pages: Map<number, readonly MessageRow[]>)
   }
 }
 
+/**
+ * A page of matches arrived, read by UID. A folder that changed (UIDVALIDITY) is searched again,
+ * at most MAX_CHANGES times in a row. The header keeps the folder as it was searched.
+ */
+function onMatchesLoaded(
+  state: BrowserState,
+  view: FolderView,
+  listing: Listing,
+  a: Extract<BrowserAction, { type: 'page-loaded' }>,
+): Reduced {
+  const { result } = a;
+  if (result.kind === 'changed') {
+    const { basket, dropped } = reconcileFolder(
+      state.basket,
+      view.path,
+      result.snapshot.uidValidity,
+    );
+    const changes = view.changes + 1;
+    const withMarks = withBasket(state, basket);
+    if (changes >= MAX_CHANGES)
+      return plainList({ ...withMarks, message: { code: 'folder-busy' } });
+    const again = applyListing(withMarks, listing.text, listing.filter, listing.order);
+    const shown = again.state.view;
+    return {
+      state: {
+        ...again.state,
+        view: shown === null ? null : { ...shown, changes },
+        message:
+          dropped > 0 ? { code: 'marks-cleared', count: dropped } : { code: 'folder-changed' },
+      },
+      effects: again.effects,
+    };
+  }
+  const pages = new Map(view.pages);
+  pages.set(a.page, result.rows);
+  const failed = new Set(view.failed);
+  failed.delete(a.page);
+  const s = placed(
+    {
+      ...state,
+      view: { ...view, pages, failed, loading: null, changes: 0 },
+      stats: { ...state.stats, mailsLoaded: state.stats.mailsLoaded + result.rows.length },
+    },
+    state.cursor,
+  );
+  evicted(s, pages);
+  return nextLoad(s);
+}
+
 function onPageLoaded(
   state: BrowserState,
   a: Extract<BrowserAction, { type: 'page-loaded' }>,
 ): Reduced {
   const view = state.view;
   if (view === null || !isCurrent(state, a)) return { state, effects: [] };
+  const listing = view.listing;
+  if (listing !== undefined) return onMatchesLoaded(state, view, listing, a);
   const { result } = a;
   if (
     result.kind === 'changed' ||
@@ -587,26 +999,34 @@ function onPageLoaded(
   return nextLoad(s);
 }
 
+/** A lost connection: the reconnect question (offline, the next needed load asks again). */
+function connectionLost(state: BrowserState, view: FolderView): Reduced {
+  // An open quit question or filter line stays: keys typed there must never answer a question
+  // that appeared under them. Offline, the next needed load or Enter in the line asks to reconnect.
+  const held = state.mode === 'confirm-quit' || state.mode === 'filter-edit';
+  return {
+    state: {
+      ...state,
+      view: { ...view, loading: null },
+      mode: held ? state.mode : 'reconnect-ask',
+      offline: held || state.offline,
+    },
+    effects: [],
+  };
+}
+
 function onLoadFailed(
   state: BrowserState,
   a: Extract<BrowserAction, { type: 'load-failed' }>,
 ): Reduced {
   const view = state.view;
   if (view === null || !isCurrent(state, a)) return { state, effects: [] };
-  if (a.code === 'connection-lost') {
-    // An open quit question stays; offline, the next needed load asks to reconnect.
-    const quitting = state.mode === 'confirm-quit';
-    return {
-      state: {
-        ...state,
-        view: { ...view, loading: null },
-        mode: quitting ? 'confirm-quit' : 'reconnect-ask',
-        offline: quitting || state.offline,
-      },
-      effects: [],
-    };
-  }
+  if (a.code === 'connection-lost') return connectionLost(state, view);
   if (view.snapshot === null && a.page === 0) {
+    // Embedded, there is no parent to fall back to above the entry folder.
+    if (state.embedded !== undefined && a.path === state.embedded.entry) {
+      return { state, effects: [{ type: 'leave', message: 'folder-unavailable' }] };
+    }
     return nextLoad({ ...goBack(state), message: { code: 'folder-unavailable' } });
   }
   const failed = new Set(view.failed);
@@ -616,6 +1036,80 @@ function onLoadFailed(
     view: { ...view, failed, loading: null },
     message: { code: 'page-failed' },
   });
+}
+
+/** How far the search under way has got, for the screen. */
+function onSearchProgress(
+  state: BrowserState,
+  a: Extract<BrowserAction, { type: 'search-progress' }>,
+): Reduced {
+  const view = state.view;
+  const listing = view?.listing;
+  if (view === null || listing === undefined || listing.matches !== null || !isCurrent(state, a)) {
+    return { state, effects: [] };
+  }
+  const progress = { done: a.done, total: a.total };
+  return { state: { ...state, view: { ...view, listing: { ...listing, progress } } }, effects: [] };
+}
+
+/**
+ * The matches arrived: they are listed in the order chosen and their rows are read by UID. A
+ * result without its matches (a search that ended a second time) is dropped.
+ */
+function onSearchDone(
+  state: BrowserState,
+  a: Extract<BrowserAction, { type: 'search-done' }>,
+): Reduced {
+  const view = state.view;
+  const listing = view?.listing;
+  if (view === null || listing === undefined || listing.matches !== null || !isCurrent(state, a)) {
+    return { state, effects: [] };
+  }
+  const { result } = a;
+  const { basket, dropped } = reconcileFolder(state.basket, view.path, result.snapshot.uidValidity);
+  let s = withBasket(state, basket);
+  if (dropped > 0) s = { ...s, message: { code: 'marks-cleared', count: dropped } };
+  else if (result.missing > 0) {
+    s = { ...s, message: { code: 'search-partial', count: result.missing } };
+  }
+  const shown: FolderView = {
+    ...view,
+    snapshot: result.snapshot,
+    listing: {
+      ...listing,
+      matches: sortMatches(result.matches, listing.order),
+      bytes: result.bytes,
+      progress: null,
+    },
+    pages: new Map(),
+    failed: new Set(),
+    loading: null,
+  };
+  return nextLoad(placed({ ...s, view: shown }, 0));
+}
+
+/**
+ * The search failed. A lost connection asks to reconnect (the plain view of the folder is shown);
+ * any other failure shows the plain list with its message. The search has ended by itself, so
+ * nothing is stopped here.
+ */
+function onSearchFailed(
+  state: BrowserState,
+  a: Extract<BrowserAction, { type: 'search-failed' }>,
+): Reduced {
+  const view = state.view;
+  const listing = view?.listing;
+  if (view === null || listing === undefined || listing.matches !== null || !isCurrent(state, a)) {
+    return { state, effects: [] };
+  }
+  const folder = folderAt(state, state.path);
+  if (folder === undefined) return { state, effects: [] };
+  if (a.code === 'connection-lost') {
+    return connectionLost(enterFolder(state, folder), freshView(folder));
+  }
+  const out = nextLoad(enterFolder(state, folder));
+  const code = a.code === 'too-many-matches' ? 'too-many-matches' : 'search-failed';
+  return { state: { ...out.state, message: { code } }, effects: out.effects };
 }
 
 function onReconnected(state: BrowserState): Reduced {
@@ -637,6 +1131,14 @@ export function reduce(state: BrowserState, action: BrowserAction): Reduced {
   switch (action.type) {
     case 'key':
       return onKey(state, action.key);
+    case 'line':
+      return onLine(state, action.key);
+    case 'search-progress':
+      return onSearchProgress(state, action);
+    case 'search-done':
+      return onSearchDone(state, action);
+    case 'search-failed':
+      return onSearchFailed(state, action);
     case 'resize':
       return nextLoad(placed({ ...state, screen: screenOf(action.screen) }, state.cursor));
     case 'page-loaded':

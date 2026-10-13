@@ -2,16 +2,10 @@ import { confirm } from '@inquirer/prompts';
 import type { Command } from 'commander';
 import { z } from 'zod';
 import { LOG_LEVELS, loadEnvFiles, type LogLevel } from '../../core/config.js';
-import {
-  deleteDayFiles,
-  readLogs,
-  regularDayFiles,
-  RUN_RE,
-  type LogFolderStatus,
-} from '../../core/log/index.js';
+import { deleteDayFiles, readLogs, regularDayFiles, RUN_RE } from '../../core/log/index.js';
 import { logDir } from '../../core/paths.js';
 import type { CliContext } from '../index.js';
-import { formatReport, reportFooters, sanitizeRecord } from '../log-text.js';
+import { LOG_FOLDER_PROBLEM, formatReport, reportFooters, sanitizeRecord } from '../log-text.js';
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 1440 * MINUTE_MS;
@@ -92,13 +86,6 @@ function writeLines(stream: NodeJS.WriteStream, lines: string[]): void {
   stream.write(`${lines.join('\n')}\n`);
 }
 
-const FOLDER_PROBLEM: Partial<Record<LogFolderStatus, string>> = {
-  'not-a-folder':
-    "The log folder is a link or a file, not a folder, so nothing is logged or read. Check it with 'mm logs path' and 'mm doctor'.",
-  unreadable:
-    "Can't read the log folder — check its permissions ('mm logs path' shows where it is).",
-};
-
 async function showLogs(opts: LogsOptions, ctx: CliContext): Promise<void> {
   const parsed = parseOptions(opts);
   if (parsed === null) return;
@@ -114,7 +101,7 @@ async function showLogs(opts: LogsOptions, ctx: CliContext): Promise<void> {
     ...(opts.json === true && { interrupted: false }),
     ...(ctx.run !== undefined && { ownRun: ctx.run }),
   });
-  const problem = FOLDER_PROBLEM[result.folder];
+  const problem = LOG_FOLDER_PROBLEM[result.folder];
   if (problem !== undefined) {
     // Not "no log lines": the user should know nothing could be read.
     fail(problem);
@@ -149,7 +136,7 @@ async function clearLogs(yes: boolean): Promise<void> {
   const dir = logDir(process.env);
   const list = await regularDayFiles(dir);
   const found = list.files;
-  const problem = FOLDER_PROBLEM[list.status];
+  const problem = LOG_FOLDER_PROBLEM[list.status];
   if (problem !== undefined) {
     fail(`${problem} Nothing deleted.`);
     return;
