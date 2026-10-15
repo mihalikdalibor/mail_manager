@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { compileFilter, FilterError } from './compile.js';
 import {
   FILTER_VERSION,
@@ -14,7 +15,8 @@ import {
 // The typed filter line (M3a): what the user types in the app's filter line becomes a Filter.
 // Bare words and quoted phrases, `key:value` terms, the flag words, and a leading `-` for "not".
 // A term that can't be read gives a typed error with the token as typed; the shell shows it
-// (src/cli/filter-text.ts) and nothing is logged. Pure: no IMAP, no clock.
+// (src/cli/filter-text.ts) and nothing is logged. The printer (M3c) writes a filter back as such a
+// line and checks that it parses back to the same filter. Pure: no IMAP, no clock.
 
 export const MAX_FILTER_LINE = 200; // code points
 export const MAX_LINE_TERMS = 20;
@@ -53,7 +55,15 @@ const UNIT_POWER = new Map([
 ]);
 
 export function parseFilterLine(text: string): LineResult {
-  if ([...text].length > MAX_FILTER_LINE) return fail('too-long', '');
+  return parseLine(text, true);
+}
+
+/**
+ * `capped` false leaves out the length check: the printer verifies lines that can be longer than
+ * a typed one (`date:2023` prints as two terms). Nothing else differs.
+ */
+function parseLine(text: string, capped: boolean): LineResult {
+  if (capped && [...text].length > MAX_FILTER_LINE) return fail('too-long', '');
   const { tokens, unclosed } = tokenize(text);
   if (unclosed !== null) return fail('unclosed-quote', unclosed);
   const terms: FilterNode[] = [];
@@ -280,4 +290,119 @@ function dayAfter(day: string): string | null {
   const next = new Date(Date.UTC(parts.y, parts.m - 1, parts.d + 1));
   const year = next.getUTCFullYear();
   return year >= 1970 && year <= 2100 ? next.toISOString().slice(0, 10) : null;
+}
+
+// The printer (M3c): a filter back to the line that types it, for saved filters (`mm filter list`,
+// `mm search --filter`). Each token is the typed form of one leaf; the line is parsed again and
+// compared with the filter before it is returned, so a printed line never means something else.
+
+/** The kinds a `-` can turn around; the flag words have their own negated forms (`-att`). */
+const NEGATABLE: readonly FilterNode['kind'][] = [
+  'word',
+  'subject',
+  'from',
+  'to',
+  'cc',
+  'olderThan',
+  'newerThan',
+  'since',
+  'before',
+  'larger',
+  'smaller',
+];
+
+const FLAG_WORDS = new Set(['unread', 'read', 'flagged', 'att']);
+
+/**
+ * The line, and the body text (which the line can't hold: the last `body` leaf), that parses back
+ * to `filter`; null when the line can't express it.
+ */
+export function printFilterLine(filter: Filter): { line: string; body: string | null } | null {
+  const leaves = leavesOf(filter);
+  const last = leaves.at(-1);
+  const body = last?.kind === 'body' ? last.value : null;
+  const tokens: string[] = [];
+  for (const leaf of body === null ? leaves : leaves.slice(0, -1)) {
+    const token = tokenOf(leaf);
+    if (token === null) return null;
+    tokens.push(token);
+  }
+  const line = tokens.join(' ');
+  const expected = parseFilter({ version: FILTER_VERSION, where: { kind: 'all', of: leaves } });
+  const reread = parseLine(line, false);
+  if (expected === null || !reread.ok) return null;
+  const bodyLeaves: FilterNode[] = body === null ? [] : [{ kind: 'body', value: body }];
+  const actual = parseFilter({
+    version: FILTER_VERSION,
+    where: { kind: 'all', of: [...leavesOf(reread.filter), ...bodyLeaves] },
+  });
+  return actual !== null && isDeepStrictEqual(actual, expected) ? { line, body } : null;
+}
+
+/** The leaves of a filter: an all-of root's terms, or the root itself when it is one leaf. */
+function leavesOf(filter: Filter): FilterNode[] {
+  return filter.where.kind === 'all' ? filter.where.of : [filter.where];
+}
+
+/** The token of one leaf; a `not` puts a `-` in front. Null when the line has no form for it. */
+function tokenOf(node: FilterNode): string | null {
+  if (node.kind !== 'not') return termToken(node);
+  if (!NEGATABLE.includes(node.of.kind)) return null;
+  const inner = termToken(node.of);
+  return inner === null ? null : `-${inner}`;
+}
+
+/** The token of a leaf that is not a `not`. */
+function termToken(node: FilterNode): string | null {
+  switch (node.kind) {
+    case 'word':
+      return wordToken(node.value);
+    case 'subject':
+      return `subject:${valueText(node.value)}`;
+    case 'from':
+    case 'to':
+    case 'cc':
+      return `${node.kind}:${valueText(node.values.join(','))}`;
+    case 'olderThan':
+      return `older:${node.age}`;
+    case 'newerThan':
+      return `newer:${node.age}`;
+    case 'since':
+    case 'before':
+      return `${node.kind}:${node.day}`;
+    case 'larger':
+    case 'smaller':
+      return `${node.kind}:${sizeText(node.bytes)}`;
+    case 'seen':
+      return node.value ? 'read' : 'unread';
+    case 'flagged':
+      return node.value ? 'flagged' : '-flagged';
+    case 'hasAttachments':
+      return node.value ? 'att' : '-att';
+    default:
+      return null;
+  }
+}
+
+/** A plain word, quoted where the line would read it as a key, a flag, a `-` or a phrase. */
+function wordToken(value: string): string {
+  const quoted =
+    value.includes(' ') ||
+    value.startsWith('-') ||
+    KEY_RE.test(value) ||
+    FLAG_WORDS.has(value.toLowerCase());
+  return quoted ? `"${value}"` : value;
+}
+
+/** The value of a `key:` term, quoted when it has a space. */
+function valueText(value: string): string {
+  return value.includes(' ') ? `"${value}"` : value;
+}
+
+/** The size in the largest unit that divides it exactly: `1mb`, `1536kb`, `300b`. */
+function sizeText(bytes: number): string {
+  if (bytes % 1024 ** 3 === 0) return `${bytes / 1024 ** 3}gb`;
+  if (bytes % 1024 ** 2 === 0) return `${bytes / 1024 ** 2}mb`;
+  if (bytes % 1024 === 0) return `${bytes / 1024}kb`;
+  return `${bytes}b`;
 }

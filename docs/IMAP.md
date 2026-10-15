@@ -121,7 +121,7 @@ Every IMAP4rev1 server has these. Commands marked "UID" have a `UID` form that t
 
 - **UID + UIDVALIDITY** together identify a message within a folder. If UIDVALIDITY changes, every stored UID for that folder is invalid; abort (SECURITY.md). imapflow returns `uidValidity` as a **`bigint`**. zod and the DB must handle it (store as a string or `numeric`, never a JS `number`).
 - **`RFC822.SIZE`** is the size of the message in RFC 822 form, as the server reports it. It doesn't exactly match quota usage (dedup, compression, Gmail labels). Label it "approximate" (M2).
-- **`INTERNALDATE`** = when the server received the message. The `Date:` header = what the sender claims. For "older than" filters, `BEFORE/SINCE` (internal date) is the more robust default. Offer `SENTBEFORE` as an option.
+- **`INTERNALDATE`** = when the server received the message. The `Date:` header = what the sender claims. For "older than" filters, `BEFORE/SINCE` (internal date) is the more robust default. `mm search --sent` (M3b) uses `SENTSINCE` / `SENTBEFORE`, widened by two days, and checks the `Date:` header itself.
 - **IMAP dates are day-granular** (no time) and interpreted in the server's timezone.
 - **Search charset:** non-ASCII search strings need `CHARSET UTF-8`. imapflow adds it automatically. Some old servers reject it (`BADCHARSET`).
 - **Substring matching:** `FROM "@example.com"` is a case-insensitive **substring** match on the header. `@example.com.evil` also matches. This is why M3 plans an exact client-side domain post-filter.

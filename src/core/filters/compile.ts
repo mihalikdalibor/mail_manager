@@ -15,15 +15,24 @@ import {
 // The filter compiler (M3a): a filter becomes one imapflow SearchObject, which the server uses to
 // narrow the mails, and checks, which run on every mail the server returned and decide. Dates
 // are checked to the instant on our side (the server's day or second terms depend on its
-// WITHIN support); addresses by exact address or domain; attachments by the body structure.
+// WITHIN support), on the received date or, with `dates: 'sent'` (M3b), on the Date: header;
+// addresses by exact address or domain; attachments by the body structure.
 // Nothing here talks to a server or logs anything.
 
 // CRITERIA and Criterion are defined in schema.ts (the log core imports them from there, so it
 // doesn't pull in the compiler).
 
 const DAY = 86_400_000;
+/**
+ * A `sent` narrowing term is widened by this much on each side: imapflow sends the UTC day, and
+ * the server compares the day of the Date: header in that header's own time zone (up to 14 h off).
+ */
+const SENT_MARGIN = 2 * DAY;
 /** A narrowing date this close to now (or later) is not sent: its check decides alone. */
 const PAST_MARGIN = 60_000;
+
+/** Which date the date leaves check: the received date (INTERNALDATE) or the Date: header. */
+export type DateField = 'received' | 'sent';
 
 /** Run on every candidate the server search returned; all must pass. */
 export type Check =
@@ -31,6 +40,8 @@ export type Check =
   | { kind: 'address'; field: AddressField; addresses: string[]; domains: string[]; want: boolean }
   /** In range = (fromMs === null || t >= fromMs) && (beforeMs === null || t < beforeMs). */
   | { kind: 'received'; fromMs: number | null; beforeMs: number | null; want: boolean }
+  /** As `received`, on the Date: header (envelope.date). */
+  | { kind: 'sent'; fromMs: number | null; beforeMs: number | null; want: boolean }
   | { kind: 'attachment'; want: boolean };
 
 export interface CompiledFilter {
@@ -62,6 +73,8 @@ export interface CompileOptions {
   now: Date;
   /** Start of a calendar day as an instant; default: local midnight, `new Date(y, m - 1, d)`. */
   dayStart?: (y: number, m: number, d: number) => Date;
+  /** Default 'received'. */
+  dates?: DateField;
 }
 
 /** One checked leaf: its check (positive polarity) and the narrowing term sent, if any. */
@@ -74,6 +87,8 @@ interface Env {
   now: Date;
   /** Start of a day as an instant (`CompileOptions.dayStart`). */
   startOf: (day: string) => number;
+  /** The date the date leaves check (`CompileOptions.dates`). */
+  dates: DateField;
 }
 
 export function compileFilter(filter: Filter, opts: CompileOptions): CompiledFilter {
@@ -87,6 +102,7 @@ export function compileFilter(filter: Filter, opts: CompileOptions): CompiledFil
       if (parts === null) throw new FilterError('invalid');
       return dayStart(parts.y, parts.m, parts.d).getTime();
     },
+    dates: opts.dates ?? 'received',
   };
 
   const top = parsed.where.kind === 'all' ? flatten(parsed.where.of) : [parsed.where];
@@ -115,7 +131,7 @@ export function compileFilter(filter: Filter, opts: CompileOptions): CompiledFil
     checks,
     criteria,
     needs: {
-      envelope: checks.some((c) => c.kind === 'address'),
+      envelope: checks.some((c) => c.kind === 'address' || c.kind === 'sent'),
       structure: checks.some((c) => c.kind === 'attachment'),
     },
   };
@@ -280,29 +296,41 @@ function checkedLeaf(node: FilterNode, env: Env): Leaf {
     case 'since': {
       const from = env.startOf(node.day);
       return {
-        check: { kind: 'received', fromMs: from, beforeMs: null, want: true },
-        term: sinceTerm(from - DAY, nowMs),
+        check: { kind: env.dates, fromMs: from, beforeMs: null, want: true },
+        term:
+          env.dates === 'sent'
+            ? sentSinceTerm(from - SENT_MARGIN, nowMs)
+            : sinceTerm(from - DAY, nowMs),
       };
     }
     case 'before': {
       const to = env.startOf(node.day);
       return {
-        check: { kind: 'received', fromMs: null, beforeMs: to, want: true },
-        term: beforeTerm(to + DAY, nowMs),
+        check: { kind: env.dates, fromMs: null, beforeMs: to, want: true },
+        term:
+          env.dates === 'sent'
+            ? sentBeforeTerm(to + SENT_MARGIN, nowMs)
+            : beforeTerm(to + DAY, nowMs),
       };
     }
     case 'olderThan': {
       const cutoff = ageCutoff(env.now, node.age).getTime();
       return {
-        check: { kind: 'received', fromMs: null, beforeMs: cutoff, want: true },
-        term: beforeTerm(cutoff + DAY, nowMs),
+        check: { kind: env.dates, fromMs: null, beforeMs: cutoff, want: true },
+        term:
+          env.dates === 'sent'
+            ? sentBeforeTerm(cutoff + SENT_MARGIN, nowMs)
+            : beforeTerm(cutoff + DAY, nowMs),
       };
     }
     case 'newerThan': {
       const cutoff = ageCutoff(env.now, node.age).getTime();
       return {
-        check: { kind: 'received', fromMs: cutoff, beforeMs: null, want: true },
-        term: sinceTerm(cutoff - DAY, nowMs),
+        check: { kind: env.dates, fromMs: cutoff, beforeMs: null, want: true },
+        term:
+          env.dates === 'sent'
+            ? sentSinceTerm(cutoff - SENT_MARGIN, nowMs)
+            : sinceTerm(cutoff - DAY, nowMs),
       };
     }
     case 'hasAttachments':
@@ -320,6 +348,16 @@ function sinceTerm(ms: number, nowMs: number): SearchObject | null {
 /** `before` term, unless its date is not clearly in the past (then the check alone decides). */
 function beforeTerm(ms: number, nowMs: number): SearchObject | null {
   return ms > nowMs - PAST_MARGIN ? null : { before: new Date(ms) };
+}
+
+/** `sentSince` term (`sent` dates), unless its date is not clearly in the past. */
+function sentSinceTerm(ms: number, nowMs: number): SearchObject | null {
+  return ms > nowMs - PAST_MARGIN ? null : { sentSince: new Date(ms) };
+}
+
+/** `sentBefore` term (`sent` dates), unless its date is not clearly in the past. */
+function sentBeforeTerm(ms: number, nowMs: number): SearchObject | null {
+  return ms > nowMs - PAST_MARGIN ? null : { sentBefore: new Date(ms) };
 }
 
 function flipped(check: Check): Check {
@@ -357,18 +395,25 @@ function passes(
   switch (check.kind) {
     case 'address':
       return addressHit(msg.envelope, check) === check.want;
-    case 'received': {
-      const t = receivedDate(msg.internalDate)?.getTime();
-      // An unknown date never matches, whatever `want` says.
-      if (t === undefined) return false;
-      const inRange =
-        (check.fromMs === null || t >= check.fromMs) &&
-        (check.beforeMs === null || t < check.beforeMs);
-      return inRange === check.want;
-    }
+    case 'received':
+      return dateCheck(receivedDate(msg.internalDate)?.getTime(), check);
+    case 'sent':
+      return dateCheck(receivedDate(record(msg.envelope)?.['date'])?.getTime(), check);
     case 'attachment':
       return hasAttachment(msg.bodyStructure) === check.want;
   }
+}
+
+/** The date check of `received` or `sent`: the instant `t` (ms) is in range, as `want` says. */
+function dateCheck(
+  t: number | undefined,
+  check: Extract<Check, { kind: 'received' | 'sent' }>,
+): boolean {
+  // An unknown date never matches, whatever `want` says.
+  if (t === undefined) return false;
+  const inRange =
+    (check.fromMs === null || t >= check.fromMs) && (check.beforeMs === null || t < check.beforeMs);
+  return inRange === check.want;
 }
 
 /** True when some address of the envelope field is one of the checked addresses or domains. */

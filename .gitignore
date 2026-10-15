@@ -26,6 +26,10 @@ supabase_pass
 
 # Local planning files (from /next)
 .claude/plans/
+.claude/harness/
 
 # Local credential files (never commit)
 *.cred
+
+# bulk filler work folder (generated mail)
+scripts/bulk-data/

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { auditEntrySchema, isValidAuditEntry, recordAudit } from '../../src/core/audit.js';
 import { AUDIT_ACTIONS, RepoError } from '../../src/core/db/repos.js';
-import type { AuditEntry, AuditRepo, RepoErrorCode } from '../../src/core/db/repos.js';
+import type { AuditAction, AuditEntry, AuditRepo, RepoErrorCode } from '../../src/core/db/repos.js';
 import {
   auditFailureReason,
   auditWriteFailed,
@@ -20,11 +20,20 @@ const CTX: RunContext = {
 };
 
 const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
+const FILTER_ID = '33333333-3333-4333-8333-333333333333';
 const RUN_ID = 'fedcba9876543210';
 const ACCOUNT_ACTIONS = ['account.add', 'account.remove', 'account.password-update'] as const;
+const FILTER_ACTIONS = ['filter.save', 'filter.delete'] as const;
 const OTHER_ACTIONS = AUDIT_ACTIONS.filter(
-  (a) => !(ACCOUNT_ACTIONS as readonly string[]).includes(a),
+  (a) =>
+    !(ACCOUNT_ACTIONS as readonly string[]).includes(a) &&
+    !(FILTER_ACTIONS as readonly string[]).includes(a),
 );
+/** The details a filter action must carry (M3c): the saved filter's id, never its name or terms. */
+const FILTER_DETAILS: Partial<Record<AuditAction, Record<string, unknown>>> = {
+  'filter.save': { filter: FILTER_ID, replaced: false },
+  'filter.delete': { filter: FILTER_ID },
+};
 
 function entry(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { action: 'mail.trash', result: 'ok', ...extra };
@@ -51,8 +60,13 @@ function valid(e: unknown): boolean {
 }
 
 describe('audit entry validation', () => {
-  it('accepts a minimal entry for every action', () => {
-    for (const action of AUDIT_ACTIONS) expect(valid(entry({ action }))).toBe(true);
+  it('accepts a minimal entry for every action (filter actions with their details)', () => {
+    for (const action of AUDIT_ACTIONS) {
+      const details = FILTER_DETAILS[action];
+      expect(valid(details === undefined ? entry({ action }) : entry({ action, details }))).toBe(
+        true,
+      );
+    }
   });
 
   it('accepts a full entry', () => {
@@ -280,6 +294,43 @@ describe('audit entry validation', () => {
           expect(valid(entry({ action, details }))).toBe(false);
         },
       );
+    });
+
+    describe('filter.save (M3c)', () => {
+      it.each<unknown>([
+        { filter: FILTER_ID, replaced: false },
+        { filter: FILTER_ID, replaced: true },
+      ])('accepts details %j', (details) => {
+        expect(valid(entry({ action: 'filter.save', details }))).toBe(true);
+      });
+
+      it.each<[string, unknown]>([
+        ['no details', undefined],
+        ['no replaced flag', { filter: FILTER_ID }],
+        ['a non-boolean replaced', { filter: FILTER_ID, replaced: 'yes' }],
+        ['a non-uuid filter', { filter: 'big-old', replaced: false }],
+        ['a name next to the id', { filter: FILTER_ID, replaced: false, name: 'big-old' }],
+        ['a terms key', { filter: FILTER_ID, replaced: false, terms: 'from:x' }],
+      ])('rejects %s', (_label, details) => {
+        expect(valid(entry({ action: 'filter.save', details }))).toBe(false);
+      });
+    });
+
+    describe('filter.delete (M3c)', () => {
+      it('accepts the filter id', () => {
+        expect(valid(entry({ action: 'filter.delete', details: { filter: FILTER_ID } }))).toBe(
+          true,
+        );
+      });
+
+      it.each<[string, unknown]>([
+        ['no details', undefined],
+        ['a replaced flag (a save only)', { filter: FILTER_ID, replaced: false }],
+        ['a non-uuid filter', { filter: 'big-old' }],
+        ['a name next to the id', { filter: FILTER_ID, name: 'big-old' }],
+      ])('rejects %s', (_label, details) => {
+        expect(valid(entry({ action: 'filter.delete', details }))).toBe(false);
+      });
     });
   });
 });

@@ -24,6 +24,8 @@ import {
   commandStart,
   discoverFinish,
   doctorCheck,
+  filterDelete,
+  filterSave,
   foldersList,
   formatLine,
   guardBlock,
@@ -68,6 +70,7 @@ const TARGET = 'b2'.repeat(32);
 const UNTIL = '2026-09-29T08:15:00.000Z';
 const USER = randomUUID();
 const ACCT = randomUUID();
+const FILTER = randomUUID();
 
 const PASSWORD = 'hunter2-ÄŠť';
 const EMAIL = 'canary@secret-domain.example';
@@ -514,9 +517,11 @@ describe('validateRecord: round trip over every builder', () => {
         criteria: ['from'],
         outcome: 'ok',
       }),
+      'filter.save': filterSave({ filter: FILTER, replaced: true, outcome: 'ok' }),
+      'filter.delete': filterDelete({ filter: FILTER, outcome: 'failed', reason: 'not-found' }),
     };
     expect(Object.keys(samples).sort()).toEqual([...LOG_EVENT_NAMES].sort());
-    expect(LOG_EVENT_NAMES).toHaveLength(23);
+    expect(LOG_EVENT_NAMES).toHaveLength(25);
     for (const name of LOG_EVENT_NAMES) roundTrip(samples[name]);
   });
 });

@@ -53,6 +53,7 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 - **Accounts test** (`tests/integration/accounts-live.test.ts`, M1c-1): needs `MM_TEST_SUPABASE_A_*`, `MM_MASTER_KEY` and the live IMAP env; as test user A through the core functions: add → list → test → update-password (same password) → remove, then exactly this run's 3 audit rows (`run_id`), `details` `{ provider }` only, and a leak check. Three successful logins, **no wrong-password attempt** (the suite's one is in the session test); cleans up a leftover account first.
 - **Folders test** (`tests/integration/folders-live.test.ts`, M2a, live IMAP env only, needs a seeded `mm-test`): one login → `listFolders` with `only` = `mm-test`, so no other folder is STATUSed or sized (LIST sees them; their names are never asserted or printed) → `mm-test` messages = manifest `count`, unseen = `count − seen`, bytes = `totalBytes` on the FETCH-sum path or ≥ `totalBytes` with STATUS=SIZE. Skips its assertion when `mm-test` is missing (run `npm run test:seed`).
 - **Stats test** (`tests/integration/stats-live.test.ts`, M2c-1, live IMAP env only, needs a seeded `mm-test`): one login → `listFolders` with LIST + quota only (`only: () => false`) → `collectStats` with `--folder` = `mm-test` in UTC → totals, per year, per domain (all 10 in the top list), every listed sender's count and the largest size equal the manifest; nothing approximate, partial or unreadable. Only plain numbers are compared; nothing is printed. Skips when `mm-test` is missing.
+- **Search tests** (M3a and M3b, live IMAP env only, need a seeded `mm-test`): `tests/integration/search-live.test.ts` runs `searchFolder` over `mm-test` for each criterion (M3a); `tests/integration/search-mailbox-live.test.ts` runs `searchMailbox` over the mailbox's folders for three filters, one with `--sent`, and compares the count and byte sum with the manifest (M3b). Plain numbers only; nothing printed.
 - **Live runs: once, never in a loop.** Every command above is a real login from this machine; `npm run test:integration` also makes the session test's one wrong-password attempt.
 - Keep runs small — provider rate limits (Gmail bandwidth/connection limits).
 - **IMAP session test** (`tests/integration/imap-session.test.ts`, needs `MM_TEST_IMAP_USER` + `MM_TEST_IMAP_PASS`; `MM_TEST_IMAP_HOST` only as a fallback when discovery finds nothing): the host comes from discovery (real DNS, no HTTP) → login → features (UIDPLUS, MOVE, QUOTA on Websupport) → logout, then **exactly one** wrong-password attempt → `auth-failed` with the generic message. All stdout/stderr and every inspected session/error is checked for the password.
@@ -61,7 +62,7 @@ Design for testability: core modules depend on small interfaces (`ImapSession`, 
 ## IMAP server differences to test against
 
 - SEARCH `SINCE`/`BEFORE` use the server's **internal date** at **day granularity** (timezone of the server). Filters need clear semantics ("before = strictly before that day").
-- `SENTSINCE`/`SENTBEFORE` use the Date header instead — offer both? (Open question M3.)
+- `SENTSINCE`/`SENTBEFORE` use the Date header instead — decided (M3b): received dates by default, the sent date with `mm search --sent`; the narrowing is widened by two days and the Date: header is checked on our side.
 - `TEXT`/`BODY` search: slow or partial on some servers; Gmail tokenises words.
 - `FROM "@domain.com"` is a substring match — may over-match (`@domain.com.evil`). Post-filter on parsed address for exact domain match.
 - `STATUS=SIZE`, `QUOTA`, `MOVE`, `UIDPLUS`, special-use: not universal.
@@ -73,7 +74,7 @@ Target at least: Gmail, one SK/CZ provider (Seznam), one standard Dovecot (later
 - [ ] M1: `mm login`; `mm account add` Gmail app password → saved; `mm account test` ok; wrong password → clear error, nothing saved.
 - [ ] M2: `mm stats` totals match webmail within rounding; Gmail labels not double-counted.
 - [ ] M2b: `mm folders` in a terminal — the browser walk in `docs/milestones/M2-insight.md` (screen restored after `q`, Ctrl+C and `kill -TERM`; reconnect after the idle timeout; opened mails still unread in webmail).
-- [ ] M3: `mm search --from … --before …` count matches a webmail search.
+- [ ] M3: `mm search "from:@<domain> before:<date>" --folder <mm-test path>` count matches a webmail search.
 - [ ] M4: `mm delete` dry run shows plan; confirm moves exactly N to Trash (check webmail); `--expunge` only removes planned UIDs; audit row exists.
 - [ ] M5: `mm backup` → `.eml` files open in Thunderbird; manifest verify passes; re-run skips existing.
 

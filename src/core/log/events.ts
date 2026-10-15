@@ -243,6 +243,29 @@ export interface SearchFinishEvent {
   reason?: AccountFailureReason;
 }
 
+export type FilterFailureReason = 'duplicate' | 'not-found' | 'limit' | 'database' | 'unexpected';
+
+/** `mm filter save` (M3c): the saved filter's id and whether it replaced one — never its name or terms. */
+export interface FilterSaveEvent {
+  event: 'filter.save';
+  /** Saved filter UUID (none when the save failed before its id was known). */
+  filter?: string;
+  /** Only when the outcome is `ok`: an existing filter of the same name was overwritten. */
+  replaced?: boolean;
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: FilterFailureReason;
+}
+
+/** `mm filter delete` (M3c): the saved filter's id — never its name or terms. */
+export interface FilterDeleteEvent {
+  event: 'filter.delete';
+  filter?: string;
+  outcome: AccountOutcome;
+  /** Only when the outcome is `failed`. */
+  reason?: FilterFailureReason;
+}
+
 /** A missing server feature and the fallback that ran instead (app log; once per run). */
 export interface CapabilityFallbackEvent {
   event: 'imap.capability-fallback';
@@ -273,7 +296,9 @@ export type LogEvent =
   | CapabilityFallbackEvent
   | BrowseFinishEvent
   | StatsFinishEvent
-  | SearchFinishEvent;
+  | SearchFinishEvent
+  | FilterSaveEvent
+  | FilterDeleteEvent;
 
 export type LogEventName = LogEvent['event'];
 
@@ -316,6 +341,8 @@ export const EVENT_FIELDS: {
   ],
   'stats.finish': ['acct', 'folders', 'messages', 'bytes', 'ms', 'outcome', 'reason'],
   'search.finish': ['acct', 'count', 'bytes', 'ms', 'criteria', 'outcome', 'reason'],
+  'filter.save': ['filter', 'replaced', 'outcome', 'reason'],
+  'filter.delete': ['filter', 'outcome', 'reason'],
 };
 
 export const EVENT_KIND: Record<LogEventName, LogKind> = {
@@ -343,6 +370,8 @@ export const EVENT_KIND: Record<LogEventName, LogKind> = {
   'browse.finish': 'app',
   'stats.finish': 'app',
   'search.finish': 'app',
+  'filter.save': 'app',
+  'filter.delete': 'app',
 };
 
 export const LOG_EVENT_NAMES = Object.keys(EVENT_FIELDS) as LogEventName[];
@@ -359,6 +388,8 @@ export function eventLevel(e: LogEvent): LogLevel {
     case 'folders.list':
     case 'stats.finish':
     case 'search.finish':
+    case 'filter.save':
+    case 'filter.delete':
       return e.outcome === 'ok' ? 'info' : 'warn';
     case 'browse.finish':
       return e.outcome === 'failed' ? 'warn' : 'info';

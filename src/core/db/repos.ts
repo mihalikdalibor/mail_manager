@@ -1,4 +1,5 @@
 import type { EncryptedSecret } from '../crypto.js';
+import type { Filter } from '../filters/schema.js';
 import type { CapabilityRecord } from '../imap/features.js';
 
 // Domain types and repository interfaces only — no Supabase imports here, so the
@@ -50,6 +51,31 @@ export interface AccountsRepo {
    */
   recordCheck(id: string, capabilities: CapabilityRecord, checkedAt: Date): Promise<boolean>;
   /** true when exactly one row was deleted; false when not found, hidden by RLS, or not a UUID. */
+  remove(id: string): Promise<boolean>;
+}
+
+// Saved filters (M3c): a user's named filter definitions. The filter is user-authored config,
+// never message content.
+
+export interface SavedFilter {
+  id: string;
+  name: string;
+  /** null when the stored filter_json is not a valid filter (written outside the app). */
+  filter: Filter | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FiltersRepo {
+  /** Throws RepoError('conflict') when the name exists for this user. */
+  create(name: string, filter: Filter): Promise<SavedFilter>;
+  /** null when not found, hidden by RLS, or `id` is not a UUID (no request). */
+  replace(id: string, filter: Filter): Promise<SavedFilter | null>;
+  /** By name ascending; at most FILTERS_LIST_MAX rows read; malformed rows skipped and counted. */
+  list(): Promise<{ filters: SavedFilter[]; skipped: number }>;
+  /** null when not found or the row is malformed. */
+  getByName(name: string): Promise<SavedFilter | null>;
+  /** true when exactly one row was deleted; false when not found / hidden / not a UUID. */
   remove(id: string): Promise<boolean>;
 }
 

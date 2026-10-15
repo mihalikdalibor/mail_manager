@@ -2464,3 +2464,21 @@ Written by `/implement` and `/fix`, one entry per run. Reviewed by `/review-chan
   - Not verified: AC20, the manual walk in a real terminal on the test mailbox (the user); `cc` and Gmail live (no seeded Cc, no Gmail test account — unit tests only, as the plan notes); a visual check in a real terminal emulator (the pty runs parsed the byte stream); `mm folders` end to end under a pty (the real browser controller with a fake terminal was used); the controller's "no session" branch of a search (not reachable from the keyboard — `/` and `o` are refused offline; the spec test pins the visible behaviour instead); behaviour on a mailbox with more than 500,000 mails; `/security` has not been run.
   - Noticed, not touched: more than 20 addresses in one `from:` key ends as the generic "This filter isn't supported yet"; a line of only quotes (`""`) lists everything and shows `Filter: ""`; Esc inside an open line during a search does not stop the search (the result still arrives and is shown — as planned); `src/core/filters/.gitkeep` is still there; the two stale M2d doc lines and the three LOW follow-ups of C-032 named in C-033; the test writer for the search core read `withFolder` / `loadPage` in `messages.ts` (existing M2 code) against its brief.
 - **Deviations:** four test writers instead of one, and Iteration 4 split into code and docs. The plan was picked up although its status was `in-progress`, not `ready` (a restart of a cut-off run). The test writers were pointed at the plan file itself, three of them also at the iteration steps for exact texts — more than "test plan, criteria, edge cases, interface". Docs and the TODO boxes were written in this run (the plan's AC19; the command leaves them to `/release` / `/review-changes`); `CLAUDE.md`, `TODO.md` and one doc line were written by the orchestrator. One behaviour differs from the plan's step 23: a lost connection no longer closes an open filter line (fix round 1, recorded in the plan). The four casts in the compiler's `and()` were removed (the repo's lint rule rejects them as unnecessary; the logic is the plan's); the `date:A..B` check is written as "first day after the last day of B", the same condition.
+
+## C-035 — M3b `mm search`
+
+- **Status:** reviewed (2026-10-14)
+- **Date:** 2026-10-14 · **Type:** feature · **Grade:** M
+- **Source:** `.claude/plans/2026-10-14-1309-m3b-mm-search.md` + TODO.md "### M3b — `mm search` (needs M3a)"
+- **Detail:** `.claude/changes/C-035.md`
+- **Summary:** `mm search "<filter>"` (the app's filter line) over the whole mailbox or `--folder`: count, size, per folder, top senders, a sample list, `--json`; `--sent` (Date: header, SENTSINCE/SENTBEFORE ±2 days) and `--body`; core `searchMailbox`; `search.finish` once per run; docs.
+- **Review:** plan-auditor (Sonnet): AC1–AC14 met, AC12b (the user’s manual run + webmail) pending by design; bug-hunter/app-tester passes from the run relied on (code unchanged since `C-035-head`); re-run today: typecheck, build, 8332 tests green, M3a `search-live` 27/27 once. Follow-ups (LOW) in `.claude/changes/C-035.md`, plus: no test pins "no `search.finish` on Ctrl+C"; `.claude/changes/C-035.md` needs `prettier --write` (blank lines after headings).
+
+## C-036 — M3c saved filters
+
+- **Status:** reviewed (2026-10-15)
+- **Date:** 2026-10-15 · **Type:** feature · **Grade:** L (+ hard)
+- **Source:** `.claude/plans/2026-10-15-1503-m3c-saved-filters.md` + TODO.md "### M3c — Saved filters (needs M3b)"
+- **Detail:** `.claude/changes/C-036.md`
+- **Summary:** `saved_filters` table (migration applied, RLS live-tested), `FiltersRepo`, core save/list/delete with `filter.save` / `filter.delete` events + audit rows (ids only), filter → line printer, `mm filter save | list | show | delete`, `mm search --filter` (AND with typed words); docs.
+- **Review:** plan-auditor (Sonnet): AC1–AC11 met, AC12 (the user's manual run) pending by design; bug-hunter (opus ×3) / app-tester passes from the run relied on (code unchanged since `C-036-head`); re-run today: typecheck, build, 8541 tests green, lint/format only the known `scripts/bulk.mjs`, `prices.json`, `C-035.md`; `db:status` shows the migration remote. Follow-ups (LOW) in `.claude/changes/C-036.md`.

@@ -30,7 +30,7 @@ function n(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-function plural(count: number, one: string, many: string): string {
+export function plural(count: number, one: string, many: string): string {
   return `${n(count)} ${count === 1 ? one : many}`;
 }
 
@@ -41,7 +41,7 @@ function clip(text: string, max: number): string {
 }
 
 /** Rows aligned: the first column left, the others right; `suffix[i]` goes after row i. */
-function table(rows: string[][], suffix: string[] = []): string[] {
+export function table(rows: string[][], suffix: string[] = []): string[] {
   const widths: number[] = [];
   for (const r of rows) {
     r.forEach((c, i) => {
@@ -103,7 +103,7 @@ function yearSection(years: StatsYearRow[]): string[] {
  * A sender or domain: `none` for no key; `(unreadable)` when sanitising leaves nothing (a key
  * made only of control or bidi characters); otherwise trimmed and cut.
  */
-function keyText(key: string | null, none: string): string {
+export function keyText(key: string | null, none: string): string {
   if (key === null) return none;
   const text = sanitize(key).trim();
   return text === '' ? '(unreadable)' : clip(text, MAX_KEY_CHARS);
@@ -154,39 +154,50 @@ export function dayText(date: Date | null, format: Intl.DateTimeFormat): string 
 }
 
 /** The sender column: sanitised, trimmed, cut; `(no address)` when nothing is left. */
-function fromText(from: string | null): string {
+export function fromText(from: string | null): string {
   const text = from === null ? '' : sanitize(from).trim();
   return text === '' ? NO_ADDRESS : clip(text, MAX_FROM_CHARS);
 }
 
 /** The subject column: sanitised, trimmed, cut; `(no subject)` when nothing is left. */
-function subjectText(subject: string | null): string {
+export function subjectText(subject: string | null): string {
   const text = subject === null ? '' : sanitize(subject).trim();
   return text === '' ? '(no subject)' : clip(text, MAX_SUBJECT_CHARS);
 }
 
-function largestSection(stats: MailboxStats, timeZone: string): string[] {
+/** One mail of a list: its folder, date, size (null = unknown), sender and subject. */
+export interface MailLine {
+  folder: string;
+  received: Date | null;
+  from: string | null;
+  subject: string | null;
+  bytes: number | null;
+}
+
+/** One line per mail: date, size (— when unknown), sender padded to one column, subject, folder. */
+export function mailLines(mails: readonly MailLine[], timeZone: string): string[] {
   const format = dateFormatter(timeZone);
-  const rows = stats.largest.map((l) => {
+  const rows = mails.map((l) => {
     return [
       dayText(l.received, format),
-      formatBytes(l.bytes),
+      l.bytes === null ? UNKNOWN : formatBytes(l.bytes),
       fromText(l.from),
       `${subjectText(l.subject)}  (${safeName(l.folder)})`,
     ];
   });
-  if (rows.length === 0) return ['LARGEST MAILS', NONE];
   // Date left, size right, sender left-padded to one column; the subject runs to the end.
   const dates = table(rows.map((r) => [r[0] ?? '', r[1] ?? '']));
   const from = Math.max(...rows.map((r) => [...(r[2] ?? '')].length));
-  return [
-    'LARGEST MAILS',
-    ...rows.map((r, i) => {
-      const sender = r[2] ?? '';
-      const gap = ' '.repeat(from - [...sender].length);
-      return `${dates[i] ?? ''}  ${sender}${gap}  ${r[3] ?? ''}`;
-    }),
-  ];
+  return rows.map((r, i) => {
+    const sender = r[2] ?? '';
+    const gap = ' '.repeat(from - [...sender].length);
+    return `${dates[i] ?? ''}  ${sender}${gap}  ${r[3] ?? ''}`;
+  });
+}
+
+function largestSection(stats: MailboxStats, timeZone: string): string[] {
+  if (stats.largest.length === 0) return ['LARGEST MAILS', NONE];
+  return ['LARGEST MAILS', ...mailLines(stats.largest, timeZone)];
 }
 
 /** The text report: sections separated by a blank line, then the quota for a whole mailbox. */

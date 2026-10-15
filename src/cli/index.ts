@@ -5,9 +5,11 @@ import { registerApp } from './commands/app.js';
 import { registerAuth } from './commands/auth.js';
 import { registerDiscover } from './commands/discover.js';
 import { registerDoctor } from './commands/doctor.js';
+import { registerFilter } from './commands/filter.js';
 import { registerFolders } from './commands/folders.js';
 import { registerKeygen } from './commands/keygen.js';
 import { registerLogs } from './commands/logs.js';
+import { registerSearch } from './commands/search.js';
 import { registerStats } from './commands/stats.js';
 import { VERSION } from './version.js';
 
@@ -82,6 +84,8 @@ export function buildProgram(options: BuildOptions = {}): Command {
   registerAccount(program, ctx);
   registerFolders(program, ctx);
   registerStats(program, ctx);
+  registerSearch(program, ctx);
+  registerFilter(program, ctx);
   registerLogs(program, ctx);
   program.addHelpText(
     'after',
@@ -96,6 +100,8 @@ export function buildProgram(options: BuildOptions = {}): Command {
       '  4. mm account test <id>      check the login any time (ids: mm account list)',
       '  5. mm folders [id]           see the folders: messages, unread, size, quota',
       '  6. mm stats [id]             where the space goes: senders, years, largest mails',
+      '  7. mm search "<filter>"      find mails: from:@shop.sk older:1y larger:1mb',
+      '  8. mm filter save <name>     keep a filter for mm search --filter <name>',
     ].join('\n'),
   );
   return program;

@@ -17,6 +17,7 @@ const CATALOG_TABLES = [
   '### Folder browser (M2b-2)',
   '### Mailbox stats (M2c-1)',
   '### Filters (M3a)',
+  '### Saved filters (M3c)',
 ];
 
 function tableRows(md: string, heading: string): CatalogRow[] {
@@ -55,7 +56,7 @@ describe('docs/LOGGING.md event catalog', () => {
     for (const name of LOG_EVENT_NAMES) expect(names).toContain(name);
   });
 
-  it.each(['M1b-4a', 'M1b-4b', 'M1b-4d', 'M1c-1', 'M2a', 'M2b-2', 'M2c-1', 'M3a'])(
+  it.each(['M1b-4a', 'M1b-4b', 'M1b-4d', 'M1c-1', 'M2a', 'M2b-2', 'M2c-1', 'M3a', 'M3c'])(
     'every row marked as emitted from %s exists in the code',
     (ms) => {
       const emitted = rows.filter((r) => r.emittedFrom === ms).map((r) => r.name);

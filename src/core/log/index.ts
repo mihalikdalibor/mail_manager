@@ -6,6 +6,7 @@ export * from './event-schemas.js';
 export * from './events.js';
 export * from './file-event-log.js';
 export * from './files.js';
+export * from './filter-events.js';
 export * from './guard-events.js';
 export * from './health.js';
 export * from './mailbox-events.js';

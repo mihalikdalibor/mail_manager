@@ -145,7 +145,7 @@ function yearOf(value: unknown, format: Intl.DateTimeFormat): string {
 }
 
 /** The first From address: trimmed, lowercased, capped; null when missing or empty. */
-function senderKey(envelope: unknown): string | null {
+export function senderKey(envelope: unknown): string | null {
   const from = record(envelope)?.['from'];
   const address = Array.isArray(from) ? record(from[0])?.['address'] : undefined;
   if (typeof address !== 'string') return null;

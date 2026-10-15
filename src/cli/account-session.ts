@@ -126,12 +126,14 @@ export function loginDeps(session: Session, ctx: CliContext): AccountDeps {
 
 /**
  * The mailbox a command works on. With a ref: that account. Without: the only saved one;
- * none → "No mailboxes yet"; several → asks for an id and shows the table. null after printing.
+ * none → "No mailboxes yet"; several → asks for an id and shows the table (`usage` is the
+ * command line that message names). null after printing.
  */
 export async function pickAccount(
   session: Session,
   ref: string | undefined,
   command: string,
+  usage = `mm ${command} <id>`,
 ): Promise<MailAccount | null> {
   if (ref !== undefined) return findAccount(session, ref);
   const accounts = await session.services.accounts.list();
@@ -141,7 +143,7 @@ export async function pickAccount(
     fail(NO_ACCOUNTS_TEXT);
     return null;
   }
-  fail(`Several mailboxes saved — run \`mm ${command} <id>\` with one of these ids:`);
+  fail(`Several mailboxes saved — run \`${usage}\` with one of these ids:`);
   for (const row of accountTable(accounts)) console.error(row);
   return null;
 }

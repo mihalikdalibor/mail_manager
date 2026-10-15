@@ -640,3 +640,201 @@ describe.skipIf(!hasTestUsers)('mail_accounts hardening (live Supabase)', () => 
     expect(after && after.updatedAt >= before.updatedAt).toBe(true);
   });
 });
+
+// M3c saved_filters: owner-only rows, column grants (42501), the name and size checks (23514) and
+// one name per user (23505). Exact error codes, for the same reason as the suites above. Every row
+// is named rls-<RUN>-<case> and removed in afterAll with the client of its owner.
+describe.skipIf(!hasTestUsers)('saved_filters row-level security (live Supabase)', () => {
+  const RUN = randomBytes(4).toString('hex');
+  const FILTER_JSON = { version: 1, where: { kind: 'subject', value: 'rls' } };
+  const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
+  let a: TestUser;
+  let b: TestUser;
+  let rawA: SupabaseClient;
+  let rawB: SupabaseClient;
+  const owned: { client: SupabaseClient; id: string }[] = [];
+
+  function name(kase: string): string {
+    return `rls-${RUN}-${kase}`;
+  }
+
+  async function rawClient(prefix: 'A' | 'B'): Promise<SupabaseClient> {
+    const cfg = validateSupabaseEnv(env);
+    if (!cfg.ok) throw new Error('config invalid');
+    const raw = createSupabase(cfg.value, new MemorySessionStorage());
+    const { error } = await raw.auth.signInWithPassword({
+      email: required(`MM_TEST_SUPABASE_${prefix}_EMAIL`),
+      password: required(`MM_TEST_SUPABASE_${prefix}_PASSWORD`),
+    });
+    if (error) throw new Error(`sign-in ${prefix} failed`);
+    return raw;
+  }
+
+  /** Inserts a row as the client's user, remembers it for the cleanup, and returns its id. */
+  async function insertRow(
+    client: SupabaseClient,
+    values: Record<string, unknown>,
+  ): Promise<string> {
+    const { data, error } = await client
+      .from('saved_filters')
+      .insert(values)
+      .select('id')
+      .single<{ id: string }>();
+    expect(error).toBeNull();
+    const id = String(data?.id);
+    owned.push({ client, id });
+    return id;
+  }
+
+  beforeAll(async () => {
+    a = await signIn('A');
+    b = await signIn('B');
+    rawA = await rawClient('A');
+    rawB = await rawClient('B');
+  });
+
+  afterAll(async () => {
+    if (!a) return;
+    for (const { client, id } of owned) await client.from('saved_filters').delete().eq('id', id);
+    for (const raw of [rawA, rawB]) await raw?.auth.signOut({ scope: 'local' });
+    await a.services.auth.logout();
+    await b?.services.auth.logout();
+  });
+
+  it('the owner inserts, reads, updates and deletes their own row', async () => {
+    const id = await insertRow(rawA, { name: name('owner'), filter_json: FILTER_JSON });
+    const { data: stored, error } = await rawA
+      .from('saved_filters')
+      .select('*')
+      .eq('id', id)
+      .single<Record<string, unknown>>();
+    expect(error).toBeNull();
+    expect(stored).toMatchObject({
+      name: name('owner'),
+      user_id: a.userId,
+      filter_json: FILTER_JSON,
+    });
+    expect(typeof stored?.['created_at']).toBe('string');
+    const before = String(stored?.['updated_at']);
+    expect(typeof stored?.['updated_at']).toBe('string');
+
+    const next = { version: 1, where: { kind: 'subject', value: 'changed' } };
+    const updated = await rawA
+      .from('saved_filters')
+      .update({ filter_json: next })
+      .eq('id', id)
+      .select('*')
+      .single<Record<string, unknown>>();
+    expect(updated.error).toBeNull();
+    expect(updated.data?.['filter_json']).toEqual(next);
+    expect(Date.parse(String(updated.data?.['updated_at']))).toBeGreaterThanOrEqual(
+      Date.parse(before),
+    );
+
+    const deleted = await rawA.from('saved_filters').delete().eq('id', id).select('id');
+    expect(deleted.error).toBeNull();
+    expect(deleted.data).toHaveLength(1);
+    const gone = await rawA.from('saved_filters').select('id').eq('id', id);
+    expect(gone.data).toEqual([]);
+  });
+
+  it("another user sees none of A's rows and can't change or delete them", async () => {
+    const id = await insertRow(rawA, { name: name('hidden'), filter_json: FILTER_JSON });
+
+    const seen = await rawB.from('saved_filters').select('id').eq('id', id);
+    expect(seen.error).toBeNull();
+    expect(seen.data).toEqual([]);
+
+    const changed = await rawB
+      .from('saved_filters')
+      .update({ filter_json: { version: 1, where: { kind: 'subject', value: 'evil' } } })
+      .eq('id', id)
+      .select('id');
+    expect(changed.error).toBeNull();
+    expect(changed.data).toEqual([]);
+
+    const removed = await rawB.from('saved_filters').delete().eq('id', id).select('id');
+    expect(removed.error).toBeNull();
+    expect(removed.data).toEqual([]);
+
+    // A's row is unchanged.
+    const still = await rawA
+      .from('saved_filters')
+      .select('filter_json')
+      .eq('id', id)
+      .single<Record<string, unknown>>();
+    expect(still.data?.['filter_json']).toEqual(FILTER_JSON);
+  });
+
+  it.each([
+    ['user_id', OTHER_USER_ID],
+    ['id', randomUUID()],
+    ['created_at', '2020-01-01T00:00:00Z'],
+    ['updated_at', '2020-01-01T00:00:00Z'],
+  ])('the client cannot insert %s (42501)', async (column, value) => {
+    const res = await rawA.from('saved_filters').insert({
+      name: name(`denied-${column.replace('_', '')}`),
+      filter_json: FILTER_JSON,
+      [column]: value,
+    });
+    expect(res.error?.code).toBe('42501');
+  });
+
+  it('the client cannot update name or user_id (42501), and the row is unchanged', async () => {
+    const id = await insertRow(rawA, { name: name('rename'), filter_json: FILTER_JSON });
+    const renamed = await rawA
+      .from('saved_filters')
+      .update({ name: name('renamed') })
+      .eq('id', id);
+    expect(renamed.error?.code).toBe('42501');
+    const moved = await rawA.from('saved_filters').update({ user_id: b.userId }).eq('id', id);
+    expect(moved.error?.code).toBe('42501');
+
+    const { data } = await rawA
+      .from('saved_filters')
+      .select('name, user_id')
+      .eq('id', id)
+      .single<Record<string, unknown>>();
+    expect(data).toEqual({ name: name('rename'), user_id: a.userId });
+  });
+
+  it('the anon role can neither read nor insert (42501)', async () => {
+    const cfg = validateSupabaseEnv(env);
+    if (!cfg.ok) throw new Error('config invalid');
+    const anon = createClient(cfg.value.url, cfg.value.publishableKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const read = await anon.from('saved_filters').select('id').limit(1);
+    expect(read.data).toBeNull();
+    expect(read.error?.code).toBe('42501');
+    const insert = await anon
+      .from('saved_filters')
+      .insert({ name: name('anon'), filter_json: FILTER_JSON });
+    expect(insert.error?.code).toBe('42501');
+  });
+
+  it.each(['Big', 'a'.repeat(41), 'a b'])('the name %j is rejected (23514)', async (bad) => {
+    const res = await rawA.from('saved_filters').insert({ name: bad, filter_json: FILTER_JSON });
+    expect(res.error?.code).toBe('23514');
+  });
+
+  it('a filter_json that is not an object is rejected (23514)', async () => {
+    const res = await rawA.from('saved_filters').insert({ name: name('shape'), filter_json: [1] });
+    expect(res.error?.code).toBe('23514');
+  });
+
+  it('a filter_json over 16 KB is rejected (23514)', async () => {
+    const res = await rawA
+      .from('saved_filters')
+      .insert({ name: name('size'), filter_json: { x: 'a'.repeat(17000) } });
+    expect(res.error?.code).toBe('23514');
+  });
+
+  it('one name per user (23505); another user may use the same name', async () => {
+    const same = name('same');
+    await insertRow(rawA, { name: same, filter_json: FILTER_JSON });
+    const again = await rawA.from('saved_filters').insert({ name: same, filter_json: FILTER_JSON });
+    expect(again.error?.code).toBe('23505');
+    await insertRow(rawB, { name: same, filter_json: FILTER_JSON });
+  });
+});

@@ -125,7 +125,7 @@ Every IMAP login the app makes goes through `guardedOpenSession` (`src/core/imap
 ## Data minimisation
 
 - No message content, subjects or message addresses in Supabase.
-- Saved filters may contain addresses the user typed — accepted, user-authored config.
+- Saved filters (M3c) may contain addresses and words the user typed — accepted, user-authored config in `saved_filters`, read only by its owner (RLS). Their name and values never go into a log line or an audit row; the events and audit rows carry the filter's id only.
 - Local backups contain full mail: output directories created with mode 700, files 600; README warns the user to store them safely. Optional encrypted archives: later.
 
 ## Compliance (GDPR — project is EU-based)

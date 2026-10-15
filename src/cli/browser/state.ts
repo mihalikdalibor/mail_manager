@@ -17,7 +17,12 @@ import {
   type Basket,
   type Mark,
 } from '../../core/mailbox/basket.js';
-import type { Match, SearchResult } from '../../core/mailbox/search.js';
+import {
+  sortMatches,
+  type Match,
+  type SearchOrder,
+  type SearchResult,
+} from '../../core/mailbox/search.js';
 import { erased, typed } from './field.js';
 
 // State of the interactive folder browser (M2b): a pure reducer. Every input (a key, a page
@@ -78,7 +83,7 @@ export const MIN_ROWS = 8;
 /** Marks made at once by `m` on a listing: more matches than this are not marked. */
 export const MARK_ALL_MAX = 100_000;
 
-export type MailOrder = 'newest' | 'oldest' | 'largest';
+export type MailOrder = SearchOrder;
 
 /** One key of the filter line: a typed character, or an edit / end key. */
 export type LineKey =
@@ -538,28 +543,9 @@ function goBack(state: BrowserState): BrowserState {
   return cursorOn(root, left);
 }
 
-/** Compares two values, either of which may be missing: a missing one sorts last. */
-function nullsLast(
-  a: number | null,
-  b: number | null,
-  compare: (x: number, y: number) => number,
-): number {
-  if (a === null || b === null) return (a === null ? 1 : 0) - (b === null ? 1 : 0);
-  return compare(a, b);
-}
-
-/** A new array: newest first, oldest first or largest first; ties by UID. */
-export function sortMatches(matches: readonly Match[], order: MailOrder): Match[] {
-  const sorted = [...matches];
-  sorted.sort((a, b) => {
-    if (order === 'largest') return nullsLast(a.bytes, b.bytes, (x, y) => y - x) || b.uid - a.uid;
-    if (order === 'oldest') {
-      return nullsLast(a.received, b.received, (x, y) => x - y) || a.uid - b.uid;
-    }
-    return nullsLast(a.received, b.received, (x, y) => y - x) || b.uid - a.uid;
-  });
-  return sorted;
-}
+// The orders of the matches moved to the core (`search.ts`, M3b); re-exported for the browser's
+// callers and tests.
+export { sortMatches };
 
 /** The plain list of the open folder again; a search under way is stopped. */
 function plainList(state: BrowserState): Reduced {

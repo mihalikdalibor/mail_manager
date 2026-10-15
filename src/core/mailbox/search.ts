@@ -1,5 +1,5 @@
 import { passesChecks, type CompiledFilter } from '../filters/compile.js';
-import type { SearchPassQuery } from '../imap/session.js';
+import type { FetchedMessage, SearchPassQuery } from '../imap/session.js';
 import { MailboxError, SearchStopped } from './errors.js';
 import { checkOpen, count } from './guards.js';
 import {
@@ -17,9 +17,12 @@ import {
 // The filter pass over one folder (M3a), read-only: the folder is EXAMINEd, the server's UID
 // SEARCH gives the candidates, and one streaming pass fetches them by UID in sets of at most
 // SEARCH_BATCH_UIDS UIDs and SEARCH_SET_CHARS characters. The pass asks for UID, size, received
-// date and, when a check needs them, the envelope and structure: never a body, never a flag, so
-// `\Seen` is never set. Nothing here stores or logs a message: the caller gets the matches (UID,
-// size, received date) and their total size. A page of matches is read by UID (`loadMatches`).
+// date and, when a check or the caller (`SearchOptions.envelope`) needs them, the envelope and
+// structure: never a body, never a flag, so `\Seen` is never set. Nothing here stores or logs a
+// message: the caller gets the matches (UID, size, received date) and their total size. A page of
+// matches is read by UID (`loadMatches`).
+// The orders of the matches (M3b: `sortMatches`, `compareMatches`) are here too, so the browser
+// and the CLI sort alike.
 
 export { SearchStopped };
 
@@ -53,6 +56,13 @@ export interface SearchOptions {
   shouldStop?: () => boolean;
   /** Default SEARCH_MAX_MATCHES (candidates, before the checks). */
   maxMatches?: number;
+  /** true: the pass also fetches the envelope when no check needs it. */
+  envelope?: boolean;
+  /**
+   * Called once per match, after its checks passed, with the fetched message. Must not throw
+   * (an exception inside the pass is reported by withFolder as folder-unavailable).
+   */
+  onMatch?: (match: Match, msg: FetchedMessage) => void;
 }
 
 interface UidChunk {
@@ -139,6 +149,35 @@ export function uidSets(
   return uidChunks(uidsAscending, maxUids, maxChars).map((chunk) => chunk.set);
 }
 
+export type SearchOrder = 'newest' | 'oldest' | 'largest';
+
+/** Compares two values, either of which may be missing: a missing one sorts last. */
+function nullsLast(
+  a: number | null,
+  b: number | null,
+  compare: (x: number, y: number) => number,
+): number {
+  if (a === null || b === null) return (a === null ? 1 : 0) - (b === null ? 1 : 0);
+  return compare(a, b);
+}
+
+/**
+ * newest: received desc, null last, then uid desc; oldest: received asc, null last, uid asc;
+ * largest: bytes desc, null last, uid desc.
+ */
+export function compareMatches(a: Match, b: Match, order: SearchOrder): number {
+  if (order === 'largest') return nullsLast(a.bytes, b.bytes, (x, y) => y - x) || b.uid - a.uid;
+  if (order === 'oldest') {
+    return nullsLast(a.received, b.received, (x, y) => x - y) || a.uid - b.uid;
+  }
+  return nullsLast(a.received, b.received, (x, y) => y - x) || b.uid - a.uid;
+}
+
+/** A new array in the order asked (`compareMatches`). */
+export function sortMatches(matches: readonly Match[], order: SearchOrder): Match[] {
+  return [...matches].sort((a, b) => compareMatches(a, b, order));
+}
+
 /**
  * The matches of a filter in one folder, UID descending, with their total size. Runs under one
  * read-only lock. Throws SearchStopped (asked between batches), or MailboxError: too-many-matches,
@@ -175,7 +214,7 @@ export async function searchFolder(
       uid: true,
       size: true,
       internalDate: true,
-      ...(compiled.needs.envelope && { envelope: true as const }),
+      ...((compiled.needs.envelope || opts.envelope === true) && { envelope: true as const }),
       ...(compiled.needs.structure && { bodyStructure: true as const }),
     };
     const wanted = new Set(candidates);
@@ -189,11 +228,13 @@ export async function searchFolder(
         if (uid === null || uid <= 0 || !wanted.has(uid) || seen.has(uid)) continue;
         seen.add(uid);
         if (passesChecks(compiled.checks, msg)) {
-          matches.push({
+          const match: Match = {
             uid,
             bytes: count(msg.size),
             received: receivedDate(msg.internalDate)?.getTime() ?? null,
-          });
+          };
+          matches.push(match);
+          opts.onMatch?.(match, msg);
         }
       }
       done += chunk.count;

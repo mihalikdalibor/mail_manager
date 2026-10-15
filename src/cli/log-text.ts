@@ -232,6 +232,17 @@ function searchText(r: LogRecord): string {
   return `mail filter: ${found} found in ${duration(num(r, 'ms'))} (${used})`;
 }
 
+/** `filter saved`, `filter replaced`, `filter save failed: duplicate` — never the id or the name. */
+function filterText(r: LogRecord): string {
+  if (r.event === 'filter.delete') {
+    return str(r, 'outcome') === 'ok'
+      ? 'filter deleted'
+      : `filter delete failed: ${words(str(r, 'reason'))}`;
+  }
+  if (str(r, 'outcome') !== 'ok') return `filter save failed: ${words(str(r, 'reason'))}`;
+  return r['replaced'] === true ? 'filter replaced' : 'filter saved';
+}
+
 /** One event in plain words, from its real fields only (never ids, IPs or targets). */
 function rawEventText(r: LogRecord, timeZone?: string): string {
   const event = r.event as LogEventName;
@@ -298,6 +309,9 @@ function rawEventText(r: LogRecord, timeZone?: string): string {
       return statsText(r);
     case 'search.finish':
       return searchText(r);
+    case 'filter.save':
+    case 'filter.delete':
+      return filterText(r);
     default:
       return unknownEvent(event);
   }

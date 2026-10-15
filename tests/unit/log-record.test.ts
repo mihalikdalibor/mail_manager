@@ -38,6 +38,8 @@ const APP_EVENTS = [
   'browse.finish',
   'stats.finish',
   'search.finish',
+  'filter.save',
+  'filter.delete',
 ] as const;
 const SECURITY_EVENTS = [
   'auth.login',
@@ -88,7 +90,7 @@ describe('constants', () => {
     expect(SECURITY_PREFIX).toBe('mm-security ');
   });
 
-  it('lists exactly the M1b-4a, M1b-4b, M1b-4d, M1c-1, M2a, M2b-2, M2c-1 and M3a events', () => {
+  it('lists exactly the M1b-4a, M1b-4b, M1b-4d, M1c-1, M2a, M2b-2, M2c-1, M3a and M3c events', () => {
     expect([...LOG_EVENT_NAMES].sort()).toEqual([...APP_EVENTS, ...SECURITY_EVENTS].sort());
   });
 
@@ -132,6 +134,10 @@ describe('constants', () => {
       'reason',
     ]);
     expect(EVENT_KIND['stats.finish']).toBe('app');
+    expect(EVENT_FIELDS['filter.save']).toEqual(['filter', 'replaced', 'outcome', 'reason']);
+    expect(EVENT_FIELDS['filter.delete']).toEqual(['filter', 'outcome', 'reason']);
+    expect(EVENT_KIND['filter.save']).toBe('app');
+    expect(EVENT_KIND['filter.delete']).toBe('app');
     expect(EVENT_FIELDS['discover.finish']).toEqual([
       'outcome',
       'source',

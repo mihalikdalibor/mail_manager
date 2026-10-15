@@ -23,6 +23,8 @@ import {
   commandStart,
   discoverFinish,
   doctorCheck,
+  filterDelete,
+  filterSave,
   foldersList,
   guardBlock,
   guardChallenge,
@@ -56,6 +58,7 @@ const ADDR6 = '2001:db8:1:2:0:0:0:1';
 const TARGET = 'd4'.repeat(32);
 const USER = randomUUID();
 const ACCT = randomUUID();
+const FILTER = randomUUID();
 const UNTIL = '2026-09-29T08:15:00.000Z';
 const BROWSE = {
   acct: ACCT,
@@ -346,6 +349,11 @@ function samples(): Map<LogEventName, LogRecord[]> {
       outcome: 'failed',
       reason: 'search-failed',
     }),
+    filterSave({ filter: FILTER, replaced: false, outcome: 'ok' }),
+    filterSave({ filter: FILTER, replaced: true, outcome: 'ok' }),
+    filterSave({ filter: FILTER, outcome: 'failed', reason: 'duplicate' }),
+    filterDelete({ filter: FILTER, outcome: 'ok' }),
+    filterDelete({ filter: FILTER, outcome: 'failed', reason: 'not-found' }),
   ];
   const map = new Map<LogEventName, LogRecord[]>();
   for (const e of list) map.set(e.event, [...(map.get(e.event) ?? []), rec(e)]);
@@ -355,7 +363,7 @@ function samples(): Map<LogEventName, LogRecord[]> {
 describe('eventText', () => {
   const all = samples();
 
-  it('has samples for all 23 catalog events', () => {
+  it('has samples for all 25 catalog events', () => {
     expect([...all.keys()].sort()).toEqual([...LOG_EVENT_NAMES].sort());
   });
 

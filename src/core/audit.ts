@@ -10,7 +10,8 @@ import {
 import { hasUnsafeChars } from './providers/email.js';
 
 // Validation of audit rows before they reach the cloud database (zod at the boundary).
-// Only counts, bytes, folder names, preset ids and reason codes pass — never message content.
+// Only counts, bytes, folder names, preset and filter ids and reason codes pass — never message
+// content.
 
 const INT4_MAX = 2_147_483_647;
 
@@ -47,12 +48,16 @@ const accountDetails = z
   })
   .optional();
 
+/**
+ * `filter` is the saved filter's UUID (M3c) — never its name or terms. A save also says whether
+ * it replaced a filter of the same name; both filter actions always carry details.
+ */
 const DETAILS: Record<AuditAction, z.ZodType<Record<string, unknown> | undefined>> = {
   'account.add': accountDetails,
   'account.remove': accountDetails,
   'account.password-update': accountDetails,
-  'filter.save': z.undefined(),
-  'filter.delete': z.undefined(),
+  'filter.save': z.strictObject({ filter: z.uuid(), replaced: z.boolean() }),
+  'filter.delete': z.strictObject({ filter: z.uuid() }),
   'mail.trash': z.undefined(),
   'mail.expunge': z.undefined(),
   'mail.move': z.undefined(),

@@ -20,6 +20,7 @@ import {
   type CommandOutcome,
   type DiscoverChoice,
   type DiscoverOutcome,
+  type FilterFailureReason,
   type LogEvent,
   type LogEventName,
   type LogKind,
@@ -136,6 +137,14 @@ export const SEARCH_CRITERIA: Record<Criterion, true> = {
   hasAttachments: true,
   any: true,
   not: true,
+};
+/** Why a `mm filter` save or delete failed (M3c): codes only, never the name or terms. */
+export const FILTER_FAILURE_REASONS: Record<FilterFailureReason, true> = {
+  duplicate: true,
+  'not-found': true,
+  limit: true,
+  database: true,
+  unexpected: true,
 };
 export const FALLBACK_FEATURES: Record<FallbackFeature, true> = {
   'status-size': true,
@@ -321,6 +330,17 @@ const FIELD_SCHEMAS: {
     outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
     reason: z.enum(keys(ACCOUNT_FAILURE_REASONS)).optional(),
   },
+  'filter.save': {
+    filter: uuid.optional(),
+    replaced: z.boolean().optional(),
+    outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
+    reason: z.enum(keys(FILTER_FAILURE_REASONS)).optional(),
+  },
+  'filter.delete': {
+    filter: uuid.optional(),
+    outcome: z.enum(keys(ACCOUNT_OUTCOMES)),
+    reason: z.enum(keys(FILTER_FAILURE_REASONS)).optional(),
+  },
 };
 
 const RECORD_SCHEMAS = new Map<string, z.ZodType<Record<string, unknown>>>(
@@ -371,6 +391,7 @@ export function validateRecord(
     if (name === 'command.finish' && !finishConsistent(data)) return { skipped: 'unreadable' };
     if (
       (name.startsWith('account.') ||
+        name.startsWith('filter.') ||
         name === 'folders.list' ||
         name === 'browse.finish' ||
         name === 'stats.finish' ||
@@ -399,7 +420,7 @@ function finishConsistent(data: Record<string, unknown>): boolean {
 }
 
 /**
- * The builder writes a reason only for a failed action (account, listing, browser, stats,
+ * The builder writes a reason only for a failed action (account, filter, listing, browser, stats,
  * search), and always for one.
  */
 function accountConsistent(data: Record<string, unknown>): boolean {
